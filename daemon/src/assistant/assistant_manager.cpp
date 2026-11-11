@@ -722,7 +722,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
         p["percent"] = make_prop("INTEGER", "Absolute volume 0..100 percent");
         p["direction"] = make_enum_prop("Relative Android TV volume step", {"up", "down", "mute"});
         p["steps"] = make_prop("INTEGER", "Step count for relative up/down (1..10, default 4)");
-        p["target"] = make_enum_prop("Stage to set when percent is used (default all)",
+        p["target"] = make_enum_prop("Target stage: 'all' (default) sets overall speaker volume 0..100%; 'woofer', 'tweeters', or 'headphones' sets relative trim where 50% = 0 dB neutral (0% = -20 dB, 100% = +20 dB)",
                                      {"all", "woofer", "tweeters", "headphones"});
         decls.push(make_func_decl(
             "set_volume",

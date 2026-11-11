@@ -147,6 +147,9 @@ void DaemonConfig::sanitize_and_validate() {
     audio.woofer_volume = std::clamp(audio.woofer_volume, 0, 255);
     audio.tweeters_volume = std::clamp(audio.tweeters_volume, 0, 255);
     audio.headphone_volume = std::clamp(audio.headphone_volume, 0, 255);
+    audio.woofer_trim = std::clamp(audio.woofer_trim, -40, 40);
+    audio.tweeters_trim = std::clamp(audio.tweeters_trim, -40, 40);
+    audio.headphone_trim = std::clamp(audio.headphone_trim, -40, 40);
     if (!is_one_of(audio.eq_preset, {"flat", "balanced", "bass_boost", "vocal", "night", "custom"})) {
         audio.eq_preset = "balanced";
     }
@@ -252,6 +255,9 @@ json::Value DaemonConfig::to_json() const {
     au["wooferVolume"] = Value::make_int(audio.woofer_volume);
     au["tweetersVolume"] = Value::make_int(audio.tweeters_volume);
     au["headphoneVolume"] = Value::make_int(audio.headphone_volume);
+    au["wooferTrim"] = Value::make_int(audio.woofer_trim);
+    au["tweetersTrim"] = Value::make_int(audio.tweeters_trim);
+    au["headphoneTrim"] = Value::make_int(audio.headphone_trim);
     au["wooferEq"] = Value::make_bool(audio.woofer_eq);
     au["wooferDrc"] = Value::make_bool(audio.woofer_drc);
     au["tweetersEq"] = Value::make_bool(audio.tweeters_eq);
@@ -359,6 +365,9 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = au->get("wooferVolume"); x && x->is_num()) audio.woofer_volume = x->as_int();
         if (auto* x = au->get("tweetersVolume"); x && x->is_num()) audio.tweeters_volume = x->as_int();
         if (auto* x = au->get("headphoneVolume"); x && x->is_num()) audio.headphone_volume = x->as_int();
+        if (auto* x = au->get("wooferTrim"); x && x->is_num()) audio.woofer_trim = x->as_int();
+        if (auto* x = au->get("tweetersTrim"); x && x->is_num()) audio.tweeters_trim = x->as_int();
+        if (auto* x = au->get("headphoneTrim"); x && x->is_num()) audio.headphone_trim = x->as_int();
         if (auto* x = au->get("wooferEq"); x && x->is_bool()) audio.woofer_eq = x->as_bool();
         if (auto* x = au->get("wooferDrc"); x && x->is_bool()) audio.woofer_drc = x->as_bool();
         if (auto* x = au->get("tweetersEq"); x && x->is_bool()) audio.tweeters_eq = x->as_bool();

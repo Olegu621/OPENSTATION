@@ -222,7 +222,7 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
     throw "Таймаут ожидания готовности Android (sys.boot_completed=1, system_server, settings, pm) ($TimeoutSec сек)"
 }
 
-Write-Host "=== OpenStation Max v1.2.0 Deploy ===" -ForegroundColor Cyan
+Write-Host "=== OpenStation Max v1.2.1 Deploy ===" -ForegroundColor Cyan
 $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
 Write-Host "ADB: $AdbPath" -ForegroundColor Gray
 
@@ -499,8 +499,12 @@ if [ ! -f /data/local/openstation/backup/orig_setup.txt ]; then
         echo "user_setup_complete=$(settings get secure user_setup_complete | tr -d '\r')"
     } > /data/local/openstation/backup/orig_setup.txt
 fi
+if [ ! -f /data/local/openstation/backup/hardvol_sy.xml ] && [ -f /vendor/etc/hardvol_sy.xml ] && ! grep -q "OPENSTATION_" /vendor/etc/hardvol_sy.xml 2>/dev/null; then
+    cp -f /vendor/etc/hardvol_sy.xml /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
+    chmod 644 /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
+fi
 chmod 755 /data/local/openstation /data/local/openstation/backup
-for bf in rc_local.sh device_owner_2.xml device_owner.xml device_policies.xml users_0.xml orig_ime.txt orig_setup.txt; do
+for bf in rc_local.sh hardvol_sy.xml device_owner_2.xml device_owner.xml device_policies.xml users_0.xml orig_ime.txt orig_setup.txt; do
     if [ -f "/data/local/openstation/backup/$bf" ]; then
         echo "$bf"
     fi
@@ -653,6 +657,33 @@ if ($needSeed -and $null -ne $cfgObj) {
     Invoke-AdbSh "mkdir -p /data/local/openstation && echo $b64Cfg | base64 -d > /data/local/openstation/config.json && chmod 644 /data/local/openstation/config.json"
     Write-Host "Конфигурация /data/local/openstation/config.json обновлена" -ForegroundColor Gray
 }
+
+Invoke-AdbSh @'
+set -e
+if [ -f /vendor/etc/hardvol_sy.xml ] && ! grep -q "OPENSTATION_PASSTHROUGH" /vendor/etc/hardvol_sy.xml 2>/dev/null; then
+    mkdir -p /data/local/openstation/backup
+    if ! grep -q "OPENSTATION_" /vendor/etc/hardvol_sy.xml 2>/dev/null; then
+        if [ ! -f /data/local/openstation/backup/hardvol_sy.xml ] || grep -q "OPENSTATION_" /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null; then
+            cp -f /vendor/etc/hardvol_sy.xml /data/local/openstation/backup/hardvol_sy.xml
+            chmod 644 /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
+        fi
+    fi
+    mount -o rw,remount /vendor 2>/dev/null || mount -o remount,rw /vendor
+    cat <<'EOF' > /vendor/etc/hardvol_sy.xml.tmp
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OPENSTATION_PASSTHROUGH: OpenStation Max daemon drives SY6045S/ES8156 curve + trims -->
+<hardvol>
+</hardvol>
+EOF
+    chown 0:0 /vendor/etc/hardvol_sy.xml.tmp 2>/dev/null || true
+    chmod 644 /vendor/etc/hardvol_sy.xml.tmp
+    mv -f /vendor/etc/hardvol_sy.xml.tmp /vendor/etc/hardvol_sy.xml
+    chcon u:object_r:vendor_configs_file:s0 /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+    restorecon /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+    sync
+    mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
+fi
+'@
 
 Invoke-AdbSh @'
 set -e
@@ -1222,7 +1253,7 @@ if (-not $manifestPushed) {
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.2.0"
+        version      = "1.2.1"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = [ordered]@{
@@ -1297,7 +1328,7 @@ if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "  OpenStation Max v1.2.0 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.2.1 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
 Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
 Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
 Write-Host "  АВТОНОМНАЯ РАБОТА: Все серверы работают на самой станции — ПК больше не нужен!" -ForegroundColor Yellow

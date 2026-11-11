@@ -253,6 +253,14 @@ if [ -f /data/local/openstation/backup/disabled_apks.list ]; then
     done < /data/local/openstation/backup/disabled_apks.list
 fi
 
+if [ -f /data/local/openstation/backup/hardvol_sy.xml ]; then
+    cp -f /data/local/openstation/backup/hardvol_sy.xml /vendor/etc/hardvol_sy.xml
+    chown 0:0 /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+    chmod 644 /vendor/etc/hardvol_sy.xml
+    chcon u:object_r:vendor_configs_file:s0 /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+    restorecon /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+fi
+
 sync
 mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
 mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true

@@ -53,6 +53,7 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.max
@@ -244,6 +245,12 @@ class MainActivity : Activity() {
         }
     }
 
+    private val clockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateClock(force = true)
+        }
+    }
+
     private val pollRunnable = object : Runnable {
         override fun run() {
             pollDaemonStatus()
@@ -303,6 +310,14 @@ class MainActivity : Activity() {
         try {
             registerReceiver(musicStateReceiver, IntentFilter(YandexMusicPlayer.ACTION_MUSIC_STATE))
         } catch (_: Throwable) {}
+        try {
+            val tf = IntentFilter().apply {
+                addAction(Intent.ACTION_TIME_TICK)
+                addAction(Intent.ACTION_TIME_CHANGED)
+                addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            }
+            registerReceiver(clockReceiver, tf)
+        } catch (_: Throwable) {}
     }
 
     override fun onResume() {
@@ -341,6 +356,7 @@ class MainActivity : Activity() {
         otaDialog = null
         try { unregisterReceiver(pkgReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(musicStateReceiver) } catch (_: Throwable) {}
+        try { unregisterReceiver(clockReceiver) } catch (_: Throwable) {}
         super.onDestroy()
     }
 
@@ -488,6 +504,7 @@ class MainActivity : Activity() {
             text = "--:--"
             setTextColor(Color.parseColor("#F8FAFC"))
             textSize = 19f
+            maxLines = 1
             includeFontPadding = false
             typeface = Typeface.create("sans-serif-light", Typeface.BOLD)
             letterSpacing = 0.03f
@@ -1164,6 +1181,7 @@ class MainActivity : Activity() {
             text = "--:--"
             setTextColor(Color.WHITE)
             textSize = 42f
+            maxLines = 1
             includeFontPadding = false
             typeface = Typeface.create("sans-serif-light", Typeface.BOLD)
             letterSpacing = 0.02f
@@ -2173,23 +2191,25 @@ class MainActivity : Activity() {
     // CLOCK, NETWORK & DAEMON TELEMETRY
     // -----------------------------------------------------------------------------------------
     private fun updateClock(force: Boolean = false) {
+        val tz = TimeZone.getDefault()
+        timeFmt.timeZone = tz
+        shortDateFmt.timeZone = tz
+        fullDateFmt.timeZone = tz
         clockDate.time = System.currentTimeMillis()
         val timeStr = timeFmt.format(clockDate)
         val shortDate = shortDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
         val fullDate = fullDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
 
         if (force || timeStr != lastClockStr) {
+            lastClockStr = timeStr
             tvTopClock.text = timeStr
-            if (currentPage == 2 || force) {
-                tvClock.text = timeStr
-            }
-            if (!force || currentPage == 2) lastClockStr = timeStr
+            tvClock.text = timeStr
         }
         if (force || shortDate != lastShortDateStr) {
             lastShortDateStr = shortDate
             tvTopDate.text = shortDate
         }
-        if ((currentPage == 2 || force) && (force || fullDate != lastFullDateStr)) {
+        if (force || fullDate != lastFullDateStr) {
             lastFullDateStr = fullDate
             tvDate.text = fullDate
         }
@@ -2751,7 +2771,7 @@ class MainActivity : Activity() {
             instBtn?.isEnabled = false
             return
         }
-        val instVer = o.optString("installedVersion", "1.2.0")
+        val instVer = o.optString("installedVersion", "1.2.1")
         val latVer = o.optString("latestVersion", "")
         val repo = o.optString("repo", "Olegu621/OPENSTATION")
         val branch = o.optString("branch", "main")

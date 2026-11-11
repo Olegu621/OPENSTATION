@@ -13,6 +13,8 @@ import android.media.audiofx.BassBoost
 import android.media.audiofx.DynamicsProcessing
 import android.media.audiofx.Equalizer
 import android.media.audiofx.Visualizer
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -40,6 +42,7 @@ class StationAudioService : Service() {
         private const val CHANNEL_ID = "openstation_hw_channel"
         private const val NOTIF_ID = 1001
         private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
+        private const val ACTION_STREAM_MUTE_CHANGED = "android.media.STREAM_MUTE_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
         const val ACTION_SET_EQ = "com.openstation.launcher.SET_EQ"
         const val EXTRA_PRESET = "preset"
@@ -99,6 +102,12 @@ class StationAudioService : Service() {
     private var overlayManager: AliceOverlayManager? = null
     @Volatile
     private var zeroSpectrumSent = false
+    private val volPushLock = Any()
+    private var volPushThread: HandlerThread? = null
+    private var volPushHandler: Handler? = null
+    private val pendingVolPush = Runnable {
+        if (running) pushVolumeStateToDaemon(showOsd = true)
+    }
 
     private val bandFreqs = floatArrayOf(80f, 250f, 1000f, 4000f, 12000f)
 
@@ -106,9 +115,16 @@ class StationAudioService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val stream = intent?.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1) ?: -1
             if (stream == AudioManager.STREAM_MUSIC || stream == -1) {
-                val fromDaemon = (SystemClock.elapsedRealtime() - lastRemoteVolCmdMs) < 350L
-                thread(isDaemon = true) {
-                    pushVolumeStateToDaemon(showOsd = !fromDaemon)
+                val fromDaemon = (SystemClock.elapsedRealtime() - lastRemoteVolCmdMs) < 900L
+                if (fromDaemon) return
+                val h = volPushHandler
+                if (h != null) {
+                    h.removeCallbacks(pendingVolPush)
+                    h.postDelayed(pendingVolPush, 25L)
+                } else {
+                    thread(isDaemon = true) {
+                        pushVolumeStateToDaemon(showOsd = true)
+                    }
                 }
             }
         }
@@ -128,8 +144,15 @@ class StationAudioService : Service() {
         }
         startForegroundNotification()
         running = true
+        volPushThread = HandlerThread("StationVolPush").apply { start() }.also {
+            volPushHandler = Handler(it.looper)
+        }
         try {
-            registerReceiver(volumeReceiver, IntentFilter(ACTION_VOLUME_CHANGED))
+            val vf = IntentFilter().apply {
+                addAction(ACTION_VOLUME_CHANGED)
+                addAction(ACTION_STREAM_MUTE_CHANGED)
+            }
+            registerReceiver(volumeReceiver, vf)
         } catch (t: Throwable) {
             Log.w(TAG, "register volumeReceiver failed: ${t.message}")
         }
@@ -172,6 +195,10 @@ class StationAudioService : Service() {
         try { overlayManager?.stop() } catch (_: Throwable) {}
         overlayManager = null
         try { unregisterReceiver(volumeReceiver) } catch (_: Throwable) {}
+        try { volPushHandler?.removeCallbacks(pendingVolPush) } catch (_: Throwable) {}
+        try { volPushThread?.quitSafely() } catch (_: Throwable) {}
+        volPushHandler = null
+        volPushThread = null
         try { udpSocket?.close() } catch (_: Throwable) {}
         try { specUdpSocket?.close() } catch (_: Throwable) {}
         specUdpSocket = null
@@ -352,9 +379,7 @@ class StationAudioService : Service() {
                     for (i in 0 until steps) {
                         audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, flags)
                     }
-                    thread(isDaemon = true) {
-                        pushVolumeStateToDaemon(showOsd = false)
-                    }
+                    lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                 }
                 "volume_set" -> {
                     val pct = obj.optInt("percent", 50).coerceIn(0, 100)
@@ -364,9 +389,7 @@ class StationAudioService : Service() {
                     val idx = ((pct / 100.0) * maxV).roundToInt().coerceIn(0, maxV)
                     val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx, flags)
-                    thread(isDaemon = true) {
-                        pushVolumeStateToDaemon(showOsd = false)
-                    }
+                    lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                 }
                 "launch_music" -> {
                     openYandexMusicActivity(obj.optString("tab", ""))
@@ -494,30 +517,40 @@ class StationAudioService : Service() {
     }
 
     private fun pushVolumeStateToDaemon(showOsd: Boolean): Boolean {
-        return try {
-            val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            val maxV = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
-            val pct = ((cur * 100.0) / maxV).roundToInt().coerceIn(0, 100)
-            val payload = JSONObject()
-                .put("percent", pct)
-                .put("max", maxV)
-                .put("showOsd", showOsd)
-                .toString()
-                .toByteArray(Charsets.UTF_8)
-            val url = URL("http://127.0.0.1:8080/api/audio/volume_state")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                connectTimeout = 500
-                readTimeout = 500
-                setRequestProperty("Content-Type", "application/json")
+        synchronized(volPushLock) {
+            return try {
+                val t0 = lastRemoteVolCmdMs
+                if ((SystemClock.elapsedRealtime() - t0) < 900L) return true
+                val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val maxV = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
+                val muted = audioManager.isStreamMute(AudioManager.STREAM_MUSIC)
+                if (lastRemoteVolCmdMs != t0 || (SystemClock.elapsedRealtime() - t0) < 900L) return true
+                val pct = if (muted || cur <= 0) 0 else ((cur * 100.0) / maxV).roundToInt().coerceIn(1, 100)
+                val payload = JSONObject()
+                    .put("percent", pct)
+                    .put("max", maxV)
+                    .put("showOsd", showOsd)
+                    .toString()
+                    .toByteArray(Charsets.UTF_8)
+                val url = URL("http://127.0.0.1:8080/api/audio/volume_state")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 500
+                    readTimeout = 500
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                if (lastRemoteVolCmdMs != t0 || (SystemClock.elapsedRealtime() - t0) < 900L) {
+                    conn.disconnect()
+                    return true
+                }
+                conn.outputStream.use { it.write(payload) }
+                val code = conn.responseCode
+                conn.disconnect()
+                code == 200
+            } catch (_: Throwable) {
+                false
             }
-            conn.outputStream.use { it.write(payload) }
-            val code = conn.responseCode
-            conn.disconnect()
-            code == 200
-        } catch (_: Throwable) {
-            false
         }
     }
 

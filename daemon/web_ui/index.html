@@ -359,19 +359,20 @@
             </div>
 
             <div class="form-row">
-              <label>Громкость Woofer (НЧ, SY6045S 2-002b) <span id="lblWooferVol">169</span></label>
-              <input type="range" id="wooferVol" min="0" max="255" value="169" />
+              <label>Баланс Woofer (НЧ, SY6045S 2-002b) <span id="lblWooferVol">+0.0 дБ · рег. 112</span></label>
+              <input type="range" id="wooferVol" min="-40" max="40" step="1" value="0" />
             </div>
 
             <div class="form-row">
-              <label>Громкость Tweeters (ВЧ/СЧ, SY6045S 2-002a) <span id="lblTweetersVol">169</span></label>
-              <input type="range" id="tweetersVol" min="0" max="255" value="169" />
+              <label>Баланс Tweeters (ВЧ/СЧ, SY6045S 2-002a) <span id="lblTweetersVol">+0.0 дБ · рег. 112</span></label>
+              <input type="range" id="tweetersVol" min="-40" max="40" step="1" value="0" />
             </div>
 
             <div class="form-row">
-              <label>ЦАП Наушники / Линейный 3.5мм (ES8156) <span id="lblHpVol">180</span></label>
-              <input type="range" id="hpVol" min="0" max="255" value="180" />
+              <label>Баланс Наушники / 3.5мм (ES8156) <span id="lblHpVol">+0.0 дБ · рег. 60</span></label>
+              <input type="range" id="hpVol" min="-40" max="40" step="1" value="0" />
             </div>
+            <p class="hint">Динамическая кривая задаёт тихий старт на 1% (−71.5 дБ / рег. 112 на динамиках, рег. 60 на наушниках) и плавно нарастает до 100% (рег. 255 / 193); ползунки смещают баланс канала от −20 до +20 дБ (шаг 0.5 дБ).</p>
 
             <div class="grid-2-tight">
               <div class="form-row toggle-row">
@@ -393,7 +394,8 @@
             </div>
 
             <div class="btn-row">
-              <button class="btn btn-sm" id="btnReloadAmpEq">Восстановить заводской кроссовер SY6045S</button>
+              <button class="btn btn-sm" id="btnResetAudioTrim" type="button">Сбросить баланс (0 дБ)</button>
+              <button class="btn btn-sm" id="btnReloadAmpEq" type="button">Восстановить заводской кроссовер SY6045S</button>
             </div>
           </div>
 
@@ -709,7 +711,7 @@
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки (GitHub OTA)</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.2.0</span>
+                <span class="badge ok" id="otaVersionBadge">v1.2.1</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -762,7 +764,7 @@
           <div class="sub" id="wizSubtitle">Автономный сервер на станции · Изменения сразу синхронизируются с ТВ</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.2.0</span>
+          <span class="badge ok" id="wizFwBadge">v1.2.1</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>

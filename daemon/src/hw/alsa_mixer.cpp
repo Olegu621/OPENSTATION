@@ -205,7 +205,7 @@ bool AlsaMixer::set_enum(const std::string& name, const std::string& choice) {
     return set_enum_idx(name, target);
 }
 
-bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged) {
+bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bool muted) {
     bool spk_on = true;
     bool hp_on = false;
     if (route == "speakers") {
@@ -229,11 +229,11 @@ bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged) {
     // STBY Switch On = standby/muted, Off = active
     set_bool("Woofer STBY Switch", !spk_on);
     set_bool("Tweeters STBY Switch", !spk_on);
-    set_bool("Woofer Master Playback Switch", spk_on);
-    set_bool("Tweeters Master Playback Switch", spk_on);
-    set_bool("Headphone Headphone Switch", hp_on);
-    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d -> spk=%d hp=%d)",
-         route.c_str(), hp_plugged ? 1 : 0, spk_on ? 1 : 0, hp_on ? 1 : 0);
+    set_bool("Woofer Master Playback Switch", spk_on && !muted);
+    set_bool("Tweeters Master Playback Switch", spk_on && !muted);
+    set_bool("Headphone Headphone Switch", hp_on && !muted);
+    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d)",
+         route.c_str(), hp_plugged ? 1 : 0, muted ? 1 : 0, spk_on ? 1 : 0, hp_on ? 1 : 0);
     return true;
 }
 
@@ -254,6 +254,8 @@ json::Value AlsaMixer::get_status_json() {
     if (get_int("Woofer Master Playback Volume", v)) obj["wooferVolume"] = Value::make_int(v);
     if (get_int("Tweeters Master Playback Volume", v)) obj["tweetersVolume"] = Value::make_int(v);
     if (get_int("Headphone DAC Playback Volume", v)) obj["headphoneVolume"] = Value::make_int(v);
+    if (get_bool("Woofer Master Playback Switch", b)) obj["wooferSwitch"] = Value::make_bool(b);
+    if (get_bool("Tweeters Master Playback Switch", b)) obj["tweetersSwitch"] = Value::make_bool(b);
     if (get_bool("Woofer STBY Switch", b)) obj["wooferStandby"] = Value::make_bool(b);
     if (get_bool("Tweeters STBY Switch", b)) obj["tweetersStandby"] = Value::make_bool(b);
     if (get_bool("Woofer EQ Switch", b)) obj["wooferEq"] = Value::make_bool(b);

@@ -8,6 +8,8 @@
   let nextAudioTime = 0;
   let saveTimer = null;
   let volTimer = null;
+  let ampVolTimer = null;
+  let ampVolPendingUntil = 0;
   let toastTimer = null;
   let lastHistSig = "";
   let lastAlsaSig = "";
@@ -113,9 +115,6 @@
       },
       audio: {
         outputRoute: document.querySelector("#audioRoutes .seg.active")?.dataset.route || "auto",
-        wooferVolume: parseInt($("wooferVol").value, 10),
-        tweetersVolume: parseInt($("tweetersVol").value, 10),
-        headphoneVolume: parseInt($("hpVol").value, 10),
         wooferEq: $("wooferEq").checked,
         wooferDrc: $("wooferDrc").checked,
         tweetersEq: $("tweetersEq").checked,
@@ -319,7 +318,7 @@
 
   function applyOtaState(ota, fwVer) {
     ota = ota || {};
-    const instVer = ota.installedVersion || fwVer || "1.2.0";
+    const instVer = ota.installedVersion || fwVer || "1.2.1";
     if ($("otaVersionBadge")) {
       $("otaVersionBadge").textContent = `v${instVer}`;
     }
@@ -421,6 +420,14 @@
     }
   }
 
+  function formatTrimLabel(trimSteps, regVal) {
+    const t = Number.isFinite(trimSteps) ? trimSteps : 0;
+    const db = (t * 0.5).toFixed(1);
+    const sign = t >= 0 ? "+" : "";
+    const regStr = typeof regVal === "number" ? ` · рег. ${regVal}` : "";
+    return `${sign}${db} дБ${regStr}`;
+  }
+
   function applyTelemetry(d, populateInputs) {
     if (!d) return;
     state = d;
@@ -495,7 +502,7 @@
     applyOtaState(d.ota || {}, d.firmwareVersion);
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
       otaPendingRestart = false;
-      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.2.0") + " активна!");
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.2.1") + " активна!");
     }
     updateAliceLiveBox(ast.liveUserText || "", ast.liveModelText || "");
     if (Array.isArray(ast.history)) {
@@ -535,12 +542,15 @@
       document.querySelectorAll("#audioRoutes .seg").forEach((b) => {
         b.classList.toggle("active", b.dataset.route === cfg.audio?.outputRoute);
       });
-      $("wooferVol").value = cfg.audio?.wooferVolume ?? 169;
-      $("lblWooferVol").textContent = $("wooferVol").value;
-      $("tweetersVol").value = cfg.audio?.tweetersVolume ?? 169;
-      $("lblTweetersVol").textContent = $("tweetersVol").value;
-      $("hpVol").value = cfg.audio?.headphoneVolume ?? 180;
-      $("lblHpVol").textContent = $("hpVol").value;
+      const wTrim = cfg.audio?.wooferTrim ?? 0;
+      const tTrim = cfg.audio?.tweetersTrim ?? 0;
+      const hTrim = cfg.audio?.headphoneTrim ?? 0;
+      $("wooferVol").value = wTrim;
+      $("lblWooferVol").textContent = formatTrimLabel(wTrim, mixer.wooferVolume ?? cfg.audio?.wooferVolume);
+      $("tweetersVol").value = tTrim;
+      $("lblTweetersVol").textContent = formatTrimLabel(tTrim, mixer.tweetersVolume ?? cfg.audio?.tweetersVolume);
+      $("hpVol").value = hTrim;
+      $("lblHpVol").textContent = formatTrimLabel(hTrim, mixer.headphoneVolume ?? cfg.audio?.headphoneVolume);
       $("wooferEq").checked = !!cfg.audio?.wooferEq;
       $("wooferDrc").checked = !!cfg.audio?.wooferDrc;
       $("tweetersEq").checked = !!cfg.audio?.tweetersEq;
@@ -620,6 +630,24 @@
       if (cfg.audio?.captureMode && document.activeElement !== $("captureMode")) {
         $("captureMode").value = cfg.audio.captureMode;
       }
+      const curWoo = mixer.wooferVolume ?? cfg.audio?.wooferVolume;
+      const wTrim = cfg.audio?.wooferTrim ?? 0;
+      if (Date.now() > ampVolPendingUntil && document.activeElement !== $("wooferVol")) {
+        $("wooferVol").value = wTrim;
+        $("lblWooferVol").textContent = formatTrimLabel(wTrim, curWoo);
+      }
+      const curTwe = mixer.tweetersVolume ?? cfg.audio?.tweetersVolume;
+      const tTrim = cfg.audio?.tweetersTrim ?? 0;
+      if (Date.now() > ampVolPendingUntil && document.activeElement !== $("tweetersVol")) {
+        $("tweetersVol").value = tTrim;
+        $("lblTweetersVol").textContent = formatTrimLabel(tTrim, curTwe);
+      }
+      const curHp = mixer.headphoneVolume ?? cfg.audio?.headphoneVolume;
+      const hTrim = cfg.audio?.headphoneTrim ?? 0;
+      if (Date.now() > ampVolPendingUntil && document.activeElement !== $("hpVol")) {
+        $("hpVol").value = hTrim;
+        $("lblHpVol").textContent = formatTrimLabel(hTrim, curHp);
+      }
     }
   }
 
@@ -643,12 +671,42 @@
   const bindIds = [
     ["ringBrightness", "lblBrightness"], ["ringMinAuto", "lblMinAuto"], ["ringMaxAuto", "lblMaxAuto"],
     ["ringSpeed", "lblSpeed"], ["ringOffset", "lblOffset"], ["scrBri", "lblScrBri"], ["scrSpeed", "lblScrSpeed"],
-    ["wooferVol", "lblWooferVol"], ["tweetersVol", "lblTweetersVol"], ["hpVol", "lblHpVol"], ["pdmGain", "lblPdmGain"]
+    ["pdmGain", "lblPdmGain"]
   ];
   bindIds.forEach(([id, lbl]) => {
     $(id).addEventListener("input", () => {
       $(lbl).textContent = $(id).value;
       scheduleConfigPush();
+    });
+  });
+
+  let ampVolSeq = 0;
+  function pushAmpVolumePatch(field, value) {
+    const seq = ++ampVolSeq;
+    ampVolPendingUntil = Date.now() + 800;
+    clearTimeout(ampVolTimer);
+    ampVolTimer = setTimeout(async () => {
+      ampVolTimer = null;
+      try {
+        const next = await api("/api/config", "POST", { audio: { [field]: value } });
+        if (seq === ampVolSeq) ampVolPendingUntil = 0;
+        applyTelemetry(next, false);
+      } catch (e) {
+        if (seq === ampVolSeq) ampVolPendingUntil = 0;
+        showToast("Ошибка усиления: " + e.message, true);
+      }
+    }, 90);
+  }
+  [
+    ["wooferVol", "lblWooferVol", "wooferTrim", "wooferVolume"],
+    ["tweetersVol", "lblTweetersVol", "tweetersTrim", "tweetersVolume"],
+    ["hpVol", "lblHpVol", "headphoneTrim", "headphoneVolume"]
+  ].forEach(([id, lbl, field, mixerKey]) => {
+    $(id).addEventListener("input", () => {
+      const val = parseInt($(id).value, 10) || 0;
+      const curReg = state?.audio?.mixer?.[mixerKey] ?? state?.config?.audio?.[mixerKey];
+      $(lbl).textContent = formatTrimLabel(val, curReg);
+      pushAmpVolumePatch(field, val);
     });
   });
 
@@ -798,6 +856,21 @@
   });
   $("btnCalLed0").addEventListener("click", () => api("/api/led/calibrate", "POST", { mode: 0 }).then(() => showToast("LED #0 выделен (4.5 сек)")).catch(() => {}));
   $("btnCalRgb").addEventListener("click", () => api("/api/led/calibrate", "POST", { mode: -2 }).then(() => showToast("Тест RGB каналов (4.5 сек)")).catch(() => {}));
+  $("btnResetAudioTrim").addEventListener("click", async () => {
+    try {
+      clearTimeout(ampVolTimer);
+      ampVolTimer = null;
+      ampVolSeq++;
+      ampVolPendingUntil = 0;
+      const next = await api("/api/config", "POST", {
+        audio: { wooferTrim: 0, tweetersTrim: 0, headphoneTrim: 0 }
+      });
+      applyTelemetry(next, false);
+      showToast("Баланс каналов сброшен (0.0 дБ)");
+    } catch (e) {
+      showToast("Ошибка сброса баланса: " + e.message, true);
+    }
+  });
   $("btnReloadAmpEq").addEventListener("click", () => api("/api/audio/reload_eq", "POST", {}).then((r) => showToast(r.ok ? "Кроссовер SY6045S перезагружен" : "Не удалось перезагрузить sysfs", !r.ok)).catch(() => {}));
   $("btnTone440").addEventListener("click", () => api("/api/audio/test_tone", "POST", { freq: 440, duration: 700, sweep: false }).then(() => showToast("Тон 440 Гц")).catch(() => {}));
   $("btnToneSweep").addEventListener("click", () => api("/api/audio/test_tone", "POST", { sweep: true, duration: 2200 }).then(() => showToast("Свип 90–4500 Гц")).catch(() => {}));
@@ -942,7 +1015,7 @@
             applyOtaState(msg.data, state?.firmwareVersion);
             if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
               otaPendingRestart = false;
-              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.2.0"));
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.2.1"));
             }
           } else if (msg.type === "assistant_event") {
             const fakeAst = Object.assign({}, state?.assistant || {}, {
@@ -1057,10 +1130,10 @@
     const m = d.music || {};
 
     if ($("wizFwBadge")) {
-      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.2.0"} · На станции`;
+      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.2.1"} · На станции`;
     }
     if ($("sysAutoInfo")) {
-      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.2.0"} · Сервер работает прямо на станции (${d.ip || "local"}:8080, ${d.hostname || "station-max"}.local). ПК после прошивки не требуется.`;
+      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.2.1"} · Сервер работает прямо на станции (${d.ip || "local"}:8080, ${d.hostname || "station-max"}.local). ПК после прошивки не требуется.`;
     }
     if ($("wizDiagIp")) $("wizDiagIp").textContent = `${d.ip || "127.0.0.1"}:${cfg.webPort || 8080}`;
     if ($("wizDiagMdns")) $("wizDiagMdns").textContent = `${d.hostname || "station-max"}.local`;
@@ -1313,7 +1386,7 @@
     });
   }
   async function triggerOtaInstall(force) {
-    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.2.0";
+    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.2.1";
     const msg = force
       ? `Скачать и переустановить OpenStation Max v${ver} с GitHub? Проверяется SHA-256, настройки сохранятся.`
       : `Установить обновление OpenStation Max v${ver} с GitHub? Проверяется SHA-256, настройки сохранятся.`;

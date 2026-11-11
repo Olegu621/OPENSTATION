@@ -96,7 +96,7 @@ class SetupWizardActivity : Activity() {
     // Cached daemon config state
     private var curIp = "127.0.0.1"
     private var curHostname = "station-max"
-    private var curFwVersion = "1.2.0"
+    private var curFwVersion = "1.2.1"
     private var curTempC = 0.0
     private var curFb5 = false
     private var curDnsMode = ""
@@ -1093,7 +1093,7 @@ class SetupWizardActivity : Activity() {
                     val root = JSONObject(txt)
                     val ip = root.optString("ip", "").ifBlank { localIp }
                     val host = root.optString("hostname", "station-max")
-                    val fw = root.optString("firmwareVersion", "1.2.0")
+                    val fw = root.optString("firmwareVersion", "1.2.1")
                     val dnsMode = root.optString("privateDnsMode", "")
                     val dnsHost = root.optString("privateDnsHost", "")
                     val hw = root.optJSONObject("hardware")

@@ -32,9 +32,12 @@ struct LedScreenConfig {
 
 struct AudioConfig {
     std::string output_route = "auto"; // auto, speakers, headphones, both, hdmi
-    int woofer_volume = 169;           // 0..255 SY6045S 2-002b
-    int tweeters_volume = 169;         // 0..255 SY6045S 2-002a
-    int headphone_volume = 180;        // 0..255 ES8156
+    int woofer_volume = 169;           // live mirror of current SY6045S 2-002b register (0..255)
+    int tweeters_volume = 169;         // live mirror of current SY6045S 2-002a register (0..255)
+    int headphone_volume = 180;        // live mirror of current ES8156 DAC register (0..255)
+    int woofer_trim = 0;               // -40..+40 half-dB relative balance offset (-20..+20 dB)
+    int tweeters_trim = 0;             // -40..+40 half-dB relative balance offset (-20..+20 dB)
+    int headphone_trim = 0;            // -40..+40 half-dB relative balance offset (-20..+20 dB)
     bool woofer_eq = true;
     bool woofer_drc = true;
     bool tweeters_eq = true;

@@ -705,6 +705,25 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
     }
 }
 
+namespace {
+
+// Crisp 4x10 pixel numerals for the 25x16 front RGB matrix ("HH:MM" -> 23x10 px centered).
+// Each digit stores 4 columns; bit y (0..9, LSB = top row) lights pixel (x + col, y_top + y).
+constexpr uint16_t kFontDigits4x10[10][4] = {
+    {0x1FE, 0x201, 0x201, 0x1FE}, // 0
+    {0x204, 0x202, 0x3FF, 0x200}, // 1
+    {0x3C2, 0x221, 0x211, 0x20E}, // 2
+    {0x102, 0x211, 0x211, 0x1EE}, // 3
+    {0x03F, 0x020, 0x020, 0x3FF}, // 4
+    {0x11F, 0x211, 0x211, 0x1E1}, // 5
+    {0x1FE, 0x211, 0x211, 0x1E2}, // 6
+    {0x001, 0x3C1, 0x031, 0x00F}, // 7
+    {0x1EE, 0x211, 0x211, 0x1EE}, // 8
+    {0x11E, 0x221, 0x221, 0x1FE}, // 9
+};
+
+} // namespace
+
 void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     if (fb5_.fd < 0) return;
 
@@ -884,15 +903,48 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             }
         }
     } else if (cfg.mode == "clock") {
+        tzset();
         std::time_t tt = std::time(nullptr);
         std::tm tm_now{};
         localtime_r(&tt, &tm_now);
         bool colon = (static_cast<int>(t_sec * 2.0) % 2) == 0;
-        char tbuf[16];
-        snprintf(tbuf, sizeof(tbuf), colon ? "%02d:%02d" : "%02d %02d", tm_now.tm_hour, tm_now.tm_min);
-        int txt_w = 5 * 6 - 1;
-        int sx = static_cast<int>(W) > txt_w ? static_cast<int>((W - txt_w) / 2) : 0;
-        draw_text_col(tbuf, sx, top_y, col);
+        if (W >= 23 && H >= 12) {
+            int sx = static_cast<int>((W - 23) / 2);
+            int top_y_big = static_cast<int>((H - 10) / 2);
+            auto draw_digit_4x10 = [&](int digit, int dx) {
+                if (digit < 0 || digit > 9) return;
+                for (int cx = 0; cx < 4; ++cx) {
+                    uint16_t bits = kFontDigits4x10[digit][cx];
+                    for (int cy = 0; cy < 10; ++cy) {
+                        if (bits & (1u << cy)) {
+                            set_pixel(fb5_,
+                                      static_cast<uint32_t>(dx + cx),
+                                      static_cast<uint32_t>(top_y_big + cy),
+                                      col.r, col.g, col.b);
+                        }
+                    }
+                }
+            };
+            int h = std::clamp(tm_now.tm_hour, 0, 23);
+            int m = std::clamp(tm_now.tm_min, 0, 59);
+            draw_digit_4x10(h / 10, sx);
+            draw_digit_4x10(h % 10, sx + 5);
+            if (colon) {
+                uint32_t cx = static_cast<uint32_t>(sx + 11);
+                set_pixel(fb5_, cx, static_cast<uint32_t>(top_y_big + 2), col.r, col.g, col.b);
+                set_pixel(fb5_, cx, static_cast<uint32_t>(top_y_big + 3), col.r, col.g, col.b);
+                set_pixel(fb5_, cx, static_cast<uint32_t>(top_y_big + 6), col.r, col.g, col.b);
+                set_pixel(fb5_, cx, static_cast<uint32_t>(top_y_big + 7), col.r, col.g, col.b);
+            }
+            draw_digit_4x10(m / 10, sx + 14);
+            draw_digit_4x10(m % 10, sx + 19);
+        } else {
+            char tbuf[16];
+            snprintf(tbuf, sizeof(tbuf), colon ? "%02d:%02d" : "%02d %02d", tm_now.tm_hour, tm_now.tm_min);
+            int txt_w = 5 * 6 - 1;
+            int sx = static_cast<int>(W) > txt_w ? static_cast<int>((W - txt_w) / 2) : 0;
+            draw_text_col(tbuf, sx, top_y, col);
+        }
     } else if (cfg.mode == "text") {
         auto cps = utf8_to_codepoints(cfg.text);
         int txt_w = static_cast<int>(cps.size()) * 6;
@@ -990,7 +1042,7 @@ void FramebufferHw::worker_loop() {
             bool scr_static = (!scr_has || scfg.mode == "off" || scfg.mode == "clock");
             int sleep_ms = 33; // ~30 FPS for animated modes / transient flashes
             if (!transient_active && ring_static && scr_static) {
-                sleep_ms = (scr_has && scfg.mode == "clock") ? 250 : 500;
+                sleep_ms = (scr_has && scfg.mode == "clock") ? 200 : 500;
             }
             uint64_t seen_seq = wake_seq_;
             cv_.wait_for(lk, std::chrono::milliseconds(sleep_ms), [&] {

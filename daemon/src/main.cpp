@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <malloc.h>
 #include <mutex>
@@ -34,6 +35,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/statvfs.h>
+#include <sys/system_properties.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
@@ -42,7 +44,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.2.0";
+constexpr const char* kFirmwareVersion = "1.2.1";
 
 std::atomic<bool> g_stop{false};
 
@@ -503,6 +505,98 @@ ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, 
     return sr;
 }
 
+bool ensure_hardvol_passthrough_active(openstation::AlsaMixer& mixer) {
+    long woo_chk = 0;
+    if (!mixer.get_int("Woofer Master Playback Volume", woo_chk)) {
+        return false; // Not an SY6045S Station Max board
+    }
+
+    const char* kXmlPath = "/vendor/etc/hardvol_sy.xml";
+    std::string cur;
+    if (FILE* f = fopen(kXmlPath, "rb")) {
+        char buf[1024];
+        size_t n = 0;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+            cur.append(buf, n);
+            if (cur.size() >= 64 * 1024) break;
+        }
+        fclose(f);
+    } else {
+        return false;
+    }
+
+    if (cur.find("OPENSTATION_PASSTHROUGH") != std::string::npos) {
+        return false;
+    }
+
+    LOGI("Audio", "Migrating %s to OPENSTATION_PASSTHROUGH so audio-hal never overwrites SY6045S curve...", kXmlPath);
+    const std::string cmd = R"SH(
+mkdir -p /data/local/openstation/backup
+if [ -f /vendor/etc/hardvol_sy.xml ] && ! grep -q "OPENSTATION_" /vendor/etc/hardvol_sy.xml 2>/dev/null; then
+    if [ ! -f /data/local/openstation/backup/hardvol_sy.xml ] || grep -q "OPENSTATION_" /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null; then
+        cp -f /vendor/etc/hardvol_sy.xml /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
+        chmod 644 /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
+    fi
+fi
+cat <<'EOF' > /data/local/openstation/hardvol_passthrough.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OPENSTATION_PASSTHROUGH: OpenStation Max daemon drives SY6045S/ES8156 curve + trims -->
+<hardvol>
+</hardvol>
+EOF
+chmod 644 /data/local/openstation/hardvol_passthrough.xml 2>/dev/null || true
+
+applied=0
+if mount -o rw,remount /vendor 2>/dev/null || mount -o remount,rw /vendor 2>/dev/null; then
+    if cp -f /data/local/openstation/hardvol_passthrough.xml /vendor/etc/hardvol_sy.xml.tmp 2>/dev/null; then
+        chown 0:0 /vendor/etc/hardvol_sy.xml.tmp 2>/dev/null || true
+        chmod 644 /vendor/etc/hardvol_sy.xml.tmp 2>/dev/null || true
+        mv -f /vendor/etc/hardvol_sy.xml.tmp /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+        chcon u:object_r:vendor_configs_file:s0 /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+        restorecon /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+        sync
+    fi
+    mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor 2>/dev/null || true
+    grep -q "OPENSTATION_PASSTHROUGH" /vendor/etc/hardvol_sy.xml 2>/dev/null && applied=1
+fi
+
+if [ "$applied" -eq 0 ]; then
+    mount -o bind /data/local/openstation/hardvol_passthrough.xml /vendor/etc/hardvol_sy.xml 2>/dev/null || true
+    grep -q "OPENSTATION_PASSTHROUGH" /vendor/etc/hardvol_sy.xml 2>/dev/null && applied=2
+fi
+
+if [ "$applied" -ne 0 ]; then
+    h_st=$(getprop init.svc.vendor.audio-hal-2-0 2>/dev/null | tr -d '\r\n')
+    a_st=$(getprop init.svc.audioserver 2>/dev/null | tr -d '\r\n')
+    if [ -n "$h_st" ] || [ -n "$a_st" ]; then
+        stop vendor.audio-hal-2-0 2>/dev/null || true
+        stop audioserver 2>/dev/null || true
+        sleep 1
+        start vendor.audio-hal-2-0 2>/dev/null || true
+        start audioserver 2>/dev/null || true
+        i=0
+        while [ $i -lt 15 ]; do
+            h=$(getprop init.svc.vendor.audio-hal-2-0 2>/dev/null | tr -d '\r\n')
+            a=$(getprop init.svc.audioserver 2>/dev/null | tr -d '\r\n')
+            [ "$h" = "running" ] && [ "$a" = "running" ] && break
+            i=$((i+1))
+            sleep 1
+        done
+    fi
+    echo "PASSTHROUGH_OK:$applied"
+else
+    echo "PASSTHROUGH_FAIL"
+fi
+)SH";
+    ShellResult sr = run_shell_with_timeout(cmd, 25, 2048);
+    if (sr.output.find("PASSTHROUGH_OK:") != std::string::npos) {
+        LOGI("Audio", "hardvol passthrough active (%s)", sr.output.c_str());
+        return true;
+    }
+    LOGW("Audio", "hardvol passthrough migration failed (rc=%d, out=%s)", sr.exit_code, sr.output.c_str());
+    return false;
+}
+
 std::string trim_ws_copy(const std::string& s) {
     size_t b = 0;
     while (b < s.size() && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
@@ -647,6 +741,143 @@ openstation::json::Value probe_gemini_live_json(const std::string& api_key_in,
     return res;
 }
 
+int interpolate_piecewise(int pct, const int pts[][2], size_t n) {
+    if (pct <= pts[0][0]) return pts[0][1];
+    if (pct >= pts[n - 1][0]) return pts[n - 1][1];
+    for (size_t i = 0; i + 1 < n; ++i) {
+        int x0 = pts[i][0], y0 = pts[i][1];
+        int x1 = pts[i + 1][0], y1 = pts[i + 1][1];
+        if (pct >= x0 && pct <= x1) {
+            int dx = x1 - x0;
+            if (dx <= 0) return y1;
+            double t = static_cast<double>(pct - x0) / static_cast<double>(dx);
+            return static_cast<int>(std::lround(y0 + t * (y1 - y0)));
+        }
+    }
+    return pts[n - 1][1];
+}
+
+int curve_base_speaker_reg(int pct) {
+    static constexpr int kCurve[][2] = {
+        {0, 3}, {1, 112}, {2, 118}, {5, 131}, {10, 146},
+        {20, 166}, {35, 188}, {50, 208}, {70, 229}, {85, 243}, {100, 255}
+    };
+    return interpolate_piecewise(std::clamp(pct, 0, 100), kCurve, sizeof(kCurve) / sizeof(kCurve[0]));
+}
+
+int curve_base_headphone_reg(int pct) {
+    static constexpr int kCurve[][2] = {
+        {0, 0}, {1, 60}, {5, 78}, {10, 94}, {20, 112},
+        {35, 132}, {50, 150}, {70, 170}, {85, 182}, {100, 193}
+    };
+    return interpolate_piecewise(std::clamp(pct, 0, 100), kCurve, sizeof(kCurve) / sizeof(kCurve[0]));
+}
+
+void compute_amp_curve(int pct, const openstation::AudioConfig& acfg,
+                       int& out_woo, int& out_twe, int& out_hp) {
+    int p = std::clamp(pct, 0, 100);
+    if (p <= 0) {
+        out_woo = 3;
+        out_twe = 3;
+        out_hp = 0;
+        return;
+    }
+    int base_spk = curve_base_speaker_reg(p);
+    int base_hp = curve_base_headphone_reg(p);
+    out_woo = std::clamp(base_spk + std::clamp(acfg.woofer_trim, -40, 40), 3, 255);
+    out_twe = std::clamp(base_spk + std::clamp(acfg.tweeters_trim, -40, 40), 3, 255);
+    out_hp = std::clamp(base_hp + std::clamp(acfg.headphone_trim, -40, 40), 1, 255);
+}
+
+bool read_android_setting_from_xml(const std::string& xml, const std::string& key, int& out_val) {
+    if (xml.empty()) return false;
+    std::string pat1 = "name=\"" + key + "\"";
+    std::string pat2 = "name='" + key + "'";
+    size_t pos = xml.find(pat1);
+    if (pos == std::string::npos) pos = xml.find(pat2);
+    if (pos == std::string::npos) return false;
+    size_t tag_start = xml.rfind('<', pos);
+    size_t tag_end = xml.find('>', pos);
+    if (tag_start == std::string::npos || tag_end == std::string::npos || tag_end <= tag_start) return false;
+    std::string tag = xml.substr(tag_start, tag_end - tag_start + 1);
+    size_t vp = tag.find("value=\"");
+    char quote = '"';
+    if (vp == std::string::npos) {
+        vp = tag.find("value='");
+        quote = '\'';
+    }
+    if (vp == std::string::npos) return false;
+    vp += 7;
+    size_t ve = tag.find(quote, vp);
+    if (ve == std::string::npos || ve == vp) return false;
+    std::string raw = tag.substr(vp, ve - vp);
+    char* endp = nullptr;
+    long v = std::strtol(raw.c_str(), &endp, 10);
+    if (!endp || *endp != '\0') return false;
+    out_val = static_cast<int>(v);
+    return true;
+}
+
+void probe_android_stream_music(const std::string& route, bool hp_plugged, int& out_pct, int& out_max) {
+    int max_steps = 15;
+    char prop_steps[PROP_VALUE_MAX] = {};
+    if (__system_property_get("ro.config.media_vol_steps", prop_steps) > 0) {
+        int v = std::atoi(prop_steps);
+        if (v >= 1 && v <= 200) max_steps = v;
+    }
+    out_max = max_steps;
+    out_pct = 10;
+
+    std::vector<const char*> keys;
+    if (route == "headphones" || (route == "auto" && hp_plugged)) {
+        keys = {"volume_music_headset", "volume_music_headphone", "volume_music_speaker", "volume_music"};
+    } else {
+        keys = {"volume_music_speaker", "volume_music", "volume_music_headset"};
+    }
+
+    char boot_prop[PROP_VALUE_MAX] = {};
+    bool boot_done = (__system_property_get("sys.boot_completed", boot_prop) > 0 && strcmp(boot_prop, "1") == 0);
+    if (boot_done) {
+        for (const char* k : keys) {
+            std::string cmd = std::string("/system/bin/settings get system ") + k + " 2>/dev/null";
+            ShellResult sr = run_shell_with_timeout(cmd, 2, 128);
+            std::string val = trim_ws_copy(sr.output);
+            if (!sr.timed_out && sr.exit_code == 0 && !val.empty() && val != "null") {
+                char* endp = nullptr;
+                long cur = std::strtol(val.c_str(), &endp, 10);
+                if (endp && *endp == '\0' && cur >= 0) {
+                    out_pct = (cur <= 0)
+                                  ? 0
+                                  : std::clamp(static_cast<int>(std::lround(cur * 100.0 / out_max)), 1, 100);
+                    return;
+                }
+            }
+        }
+    }
+
+    std::string xml;
+    if (FILE* f = fopen("/data/system/users/0/settings_system.xml", "rb")) {
+        char buf[4096];
+        size_t n = 0;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+            xml.append(buf, n);
+            if (xml.size() >= 256 * 1024) break;
+        }
+        fclose(f);
+    }
+    if (!xml.empty()) {
+        for (const char* k : keys) {
+            int cur = -1;
+            if (read_android_setting_from_xml(xml, k, cur) && cur >= 0) {
+                out_pct = (cur <= 0)
+                              ? 0
+                              : std::clamp(static_cast<int>(std::lround(cur * 100.0 / out_max)), 1, 100);
+                return;
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -745,13 +976,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    tzset();
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
 
     using namespace openstation;
     Logger::instance().init("/data/local/openstation/openstationd.log");
-    LOGI("Main", "=== OpenStation Max Daemon starting ===");
+    LOGI("Main", "=== OpenStation Max Daemon v%s starting ===", kFirmwareVersion);
 
     DaemonConfig cfg;
     cfg.load();
@@ -785,9 +1017,15 @@ int main(int argc, char** argv) {
         return music_state.to_json();
     };
 
-    // System Android STREAM_MUSIC volume percentage (synced with StationAudioService; fallback estimate)
-    std::atomic<int> volume_osd_pct{50};
-    std::atomic<int> android_vol_max{15};
+    // System Android STREAM_MUSIC volume percentage (synced with Android settings/StationAudioService)
+    std::atomic<int> volume_osd_pct{10};
+    std::atomic<int> android_vol_max{100};
+    std::atomic<int64_t> last_daemon_vol_cmd_ms{0};
+    auto steady_ms_now = []() -> int64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
     auto start_tp = std::chrono::steady_clock::now();
 
     std::mutex dns_mu;
@@ -822,16 +1060,177 @@ int main(int argc, char** argv) {
         if (mixer.init(0)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
+    ensure_hardvol_passthrough_active(mixer);
+    bool hp_init = false;
+    mixer.get_bool("Headphones Jack", hp_init);
+    {
+        int init_pct = 10;
+        int init_max = 100;
+        probe_android_stream_music(cfg.audio.output_route, hp_init, init_pct, init_max);
+        volume_osd_pct.store(init_pct);
+        android_vol_max.store(init_max);
+        LOGI("Audio", "Initial Android volume probe: %d%% (maxSteps=%d, hp=%d)",
+             init_pct, init_max, hp_init ? 1 : 0);
+    }
+
     uinput.init();
     leds.start(cfg.led_ring, cfg.led_screen);
 
-    auto apply_hw_config = [&](const DaemonConfig& c, bool hp_plugged) {
+    std::mutex vol_apply_mu;
+    int last_applied_woo = -1;
+    int last_applied_twe = -1;
+    int last_applied_hp = -1;
+    bool has_last_mute_state = false;
+    bool last_applied_muted = false;
+    std::atomic<bool> first_vol_state_seen{false};
+
+    // Must hold vol_apply_mu; preserves lock order vol_apply_mu -> cfg_mu -> mixer::mu_.
+    auto apply_curve_unlocked = [&](int pct,
+                                    bool force = false,
+                                    bool manage_route_switches = true,
+                                    bool force_route_apply = false,
+                                    int* out_woo = nullptr,
+                                    int* out_twe = nullptr,
+                                    int* out_hp = nullptr) {
+        int p = std::clamp(pct, 0, 100);
+        int woo = 3, twe = 3, hp = 0;
+        std::string route_snap;
+        {
+            std::lock_guard<std::mutex> clk(cfg_mu);
+            compute_amp_curve(p, cfg.audio, woo, twe, hp);
+            cfg.audio.woofer_volume = woo;
+            cfg.audio.tweeters_volume = twe;
+            cfg.audio.headphone_volume = hp;
+            route_snap = cfg.audio.output_route;
+        }
+        bool hp_plugged = inputs.headphone_plugged();
+        bool want_muted = (p <= 0);
+        if (want_muted) {
+            if (force_route_apply) {
+                mixer.apply_output_route(route_snap, hp_plugged, true);
+                last_applied_muted = true;
+                has_last_mute_state = true;
+            } else if (manage_route_switches && (force || !has_last_mute_state || !last_applied_muted)) {
+                mixer.set_bool("Woofer Master Playback Switch", false);
+                mixer.set_bool("Tweeters Master Playback Switch", false);
+                mixer.set_bool("Headphone Headphone Switch", false);
+                last_applied_muted = true;
+                has_last_mute_state = true;
+            } else if (!manage_route_switches) {
+                last_applied_muted = true;
+                has_last_mute_state = true;
+            }
+            if (force || woo != last_applied_woo) {
+                if (mixer.set_int("Woofer Master Playback Volume", woo, -1)) {
+                    last_applied_woo = woo;
+                }
+            }
+            if (force || twe != last_applied_twe) {
+                if (mixer.set_int("Tweeters Master Playback Volume", twe, -1)) {
+                    last_applied_twe = twe;
+                }
+            }
+            if (force || hp != last_applied_hp) {
+                if (mixer.set_int("Headphone DAC Playback Volume", hp, -1)) {
+                    last_applied_hp = hp;
+                }
+            }
+        } else {
+            if (force || woo != last_applied_woo) {
+                if (mixer.set_int("Woofer Master Playback Volume", woo, -1)) {
+                    last_applied_woo = woo;
+                }
+            }
+            if (force || twe != last_applied_twe) {
+                if (mixer.set_int("Tweeters Master Playback Volume", twe, -1)) {
+                    last_applied_twe = twe;
+                }
+            }
+            if (force || hp != last_applied_hp) {
+                if (mixer.set_int("Headphone DAC Playback Volume", hp, -1)) {
+                    last_applied_hp = hp;
+                }
+            }
+            if (force_route_apply || (manage_route_switches && (!has_last_mute_state || last_applied_muted))) {
+                mixer.apply_output_route(route_snap, hp_plugged, false);
+                last_applied_muted = false;
+                has_last_mute_state = true;
+            } else if (!manage_route_switches) {
+                last_applied_muted = false;
+                has_last_mute_state = true;
+            }
+        }
+        if (out_woo) *out_woo = woo;
+        if (out_twe) *out_twe = twe;
+        if (out_hp) *out_hp = hp;
+    };
+
+    auto reapply_current_volume_and_route = [&](bool force_vol = true, bool apply_route_now = true) {
+        std::lock_guard<std::mutex> lk(vol_apply_mu);
+        int cur_pct = volume_osd_pct.load();
+        apply_curve_unlocked(cur_pct, force_vol, apply_route_now, apply_route_now);
+    };
+
+    auto reconcile_unlocked = [&]() {
+        if (last_applied_woo < 0 || last_applied_twe < 0 || last_applied_hp < 0) {
+            return;
+        }
+        int cur_pct = volume_osd_pct.load();
+        int exp_woo = 3, exp_twe = 3, exp_hp = 0;
+        std::string route_snap;
+        {
+            std::lock_guard<std::mutex> clk(cfg_mu);
+            compute_amp_curve(cur_pct, cfg.audio, exp_woo, exp_twe, exp_hp);
+            cfg.audio.woofer_volume = exp_woo;
+            cfg.audio.tweeters_volume = exp_twe;
+            cfg.audio.headphone_volume = exp_hp;
+            route_snap = cfg.audio.output_route;
+        }
+        bool hp_plugged = inputs.headphone_plugged();
+        bool want_muted = (cur_pct <= 0);
+        bool want_spk = !want_muted &&
+                        (route_snap == "speakers" || route_snap == "both" ||
+                         (route_snap == "auto" && !hp_plugged));
+        bool want_hp = !want_muted &&
+                       (route_snap == "headphones" || route_snap == "both" ||
+                        (route_snap == "auto" && hp_plugged));
+        long hw_w = -1, hw_t = -1, hw_h = -1;
+        if (!mixer.get_int("Woofer Master Playback Volume", hw_w) ||
+            !mixer.get_int("Tweeters Master Playback Volume", hw_t) ||
+            !mixer.get_int("Headphone DAC Playback Volume", hw_h)) {
+            return;
+        }
+        bool sw_w = want_spk, sw_t = want_spk, sw_h = want_hp;
+        mixer.get_bool("Woofer Master Playback Switch", sw_w);
+        mixer.get_bool("Tweeters Master Playback Switch", sw_t);
+        mixer.get_bool("Headphone Headphone Switch", sw_h);
+        if (hw_w != exp_woo || hw_t != exp_twe || hw_h != exp_hp ||
+            sw_w != want_spk || sw_t != want_spk || sw_h != want_hp) {
+            LOGW("Audio", "Reconciling external ALSA drift (vol %ld/%ld/%ld -> %d/%d/%d, sw %d/%d/%d -> %d/%d/%d)",
+                 hw_w, hw_t, hw_h, exp_woo, exp_twe, exp_hp,
+                 sw_w ? 1 : 0, sw_t ? 1 : 0, sw_h ? 1 : 0,
+                 want_spk ? 1 : 0, want_spk ? 1 : 0, want_hp ? 1 : 0);
+            mixer.set_int("Woofer Master Playback Volume", exp_woo, -1);
+            mixer.set_int("Tweeters Master Playback Volume", exp_twe, -1);
+            mixer.set_int("Headphone DAC Playback Volume", exp_hp, -1);
+            mixer.apply_output_route(route_snap, hp_plugged, want_muted);
+        }
+        last_applied_woo = exp_woo;
+        last_applied_twe = exp_twe;
+        last_applied_hp = exp_hp;
+        last_applied_muted = want_muted;
+        has_last_mute_state = true;
+    };
+
+    auto reconcile_volume_if_drifted = [&]() {
+        std::lock_guard<std::mutex> lk(vol_apply_mu);
+        reconcile_unlocked();
+    };
+
+    auto apply_hw_config = [&](const DaemonConfig& c, bool /*hp_plugged*/) {
         leds.update_config(c.led_ring, c.led_screen);
         leds.set_mic_muted(c.audio.mic_muted);
 
-        mixer.set_int("Woofer Master Playback Volume", c.audio.woofer_volume, -1);
-        mixer.set_int("Tweeters Master Playback Volume", c.audio.tweeters_volume, -1);
-        mixer.set_int("Headphone DAC Playback Volume", c.audio.headphone_volume, -1);
         mixer.set_bool("Woofer EQ Switch", c.audio.woofer_eq);
         mixer.set_bool("Woofer DRC Switch", c.audio.woofer_drc);
         mixer.set_bool("Tweeters EQ Switch", c.audio.tweeters_eq);
@@ -839,7 +1238,7 @@ int main(int argc, char** argv) {
         mixer.set_int("PDM HCIC shift gain (~ 6dB * value)", c.audio.pdm_gain, 0);
         mixer.set_enum_idx("PDM Filter Mode", static_cast<unsigned int>(c.audio.pdm_filter));
         mixer.set_enum("Loopback Enable", c.audio.loopback_enable ? "Enable" : "Disable");
-        mixer.apply_output_route(c.audio.output_route, hp_plugged);
+        reapply_current_volume_and_route(true, true);
 
         audio.update_config(c.audio);
         audio.set_mic_muted(c.audio.mic_muted);
@@ -857,19 +1256,32 @@ int main(int argc, char** argv) {
         send_udp_json(8086, lcmd.dump(-1));
     };
 
-    auto set_android_volume_pct = [&](int pct, bool show_osd) {
+    auto set_android_volume_pct = [&](int pct,
+                                      bool show_osd,
+                                      int* out_woo = nullptr,
+                                      int* out_twe = nullptr,
+                                      int* out_hp = nullptr) {
         int clamped = std::clamp(pct, 0, 100);
-        int prev = volume_osd_pct.exchange(clamped);
+        int prev = clamped;
+        bool sent_udp = false;
+        {
+            std::lock_guard<std::mutex> lk(vol_apply_mu);
+            last_daemon_vol_cmd_ms.store(steady_ms_now());
+            prev = volume_osd_pct.exchange(clamped);
+            apply_curve_unlocked(clamped, true, true, false, out_woo, out_twe, out_hp);
+            if (is_udp_port_bound(8086)) {
+                json::Value vcmd = json::Value::make_obj();
+                vcmd["cmd"] = json::Value::make_str("volume_set");
+                vcmd["percent"] = json::Value::make_int(clamped);
+                vcmd["showUi"] = json::Value::make_bool(false);
+                sent_udp = send_udp_json(8086, vcmd.dump(-1));
+                last_daemon_vol_cmd_ms.store(steady_ms_now());
+            }
+        }
         if (show_osd) {
             leds.trigger_volume_osd(clamped);
         }
-        if (is_udp_port_bound(8086)) {
-            json::Value vcmd = json::Value::make_obj();
-            vcmd["cmd"] = json::Value::make_str("volume_set");
-            vcmd["percent"] = json::Value::make_int(clamped);
-            vcmd["showUi"] = json::Value::make_bool(false);
-            send_udp_json(8086, vcmd.dump(-1));
-        } else {
+        if (!sent_udp) {
             int max_s = std::max(1, android_vol_max.load());
             int cur_step = (prev * max_s + 50) / 100;
             int tgt_step = (clamped * max_s + 50) / 100;
@@ -877,6 +1289,47 @@ int main(int argc, char** argv) {
             for (int s = 0; s < std::abs(diff); ++s) {
                 uinput.send_key(diff > 0 ? 115 : 114);
             }
+            last_daemon_vol_cmd_ms.store(steady_ms_now());
+        }
+        return clamped;
+    };
+
+    auto step_android_volume_pct = [&](int delta_pct,
+                                       bool show_osd,
+                                       int* out_woo = nullptr,
+                                       int* out_twe = nullptr,
+                                       int* out_hp = nullptr) {
+        int clamped = 0;
+        int prev = 0;
+        bool sent_udp = false;
+        {
+            std::lock_guard<std::mutex> lk(vol_apply_mu);
+            last_daemon_vol_cmd_ms.store(steady_ms_now());
+            prev = volume_osd_pct.load();
+            clamped = std::clamp(prev + delta_pct, 0, 100);
+            volume_osd_pct.store(clamped);
+            apply_curve_unlocked(clamped, true, true, false, out_woo, out_twe, out_hp);
+            if (is_udp_port_bound(8086)) {
+                json::Value vcmd = json::Value::make_obj();
+                vcmd["cmd"] = json::Value::make_str("volume_set");
+                vcmd["percent"] = json::Value::make_int(clamped);
+                vcmd["showUi"] = json::Value::make_bool(false);
+                sent_udp = send_udp_json(8086, vcmd.dump(-1));
+                last_daemon_vol_cmd_ms.store(steady_ms_now());
+            }
+        }
+        if (show_osd) {
+            leds.trigger_volume_osd(clamped);
+        }
+        if (!sent_udp) {
+            int max_s = std::max(1, android_vol_max.load());
+            int cur_step = (prev * max_s + 50) / 100;
+            int tgt_step = (clamped * max_s + 50) / 100;
+            int diff = tgt_step - cur_step;
+            for (int s = 0; s < std::abs(diff); ++s) {
+                uinput.send_key(diff > 0 ? 115 : 114);
+            }
+            last_daemon_vol_cmd_ms.store(steady_ms_now());
         }
         return clamped;
     };
@@ -895,21 +1348,30 @@ int main(int argc, char** argv) {
                 int steps = std::max(1, std::min(5, c.input.rotary_step));
                 int max_steps = std::max(1, android_vol_max.load());
                 int delta_pct = std::max(1, (100 * steps + max_steps / 2) / max_steps);
-                int v = volume_osd_pct.load() + (up ? delta_pct : -delta_pct);
-                v = std::clamp(v, 0, 100);
-                volume_osd_pct.store(v);
+                int v = 0;
+                bool sent_udp = false;
+                {
+                    std::lock_guard<std::mutex> lk(vol_apply_mu);
+                    last_daemon_vol_cmd_ms.store(steady_ms_now());
+                    v = std::clamp(volume_osd_pct.load() + (up ? delta_pct : -delta_pct), 0, 100);
+                    volume_osd_pct.store(v);
+                    apply_curve_unlocked(v, false, true, false);
+                    if (is_udp_port_bound(8086)) {
+                        json::Value vcmd = json::Value::make_obj();
+                        vcmd["cmd"] = json::Value::make_str("volume_step");
+                        vcmd["dir"] = json::Value::make_int(up ? 1 : -1);
+                        vcmd["steps"] = json::Value::make_int(steps);
+                        vcmd["showUi"] = json::Value::make_bool(false);
+                        sent_udp = send_udp_json(8086, vcmd.dump(-1));
+                        last_daemon_vol_cmd_ms.store(steady_ms_now());
+                    }
+                }
                 leds.trigger_volume_osd(v);
-                if (is_udp_port_bound(8086)) {
-                    json::Value vcmd = json::Value::make_obj();
-                    vcmd["cmd"] = json::Value::make_str("volume_step");
-                    vcmd["dir"] = json::Value::make_int(up ? 1 : -1);
-                    vcmd["steps"] = json::Value::make_int(steps);
-                    vcmd["showUi"] = json::Value::make_bool(false);
-                    send_udp_json(8086, vcmd.dump(-1));
-                } else {
+                if (!sent_udp) {
                     for (int s = 0; s < steps; ++s) {
                         uinput.send_key(up ? 115 : 114); // KEY_VOLUMEUP / KEY_VOLUMEDOWN
                     }
+                    last_daemon_vol_cmd_ms.store(steady_ms_now());
                 }
                 break;
             }
@@ -974,10 +1436,7 @@ int main(int argc, char** argv) {
             }
             case HwEventType::JackPlugged:
             case HwEventType::JackUnplugged: {
-                bool plugged = (ev == HwEventType::JackPlugged);
-                if (c.audio.output_route == "auto") {
-                    mixer.apply_output_route("auto", plugged);
-                }
+                reapply_current_volume_and_route(true, c.audio.output_route == "auto");
                 break;
             }
         }
@@ -1317,8 +1776,7 @@ int main(int argc, char** argv) {
                     bool up = (d == "up");
                     int max_steps = std::max(1, android_vol_max.load());
                     int dpct = std::max(1, (100 * steps + max_steps / 2) / max_steps);
-                    int next_p = std::clamp(volume_osd_pct.load() + (up ? dpct : -dpct), 0, 100);
-                    set_android_volume_pct(next_p, true);
+                    int next_p = step_android_volume_pct(up ? dpct : -dpct, true);
                     res["ok"] = Value::make_bool(true);
                     res["volumePercent"] = Value::make_int(next_p);
                     return res;
@@ -1328,23 +1786,29 @@ int main(int argc, char** argv) {
                 int pct = std::clamp(pct_v->as_int(50), 0, 100);
                 std::string tgt = args.get("target") ? args.get("target")->as_str("all") : "all";
                 if (tgt == "woofer" || tgt == "tweeters" || tgt == "headphones") {
-                    int amp = std::clamp((pct * 255 + 50) / 100, 0, 255);
+                    int trim = std::clamp(static_cast<int>(std::lround((pct - 50) * 0.8)), -40, 40);
                     DaemonConfig c;
                     {
                         std::lock_guard<std::mutex> lk(cfg_mu);
-                        if (tgt == "woofer") cfg.audio.woofer_volume = amp;
-                        if (tgt == "tweeters") cfg.audio.tweeters_volume = amp;
-                        if (tgt == "headphones") cfg.audio.headphone_volume = amp;
+                        if (tgt == "woofer") cfg.audio.woofer_trim = trim;
+                        if (tgt == "tweeters") cfg.audio.tweeters_trim = trim;
+                        if (tgt == "headphones") cfg.audio.headphone_trim = trim;
                         cfg.sanitize_and_validate();
+                    }
+                    reapply_current_volume_and_route(true, true);
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
                         c = cfg;
                     }
-                    mixer.set_int("Woofer Master Playback Volume", c.audio.woofer_volume, -1);
-                    mixer.set_int("Tweeters Master Playback Volume", c.audio.tweeters_volume, -1);
-                    mixer.set_int("Headphone DAC Playback Volume", c.audio.headphone_volume, -1);
+                    int amp = (tgt == "woofer") ? c.audio.woofer_volume
+                                                : ((tgt == "tweeters") ? c.audio.tweeters_volume
+                                                                       : c.audio.headphone_volume);
                     leds.trigger_volume_osd(pct);
                     save_cfg(c);
                     res["ok"] = Value::make_bool(true);
                     res["target"] = Value::make_str(tgt);
+                    res["trim"] = Value::make_int(trim);
+                    res["trimDb"] = Value::make_num(trim * 0.5);
                     res["ampLevel"] = Value::make_int(amp);
                     res["percent"] = Value::make_int(pct);
                 } else {
@@ -1409,9 +1873,12 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lk(cfg_mu);
                 cfg.audio.output_route = route;
                 cfg.sanitize_and_validate();
+            }
+            reapply_current_volume_and_route(true, true);
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
                 c = cfg;
             }
-            mixer.apply_output_route(c.audio.output_route, inputs.headphone_plugged());
             save_cfg(c);
             res["ok"] = Value::make_bool(true);
             res["route"] = Value::make_str(route);
@@ -2103,7 +2570,9 @@ int main(int argc, char** argv) {
                 cfg.audio.mic_muted = (payload == "ON" || payload == "true" || payload == "1");
                 dirty = true;
             } else if (topic_suffix == "woofer_vol/set") {
-                cfg.audio.woofer_volume = std::clamp(atoi(payload.c_str()), 0, 255);
+                int raw_v = std::clamp(atoi(payload.c_str()), 0, 255);
+                int base_woo = curve_base_speaker_reg(std::max(1, volume_osd_pct.load()));
+                cfg.audio.woofer_trim = std::clamp(raw_v - base_woo, -40, 40);
                 dirty = true;
             } else if (topic_suffix == "route/set") {
                 if (is_valid_output_route(payload)) {
@@ -2190,6 +2659,10 @@ int main(int argc, char** argv) {
                     c = cfg;
                 }
                 apply_hw_config(c, inputs.headphone_plugged());
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
                 save_cfg(c);
                 return HttpResponse::json(build_status_json().dump(-1));
             }
@@ -2213,9 +2686,12 @@ int main(int argc, char** argv) {
                     {
                         std::lock_guard<std::mutex> lk(cfg_mu);
                         cfg.audio.output_route = route;
+                    }
+                    reapply_current_volume_and_route(true, true);
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
                         c = cfg;
                     }
-                    mixer.apply_output_route(c.audio.output_route, inputs.headphone_plugged());
                     save_cfg(c);
                     return HttpResponse::json("{\"ok\":true}");
                 }
@@ -2223,6 +2699,19 @@ int main(int argc, char** argv) {
             }
             if (req.method == "POST" && req.path == "/api/audio/reload_eq") {
                 bool ok = mixer.reload_amp_defaults();
+                if (ok) {
+                    DaemonConfig c;
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
+                        c = cfg;
+                    }
+                    mixer.set_bool("Woofer EQ Switch", c.audio.woofer_eq);
+                    mixer.set_bool("Woofer DRC Switch", c.audio.woofer_drc);
+                    mixer.set_bool("Tweeters EQ Switch", c.audio.tweeters_eq);
+                    mixer.set_bool("Tweeters DRC Switch", c.audio.tweeters_drc);
+                    mixer.set_enum("Loopback Enable", c.audio.loopback_enable ? "Enable" : "Disable");
+                    reapply_current_volume_and_route(true, true);
+                }
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}");
             }
             if (req.method == "POST" && req.path == "/api/audio/test_tone") {
@@ -2468,16 +2957,21 @@ int main(int argc, char** argv) {
                 if (!json::Parser::parse(req.body, v)) {
                     return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
                 }
-                int target = volume_osd_pct.load();
+                int woo = 3, twe = 3, hp = 0;
+                int applied = 0;
                 if (const auto* p = v.get("percent"); p && p->is_num()) {
-                    target = std::clamp(p->as_int(target), 0, 100);
+                    applied = set_android_volume_pct(p->as_int(volume_osd_pct.load()), true, &woo, &twe, &hp);
                 } else if (const auto* d = v.get("delta"); d && d->is_num()) {
-                    target = std::clamp(target + d->as_int(0), 0, 100);
+                    applied = step_android_volume_pct(d->as_int(0), true, &woo, &twe, &hp);
+                } else {
+                    applied = step_android_volume_pct(0, true, &woo, &twe, &hp);
                 }
-                int applied = set_android_volume_pct(target, true);
                 json::Value out = json::Value::make_obj();
                 out["ok"] = json::Value::make_bool(true);
                 out["volumePercent"] = json::Value::make_int(applied);
+                out["wooferVolume"] = json::Value::make_int(woo);
+                out["tweetersVolume"] = json::Value::make_int(twe);
+                out["headphoneVolume"] = json::Value::make_int(hp);
                 return HttpResponse::json(out.dump(-1));
             }
             if (req.method == "POST" && req.path == "/api/audio/volume_state") {
@@ -2488,16 +2982,33 @@ int main(int argc, char** argv) {
                 if (const auto* m = v.get("max"); m && m->is_num()) {
                     android_vol_max.store(std::clamp(m->as_int(15), 1, 200));
                 }
-                int pct = volume_osd_pct.load();
-                if (const auto* p = v.get("percent"); p && p->is_num()) {
-                    pct = std::clamp(p->as_int(pct), 0, 100);
-                    volume_osd_pct.store(pct);
+                int applied_pct = 0;
+                bool suppressed = false;
+                {
+                    std::lock_guard<std::mutex> lk(vol_apply_mu);
+                    int64_t age_ms = steady_ms_now() - last_daemon_vol_cmd_ms.load();
+                    if (age_ms >= 0 && age_ms < 900) {
+                        suppressed = true;
+                    } else {
+                        int pct = volume_osd_pct.load();
+                        if (const auto* p = v.get("percent"); p && p->is_num()) {
+                            pct = std::clamp(p->as_int(pct), 0, 100);
+                            volume_osd_pct.store(pct);
+                        }
+                        bool first_sync = !first_vol_state_seen.exchange(true);
+                        apply_curve_unlocked(pct, first_sync, true, false);
+                        reconcile_unlocked();
+                        applied_pct = pct;
+                    }
+                }
+                if (suppressed) {
+                    return HttpResponse::json("{\"ok\":true,\"suppressed\":true}");
                 }
                 bool show_osd = v.get("showOsd") ? v.get("showOsd")->as_bool(true) : true;
                 if (show_osd) {
-                    leds.trigger_volume_osd(pct);
+                    leds.trigger_volume_osd(applied_pct);
                 } else {
-                    leds.update_volume_osd_if_active(pct);
+                    leds.update_volume_osd_if_active(applied_pct);
                 }
                 return HttpResponse::json("{\"ok\":true}");
             }
@@ -2772,6 +3283,7 @@ int main(int argc, char** argv) {
 
         if ((now - last_mqtt_tp) >= std::chrono::seconds(5)) {
             last_mqtt_tp = now;
+            reconcile_volume_if_drifted();
             if (!dns_late_probed &&
                 std::chrono::duration_cast<std::chrono::seconds>(now - start_tp).count() >= 12) {
                 bool empty_dns = false;

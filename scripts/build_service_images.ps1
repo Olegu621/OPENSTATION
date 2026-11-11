@@ -169,7 +169,7 @@ if (-not (Test-Path $manifestPath)) {
 }
 $fwManifest = Get-Content -Raw $manifestPath -Encoding UTF8 | ConvertFrom-Json
 if (-not $Version) { $Version = [string]$fwManifest.version }
-if (-not $Version) { $Version = "1.2.0" }
+if (-not $Version) { $Version = "1.2.1" }
 Write-Host "[1/6] Проверка firmware/ v$Version (SHA-256) и ассетов..." -ForegroundColor Yellow
 
 $DaemonBin = Join-Path $fwDir $fwManifest.files.daemon.fileName
@@ -340,7 +340,7 @@ try {
 
   if [ -d "$OS_SYS" ]; then
     ROM_VER=$(cat "$OS_SYS/VERSION" 2>/dev/null | tr -d ' \r\n')
-    [ -n "$ROM_VER" ] || ROM_VER="1.2.0"
+    [ -n "$ROM_VER" ] || ROM_VER="1.2.1"
 
     DATA_VER=""
     if [ -x "$OS_DATA/openstationd" ]; then
@@ -719,6 +719,20 @@ chown 0:2000 "$RC_TGT"
 chmod 755 "$RC_TGT"
 chcon u:object_r:rc_local_exec:s0 "$RC_TGT" 2>/dev/null || true
 rm -f "$BUILD/rc_local.tmp"
+
+# Перевести audio-hal hardvol_sy.xml в passthrough-режим (громкостью и балансом SY6045S управляет openstationd)
+if [ -f "$MNT/etc/hardvol_sy.xml" ]; then
+    cat <<'EOF' > "$MNT/etc/hardvol_sy.xml.tmp"
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OPENSTATION_PASSTHROUGH: OpenStation Max daemon drives SY6045S/ES8156 curve + trims -->
+<hardvol>
+</hardvol>
+EOF
+    chown 0:0 "$MNT/etc/hardvol_sy.xml.tmp"
+    chmod 644 "$MNT/etc/hardvol_sy.xml.tmp"
+    mv -f "$MNT/etc/hardvol_sy.xml.tmp" "$MNT/etc/hardvol_sy.xml"
+    chcon u:object_r:vendor_configs_file:s0 "$MNT/etc/hardvol_sy.xml" 2>/dev/null || true
+fi
 
 echo "=== VENDOR DF BEFORE ZERO ==="
 df -h "$MNT"

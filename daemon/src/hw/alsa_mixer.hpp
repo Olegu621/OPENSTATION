@@ -36,7 +36,7 @@ public:
     bool get_enum(const std::string& name, std::string& out);
 
     // High-level Yandex Station Max audio routing & hardware controls
-    bool apply_output_route(const std::string& route, bool hp_plugged);
+    bool apply_output_route(const std::string& route, bool hp_plugged, bool muted = false);
     bool reload_amp_defaults();
     json::Value get_status_json();
 

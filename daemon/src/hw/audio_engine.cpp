@@ -848,7 +848,7 @@ void AudioEngine::play_wake_chime() {
         double env = 1.0;
         if (local < 240) env = local / 240.0;
         else if (local > seg_len - 480) env = std::max(0.0, (seg_len - local) / 480.0);
-        int16_t v = static_cast<int16_t>(std::sin(phase) * env * 6500.0);
+        int16_t v = static_cast<int16_t>(std::sin(phase) * env * 5000.0);
         pcm[i * 2] = v;
         pcm[i * 2 + 1] = v;
     }
@@ -871,7 +871,7 @@ void AudioEngine::play_error_chime() {
         double env = 1.0;
         if (local < 240) env = local / 240.0;
         else if (local > seg_len - 560) env = std::max(0.0, (seg_len - local) / 560.0);
-        int16_t v = static_cast<int16_t>(std::sin(phase) * env * 6000.0);
+        int16_t v = static_cast<int16_t>(std::sin(phase) * env * 4500.0);
         pcm[i * 2] = v;
         pcm[i * 2 + 1] = v;
     }
@@ -898,7 +898,7 @@ void AudioEngine::play_timer_alarm() {
                 double env = 1.0;
                 if (k < 240) env = k / 240.0;
                 else if (k > note_n - 480) env = std::max(0.0, (note_n - k) / 480.0);
-                int16_t v = static_cast<int16_t>(std::sin(phase) * env * 9500.0);
+                int16_t v = static_cast<int16_t>(std::sin(phase) * env * 7800.0);
                 int idx = (nbase + k) * 2;
                 pcm[idx] = v;
                 pcm[idx + 1] = v;
