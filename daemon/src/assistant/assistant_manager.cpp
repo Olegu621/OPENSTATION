@@ -23,7 +23,7 @@ constexpr const char* kCaBundlePath = "/data/local/openstation/cacert.pem";
 constexpr size_t kTxChunkSamples = 1600;
 constexpr size_t kMaxConnectingPcmSamples = 16000 * 6;
 constexpr size_t kMaxLivePcmSamples = 16000 * 2;
-constexpr float kSpeechRmsThreshold = 850.0f;
+constexpr float kSpeechRmsThreshold = 520.0f;
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -153,27 +153,30 @@ const char* AssistantManager::state_str(AssistantState st) {
     return "idle";
 }
 
-WakeWordSettings AssistantManager::to_ww_settings(const AssistantConfig& c) {
+WakeWordSettings AssistantManager::to_ww_settings(const AssistantConfig& c, int mic_sensitivity) {
     WakeWordSettings ww;
     ww.enabled = c.enabled && (c.mode == "gemini") && c.wake_word_enabled;
     ww.keywords = c.kws_keywords;
     ww.threshold = c.kws_threshold;
     ww.score = c.kws_score;
     ww.num_threads = c.kws_threads;
+    ww.mic_sensitivity = std::clamp(mic_sensitivity, 10, 100);
     return ww;
 }
 
 bool AssistantManager::start(const AssistantConfig& cfg, AssistantCallbacks cb) {
     stop();
+    int sens = 85;
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
         cfg_ = cfg;
+        sens = mic_sensitivity_;
     }
     cb_ = std::move(cb);
     running_.store(true);
     set_state(AssistantState::Idle);
 
-    wake_word_.start(to_ww_settings(cfg), [this](const std::string& kw) {
+    wake_word_.start(to_ww_settings(cfg, sens), [this](const std::string& kw) {
         if (!running_.load() || mic_muted_.load()) return;
         if (steady_now_ms() < wake_suppress_until_ms_.load()) return;
 
@@ -213,6 +216,7 @@ void AssistantManager::stop() {
 
 void AssistantManager::update_config(const AssistantConfig& cfg) {
     bool stop_cur = false;
+    int sens = 85;
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
         if (cfg.gemini_proxy_host != cfg_.gemini_proxy_host) {
@@ -225,11 +229,23 @@ void AssistantManager::update_config(const AssistantConfig& cfg) {
             stop_cur = true;
         }
         cfg_ = cfg;
+        sens = mic_sensitivity_;
     }
-    wake_word_.update_settings(to_ww_settings(cfg));
+    wake_word_.update_settings(to_ww_settings(cfg, sens));
     if (stop_cur) {
         stop_session("mode_changed");
     }
+}
+
+void AssistantManager::set_mic_sensitivity(int sensitivity) {
+    int clamped = std::clamp(sensitivity, 10, 100);
+    AssistantConfig cfg_copy;
+    {
+        std::lock_guard<std::mutex> lk(cfg_mu_);
+        mic_sensitivity_ = clamped;
+        cfg_copy = cfg_;
+    }
+    wake_word_.update_settings(to_ww_settings(cfg_copy, clamped));
 }
 
 void AssistantManager::set_mic_muted(bool muted) {
@@ -616,7 +632,22 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "«мои лайки/избранное» -> play_liked, «пауза/стоп» -> pause/stop, «открой яндекс музыку» -> open.\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
+              "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
+              "- Ты — полноценный ИИ-агент колонки: можешь менять свой голос (set_assistant_voice — при запросе поменять голос сразу вызывай инструмент, сессия мгновенно переключится на новый голос), "
+              "менять стили часов и визуализатора (set_styles), детально настраивать 10-полосный эквалайзер и бас (set_eq_preset), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
               "Не отказывайся от системных или веб-задач, если их можно выполнить через инструменты или shell_exec.";
+        if (cb_.get_runtime_context) {
+            std::string rt = cb_.get_runtime_context();
+            if (!rt.empty()) {
+                sp += "\n\n" + rt;
+            }
+        }
+        if (!c.memory_notes.empty()) {
+            sp += "\n\nПамять о пользователе и колонке:\n";
+            for (size_t i = 0; i < c.memory_notes.size(); ++i) {
+                sp += std::to_string(i + 1) + ") " + c.memory_notes[i] + "\n";
+            }
+        }
         sys_txt["text"] = Value::make_str(sp);
     }
     sys_parts.push(std::move(sys_txt));
@@ -640,13 +671,13 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 
     {
         Value p = Value::make_obj();
-        p["city"] = make_prop("STRING", "City name in Russian or English, e.g. Москва, Санкт-Петербург, London");
+        p["city"] = make_prop("STRING", "Optional city name in Russian or English; omit or leave empty to use the speaker's detected location automatically");
         p["days"] = make_prop("INTEGER", "Forecast days 1..3 (default 3)");
         decls.push(make_func_decl(
             "get_weather",
-            "Get live current weather conditions and multi-day forecast for any city.",
+            "Get live weather and forecast for a city (or automatically for speaker's location) and display animated weather visuals on both TV and LED screen.",
             std::move(p),
-            {"city"},
+            {},
             nb));
     }
 
@@ -734,7 +765,11 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 
     {
         Value p = Value::make_obj();
-        p["preset"] = make_enum_prop("Android audio equalizer preset", {"balanced", "flat", "bass_boost", "vocal", "night"});
+        p["preset"] = make_enum_prop("Equalizer preset", {"balanced", "flat", "bass_boost", "vocal", "night", "rock", "electronic", "custom"});
+        p["bass_boost"] = make_prop("INTEGER", "Bass boost strength 0..100 percent");
+        p["band_hz"] = make_prop("INTEGER", "Single EQ band center frequency in Hz (31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000) to adjust with gain_db");
+        p["gain_db"] = make_prop("NUMBER", "Gain in dB (-12.0 to +12.0) for band_hz");
+        p["bands_csv"] = make_prop("STRING", "All 10 band gains (-12..+12 dB) separated by commas for 31..16000 Hz");
         p["woofer_eq"] = make_prop("BOOLEAN", "Enable hardware woofer EQ");
         p["woofer_drc"] = make_prop("BOOLEAN", "Enable hardware woofer DRC");
         p["tweeters_eq"] = make_prop("BOOLEAN", "Enable hardware tweeters EQ");
@@ -742,9 +777,62 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
         p["loopback"] = make_prop("BOOLEAN", "Enable hardware AEC loopback switch");
         decls.push(make_func_decl(
             "set_eq_preset",
-            "Change speaker sound equalizer preset and/or amplifier DSP switches.",
+            "Configure 10-band sound equalizer presets, individual frequency bands, bass boost, and amplifier DSP switches.",
             std::move(p),
             {},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["voice"] = make_enum_prop(
+            "Assistant voice: female ('Aoede' warm, 'Kore' soft clear, 'Leda' expressive, 'Zephyr' bright), "
+            "male ('Charon' deep calm, 'Fenrir' energetic, 'Puck' friendly, 'Orus' confident)",
+            {"Aoede", "Kore", "Leda", "Zephyr", "Puck", "Charon", "Fenrir", "Orus"});
+        decls.push(make_func_decl(
+            "set_assistant_voice",
+            "Change Alice's voice immediately and seamlessly continue talking in the new voice.",
+            std::move(p),
+            {"voice"},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["clock_style"] = make_enum_prop("Clock display style on LED matrix and TV", {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"});
+        p["visualizer_style"] = make_enum_prop("Music visualizer style (TV orb morph + front LED matrix)", {"particles", "bars", "wave", "fireflies", "aurora", "matrix"});
+        p["auto_music_visualizer"] = make_prop("BOOLEAN", "Auto morph TV orb & LED display into visualizer when music plays");
+        p["screen_color"] = make_prop("STRING", "Optional LED screen clock hex color like #00d4ff or #ffffff");
+        decls.push(make_func_decl(
+            "set_styles",
+            "Switch clock design style, music particle/waveform visualizer style, or auto music visualizer toggle.",
+            std::move(p),
+            {},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["city"] = make_prop("STRING", "Manual city override e.g. Казань, Сочи, or empty to clear override");
+        p["auto_detect"] = make_prop("BOOLEAN", "Auto detect city/coordinates by IP (default true when city omitted)");
+        decls.push(make_func_decl(
+            "set_location",
+            "Set or auto-detect the speaker's city for weather and local context.",
+            std::move(p),
+            {},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["action"] = make_enum_prop("Memory action", {"add", "list", "delete", "clear"});
+        p["note"] = make_prop("STRING", "Fact or preference to save (or substring to delete)");
+        p["index"] = make_prop("INTEGER", "1-based index to delete when action='delete'");
+        decls.push(make_func_decl(
+            "manage_memory",
+            "Save, list, or remove persistent facts/preferences remembered about the user and home.",
+            std::move(p),
+            {"action"},
             nb));
     }
 
@@ -781,6 +869,17 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
             "Mute or unmute speaker microphones. If muted=true, closes dialogue after final reply.",
             std::move(p),
             {"muted"},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["sensitivity"] = make_prop("INTEGER", "Microphone & wake-word far-field sensitivity percent (10..100, default 85)");
+        decls.push(make_func_decl(
+            "set_mic_sensitivity",
+            "Adjust far-field microphone gain / AGC & wake-word sensitivity (10..100%).",
+            std::move(p),
+            {"sensitivity"},
             nb));
     }
 
@@ -1081,6 +1180,7 @@ void AssistantManager::session_worker(uint64_t sid,
     };
 
     bool fatal_error = false;
+    std::string pending_voice_greeting;
     while (running_.load() && !session_abort_.load()) {
         AssistantConfig eff_cfg = cfg_snap;
         eff_cfg.google_search = cur_google_search;
@@ -1125,6 +1225,7 @@ void AssistantManager::session_worker(uint64_t sid,
         setup_complete = false;
         bool retry_alternate = false;
         bool retry_without_search = false;
+        bool switch_voice_now = false;
         bool session_done = false;
         model_turn_done = false;
         awaiting_playback_drain = false;
@@ -1169,12 +1270,17 @@ void AssistantManager::session_worker(uint64_t sid,
             if (msg.get("setupComplete")) {
                 setup_complete = true;
                 use_proxy_host_.store(cur_use_proxy);
-                had_interaction = (src == TriggerSource::Text);
+                had_interaction = (src == TriggerSource::Text) || !pending_voice_greeting.empty();
                 listen_idle_since = std::chrono::steady_clock::now();
                 last_pcm_flush_tp = listen_idle_since;
-                LOGI("Assistant", "Gemini Live setupComplete (via=%s)",
-                     cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : "direct");
-                if (src == TriggerSource::Text) {
+                LOGI("Assistant", "Gemini Live setupComplete (via=%s, voice=%s)",
+                     cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : "direct",
+                     cfg_snap.voice_name.c_str());
+                if (!pending_voice_greeting.empty()) {
+                    set_state(AssistantState::Thinking);
+                    send_client_text(pending_voice_greeting);
+                    pending_voice_greeting.clear();
+                } else if (src == TriggerSource::Text) {
                     set_state(AssistantState::Thinking);
                 } else {
                     set_state(AssistantState::Listening);
@@ -1229,6 +1335,9 @@ void AssistantManager::session_worker(uint64_t sid,
                                 mic_muted_.store(true);
                             }
                         }
+                        if (const auto* rv = res.get("reloadVoice"); rv && rv->as_bool(false)) {
+                            switch_voice_now = true;
+                        }
 
                         json::Value fr = json::Value::make_obj();
                         if (!id.empty()) fr["id"] = json::Value::make_str(id);
@@ -1244,6 +1353,10 @@ void AssistantManager::session_worker(uint64_t sid,
                     json::Value tr_msg = json::Value::make_obj();
                     tr_msg["toolResponse"] = std::move(tr_body);
                     if (!ws.send_text(tr_msg.dump(-1))) {
+                        return false;
+                    }
+                    if (switch_voice_now) {
+                        if (cb_.clear_playback) cb_.clear_playback();
                         return false;
                     }
                 }
@@ -1358,7 +1471,7 @@ void AssistantManager::session_worker(uint64_t sid,
                 if (rst == WsRecvStatus::Frame) {
                     if (frame.opcode == 0x01 || frame.opcode == 0x02) {
                         if (!handle_server_json(frame.payload)) {
-                            if (!retry_alternate && !retry_without_search) {
+                            if (!retry_alternate && !retry_without_search && !switch_voice_now) {
                                 fatal_error = true;
                             }
                             break;
@@ -1422,7 +1535,7 @@ void AssistantManager::session_worker(uint64_t sid,
                 }
                 break; // Timeout
             }
-            if (fatal_error || retry_alternate || retry_without_search || session_done || session_abort_.load() || !ws.is_connected()) break;
+            if (fatal_error || retry_alternate || retry_without_search || switch_voice_now || session_done || session_abort_.load() || !ws.is_connected()) break;
 
             auto now = std::chrono::steady_clock::now();
 
@@ -1528,6 +1641,21 @@ void AssistantManager::session_worker(uint64_t sid,
             }
         }
 
+        if (switch_voice_now && running_.load() && !session_abort_.load()) {
+            LOGI("Assistant", "Reconnecting WebSocket cleanly for live voice change...");
+            if (ws.is_connected()) ws.send_close(1000);
+            ws.close();
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu_);
+                cfg_snap = cfg_;
+            }
+            pending_voice_greeting =
+                "[Системное событие] Голос ассистента только что переключён на " + cfg_snap.voice_name +
+                ". Подтверди смену голоса пользователю 1–2 короткими фразами этим новым голосом.";
+            fatal_error = false;
+            retried_route = false;
+            continue;
+        }
         if (retry_alternate && !retried_route && has_proxy_cfg && running_.load() && !session_abort_.load()) {
             ws.close();
             retried_route = true;
@@ -1581,6 +1709,7 @@ json::Value AssistantManager::get_status_json() {
     obj["enabled"] = Value::make_bool(c.enabled);
     obj["mode"] = Value::make_str(c.mode);
     obj["model"] = Value::make_str(c.gemini_model);
+    obj["voiceName"] = Value::make_str(c.voice_name);
     obj["proxyHost"] = Value::make_str(c.gemini_proxy_host);
     obj["proxyActive"] = Value::make_bool(use_proxy_host_.load() && !c.gemini_proxy_host.empty());
     obj["hasApiKey"] = Value::make_bool(!c.gemini_api_key.empty());

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
@@ -11,6 +12,34 @@
 #include <unistd.h>
 
 namespace openstation {
+
+void apply_eq_preset_defaults(const std::string& preset,
+                              std::array<float, 10>& out_bands,
+                              int& out_bass_boost) {
+    if (preset == "flat") {
+        out_bands = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        out_bass_boost = 0;
+    } else if (preset == "bass_boost") {
+        out_bands = {7.5f, 6.0f, 4.0f, 1.5f, 0.0f, 0.0f, 0.5f, 1.5f, 2.0f, 1.5f};
+        out_bass_boost = 80;
+    } else if (preset == "vocal") {
+        out_bands = {-3.0f, -2.0f, 0.0f, 1.5f, 3.0f, 4.5f, 4.0f, 2.0f, 0.5f, -1.0f};
+        out_bass_boost = 10;
+    } else if (preset == "night") {
+        out_bands = {-6.0f, -4.5f, -1.5f, 0.5f, 1.5f, 2.0f, 1.5f, 0.5f, -1.0f, -2.0f};
+        out_bass_boost = 5;
+    } else if (preset == "rock") {
+        out_bands = {4.5f, 3.5f, 1.5f, -1.0f, -1.5f, 0.5f, 2.5f, 3.5f, 4.0f, 3.5f};
+        out_bass_boost = 55;
+    } else if (preset == "electronic") {
+        out_bands = {5.5f, 4.5f, 2.0f, 0.0f, -1.0f, 1.0f, 2.5f, 4.0f, 5.0f, 4.5f};
+        out_bass_boost = 70;
+    } else {
+        // balanced (default)
+        out_bands = {2.0f, 1.5f, 0.5f, 0.0f, 0.0f, 0.5f, 1.0f, 1.5f, 1.5f, 1.0f};
+        out_bass_boost = 30;
+    }
+}
 
 namespace {
 
@@ -136,6 +165,12 @@ void DaemonConfig::sanitize_and_validate() {
     if (!is_one_of(led_screen.mode, {"off", "clock", "text", "spectrum", "snake"})) {
         led_screen.mode = "clock";
     }
+    if (!is_one_of(led_screen.clock_style, {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"})) {
+        led_screen.clock_style = "classic";
+    }
+    if (!is_one_of(led_screen.visualizer_style, {"particles", "bars", "wave", "fireflies", "aurora", "matrix"})) {
+        led_screen.visualizer_style = "particles";
+    }
     if (led_screen.text.size() > 256) led_screen.text.resize(256);
     if (led_screen.color.empty()) led_screen.color = "#ffffff";
     led_screen.brightness = std::clamp(led_screen.brightness, 0, 100);
@@ -150,11 +185,25 @@ void DaemonConfig::sanitize_and_validate() {
     audio.woofer_trim = std::clamp(audio.woofer_trim, -40, 40);
     audio.tweeters_trim = std::clamp(audio.tweeters_trim, -40, 40);
     audio.headphone_trim = std::clamp(audio.headphone_trim, -40, 40);
-    if (!is_one_of(audio.eq_preset, {"flat", "balanced", "bass_boost", "vocal", "night", "custom"})) {
+    if (!is_one_of(audio.eq_preset, {"flat", "balanced", "bass_boost", "vocal", "night", "rock", "electronic", "custom"})) {
         audio.eq_preset = "balanced";
     }
+    for (float& g : audio.eq_bands) {
+        if (!std::isfinite(g)) g = 0.0f;
+        g = std::clamp(g, -12.0f, 12.0f);
+    }
+    audio.bass_boost = std::clamp(audio.bass_boost, 0, 100);
+
+    if (location.city.size() > 128) location.city.resize(128);
+    if (location.resolved_city.size() > 128) location.resolved_city.resize(128);
+    if (location.resolved_country.size() > 128) location.resolved_country.resize(128);
+    if (!std::isfinite(location.lat)) location.lat = 0.0;
+    if (!std::isfinite(location.lon)) location.lon = 0.0;
+    location.lat = std::clamp(location.lat, -90.0, 90.0);
+    location.lon = std::clamp(location.lon, -180.0, 180.0);
     audio.pdm_gain = std::clamp(audio.pdm_gain, 0, 8);
     audio.pdm_filter = std::clamp(audio.pdm_filter, 0, 4);
+    audio.mic_sensitivity = std::clamp(audio.mic_sensitivity, 10, 100);
     if (!is_one_of(audio.capture_mode, {"aaudio", "alsa_16ch"})) {
         audio.capture_mode = "alsa_16ch";
     }
@@ -208,6 +257,21 @@ void DaemonConfig::sanitize_and_validate() {
     assistant.follow_up_sec = std::clamp(assistant.follow_up_sec, 0, 30);
     assistant.max_session_sec = std::clamp(assistant.max_session_sec, 15, 600);
     assistant.vad_silence_ms = std::clamp(assistant.vad_silence_ms, 300, 3000);
+    {
+        std::vector<std::string> clean_notes;
+        clean_notes.reserve(assistant.memory_notes.size());
+        for (std::string n : assistant.memory_notes) {
+            while (!n.empty() && (n.front() == ' ' || n.front() == '\t' || n.front() == '\r' || n.front() == '\n')) n.erase(n.begin());
+            while (!n.empty() && (n.back() == ' ' || n.back() == '\t' || n.back() == '\r' || n.back() == '\n')) n.pop_back();
+            if (n.empty()) continue;
+            if (n.size() > 240) n.resize(240);
+            if (std::find(clean_notes.begin(), clean_notes.end(), n) == clean_notes.end()) {
+                clean_notes.push_back(std::move(n));
+                if (clean_notes.size() >= 25) break;
+            }
+        }
+        assistant.memory_notes = std::move(clean_notes);
+    }
 
     wyoming.port = (wyoming.port >= 1 && wyoming.port <= 65535) ? wyoming.port : 10700;
     wyoming.vad_threshold = std::clamp(wyoming.vad_threshold, 0, 32767);
@@ -247,6 +311,9 @@ json::Value DaemonConfig::to_json() const {
 
     Value ls = Value::make_obj();
     ls["mode"] = Value::make_str(led_screen.mode);
+    ls["clockStyle"] = Value::make_str(led_screen.clock_style);
+    ls["visualizerStyle"] = Value::make_str(led_screen.visualizer_style);
+    ls["autoMusicVisualizer"] = Value::make_bool(led_screen.auto_music_visualizer);
     ls["text"] = Value::make_str(led_screen.text);
     ls["color"] = Value::make_str(led_screen.color);
     ls["brightness"] = Value::make_int(led_screen.brightness);
@@ -267,16 +334,33 @@ json::Value DaemonConfig::to_json() const {
     au["tweetersEq"] = Value::make_bool(audio.tweeters_eq);
     au["tweetersDrc"] = Value::make_bool(audio.tweeters_drc);
     au["eqPreset"] = Value::make_str(audio.eq_preset);
+    {
+        Value eb = Value::make_arr();
+        for (float g : audio.eq_bands) eb.push(Value::make_num(g));
+        au["eqBands"] = std::move(eb);
+    }
+    au["bassBoost"] = Value::make_int(audio.bass_boost);
     au["pdmGain"] = Value::make_int(audio.pdm_gain);
     au["pdmFilter"] = Value::make_int(audio.pdm_filter);
     au["loopbackEnable"] = Value::make_bool(audio.loopback_enable);
     au["aecEnable"] = Value::make_bool(audio.aec_enable);
     au["nsEnable"] = Value::make_bool(audio.ns_enable);
+    au["micSensitivity"] = Value::make_int(audio.mic_sensitivity);
     au["micMuted"] = Value::make_bool(audio.mic_muted);
     au["captureMode"] = Value::make_str(audio.capture_mode);
     au["primaryMicChannel"] = Value::make_int(audio.primary_mic_channel);
     au["loopbackChannel"] = Value::make_int(audio.loopback_channel);
     root["audio"] = std::move(au);
+
+    Value loc = Value::make_obj();
+    loc["autoDetect"] = Value::make_bool(location.auto_detect);
+    loc["city"] = Value::make_str(location.city);
+    loc["lat"] = Value::make_num(location.lat);
+    loc["lon"] = Value::make_num(location.lon);
+    loc["resolvedCity"] = Value::make_str(location.resolved_city);
+    loc["resolvedCountry"] = Value::make_str(location.resolved_country);
+    loc["resolvedEpoch"] = Value::make_int(location.resolved_epoch);
+    root["location"] = std::move(loc);
 
     Value in = Value::make_obj();
     in["rotaryInvert"] = Value::make_bool(input.rotary_invert);
@@ -305,6 +389,11 @@ json::Value DaemonConfig::to_json() const {
     ast["followUpSec"] = Value::make_int(assistant.follow_up_sec);
     ast["maxSessionSec"] = Value::make_int(assistant.max_session_sec);
     ast["vadSilenceMs"] = Value::make_int(assistant.vad_silence_ms);
+    {
+        Value mn = Value::make_arr();
+        for (const auto& s : assistant.memory_notes) mn.push(Value::make_str(s));
+        ast["memoryNotes"] = std::move(mn);
+    }
     root["assistant"] = std::move(ast);
 
     Value wy = Value::make_obj();
@@ -364,6 +453,9 @@ void DaemonConfig::from_json(const json::Value& v) {
 
     if (auto* ls = v.get("ledScreen"); ls && ls->is_obj()) {
         if (auto* x = ls->get("mode"); x && x->is_str()) led_screen.mode = x->as_str();
+        if (auto* x = ls->get("clockStyle"); x && x->is_str()) led_screen.clock_style = x->as_str();
+        if (auto* x = ls->get("visualizerStyle"); x && x->is_str()) led_screen.visualizer_style = x->as_str();
+        if (auto* x = ls->get("autoMusicVisualizer"); x && x->is_bool()) led_screen.auto_music_visualizer = x->as_bool();
         if (auto* x = ls->get("text"); x && x->is_str()) led_screen.text = x->as_str();
         if (auto* x = ls->get("color"); x && x->is_str()) led_screen.color = x->as_str();
         if (auto* x = ls->get("brightness"); x && x->is_num()) led_screen.brightness = x->as_int();
@@ -383,16 +475,60 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = au->get("wooferDrc"); x && x->is_bool()) audio.woofer_drc = x->as_bool();
         if (auto* x = au->get("tweetersEq"); x && x->is_bool()) audio.tweeters_eq = x->as_bool();
         if (auto* x = au->get("tweetersDrc"); x && x->is_bool()) audio.tweeters_drc = x->as_bool();
-        if (auto* x = au->get("eqPreset"); x && x->is_str()) audio.eq_preset = x->as_str();
+        bool preset_sent = false;
+        std::string prev_preset = audio.eq_preset;
+        if (auto* x = au->get("eqPreset"); x && x->is_str()) {
+            audio.eq_preset = x->as_str();
+            preset_sent = true;
+        }
+        bool bands_sent = false;
+        if (auto* eb = au->get("eqBands"); eb && eb->is_arr() && !eb->arr_val.empty()) {
+            for (size_t i = 0; i < 10 && i < eb->arr_val.size(); ++i) {
+                audio.eq_bands[i] = static_cast<float>(eb->arr_val[i].as_double(0.0));
+            }
+            bands_sent = true;
+        }
+        bool bass_sent = false;
+        if (auto* x = au->get("bassBoost"); x && x->is_num()) {
+            audio.bass_boost = x->as_int();
+            bass_sent = true;
+        }
+        if (preset_sent && audio.eq_preset != "custom" && !bands_sent &&
+            (audio.eq_preset != prev_preset || !bass_sent)) {
+            int p_bass = audio.bass_boost;
+            apply_eq_preset_defaults(audio.eq_preset, audio.eq_bands, p_bass);
+            if (!bass_sent) audio.bass_boost = p_bass;
+        }
         if (auto* x = au->get("pdmGain"); x && x->is_num()) audio.pdm_gain = x->as_int();
         if (auto* x = au->get("pdmFilter"); x && x->is_num()) audio.pdm_filter = x->as_int();
         if (auto* x = au->get("loopbackEnable"); x && x->is_bool()) audio.loopback_enable = x->as_bool();
         if (auto* x = au->get("aecEnable"); x && x->is_bool()) audio.aec_enable = x->as_bool();
         if (auto* x = au->get("nsEnable"); x && x->is_bool()) audio.ns_enable = x->as_bool();
+        bool has_mic_sens = false;
+        if (auto* x = au->get("micSensitivity"); x && x->is_num()) {
+            audio.mic_sensitivity = x->as_int();
+            has_mic_sens = true;
+        }
         if (auto* x = au->get("micMuted"); x && x->is_bool()) audio.mic_muted = x->as_bool();
         if (auto* x = au->get("captureMode"); x && x->is_str()) audio.capture_mode = x->as_str();
-        if (auto* x = au->get("primaryMicChannel"); x && x->is_num()) audio.primary_mic_channel = x->as_int();
+        if (auto* x = au->get("primaryMicChannel"); x && x->is_num()) {
+            audio.primary_mic_channel = x->as_int();
+            // One-time upgrade for pre-v1.3 configs stuck on single perimeter ch 1 -> full 7-mic array
+            if (!has_mic_sens && !au->get("eqBands") && audio.primary_mic_channel == 1) {
+                audio.primary_mic_channel = -1;
+            }
+        }
         if (auto* x = au->get("loopbackChannel"); x && x->is_num()) audio.loopback_channel = x->as_int();
+    }
+
+    if (auto* loc = v.get("location"); loc && loc->is_obj()) {
+        if (auto* x = loc->get("autoDetect"); x && x->is_bool()) location.auto_detect = x->as_bool();
+        if (auto* x = loc->get("city"); x && x->is_str()) location.city = x->as_str();
+        if (auto* x = loc->get("lat"); x && x->is_num()) location.lat = x->as_double();
+        if (auto* x = loc->get("lon"); x && x->is_num()) location.lon = x->as_double();
+        if (auto* x = loc->get("resolvedCity"); x && x->is_str()) location.resolved_city = x->as_str();
+        if (auto* x = loc->get("resolvedCountry"); x && x->is_str()) location.resolved_country = x->as_str();
+        if (auto* x = loc->get("resolvedEpoch"); x && x->is_num()) location.resolved_epoch = x->as_i64();
     }
 
     if (auto* in = v.get("input"); in && in->is_obj()) {
@@ -422,6 +558,12 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ast->get("followUpSec"); x && x->is_num()) assistant.follow_up_sec = x->as_int();
         if (auto* x = ast->get("maxSessionSec"); x && x->is_num()) assistant.max_session_sec = x->as_int();
         if (auto* x = ast->get("vadSilenceMs"); x && x->is_num()) assistant.vad_silence_ms = x->as_int();
+        if (auto* mn = ast->get("memoryNotes"); mn && mn->is_arr()) {
+            assistant.memory_notes.clear();
+            for (const auto& item : mn->arr_val) {
+                if (item.is_str()) assistant.memory_notes.push_back(item.as_str());
+            }
+        }
     }
 
     if (auto* wy = v.get("wyoming"); wy && wy->is_obj()) {

@@ -193,6 +193,12 @@
               <textarea id="astPrompt" rows="3"></textarea>
             </div>
 
+            <div class="form-row">
+              <label>Чувствительность микрофонов <span id="lblMicSens">85%</span></label>
+              <input type="range" id="micSensitivity" min="10" max="100" step="5" value="85" />
+              <div class="hint">Увеличенная дальность улавливания голоса по 7 микрофонам (до 8-10 метров).</div>
+            </div>
+
             <div class="grid-2-tight">
               <div class="form-row toggle-row">
                 <label>Откликаться на «Алиса»</label>
@@ -213,6 +219,27 @@
             <details class="adv-details">
               <summary>Дополнительные настройки</summary>
               <div class="adv-details-body">
+                <div class="form-row">
+                  <label>Местоположение (для погоды)</label>
+                  <div class="input-send-row">
+                    <input type="text" id="locCity" placeholder="Автоопределение по IP..." />
+                    <button class="btn btn-sm" id="btnDetectLocation" type="button">📍 По IP</button>
+                    <button class="btn btn-sm" id="btnTestWeather" type="button">☀️ Погода</button>
+                  </div>
+                  <div class="hint" id="weatherTestResult" style="margin-top:4px;"></div>
+                </div>
+
+                <div class="form-row">
+                  <label>Память Алисы (факты и заметки)</label>
+                  <div class="alice-memory-box" id="aliceMemoryBox">
+                    <div class="hint" id="memoryEmptyHint">Заметок пока нет. Добавьте ниже или скажите Алисе голосом «Запомни...»</div>
+                  </div>
+                  <div class="input-send-row" style="margin-top:6px;">
+                    <input type="text" id="newMemoryNote" placeholder="Добавить факт («Любимый чай: зелёный»)..." />
+                    <button class="btn btn-sm btn-accent" id="btnAddMemoryNote" type="button">+ Запомнить</button>
+                  </div>
+                </div>
+
                 <div class="grid-2-tight">
                   <div class="form-row">
                     <label>Режим ассистента</label>
@@ -293,8 +320,31 @@
                 <option value="bass_boost">Глубокий бас</option>
                 <option value="vocal">Чистый голос / Кино</option>
                 <option value="night">Ночной режим</option>
+                <option value="rock">Рок / Драйв</option>
+                <option value="electronic">Электроника / Клуб</option>
+                <option value="custom">Пользовательский (10 полос)</option>
               </select>
             </div>
+
+            <div class="form-row">
+              <label>Усиление баса (Bass Boost) <span id="lblBassBoost">20%</span></label>
+              <input type="range" id="bassBoost" min="0" max="100" step="5" value="20" />
+            </div>
+
+            <details class="adv-details" id="detailsEq10">
+              <summary>10-полосный эквалайзер (ISO 31 — 16 000 Гц)</summary>
+              <div class="adv-details-body">
+                <div class="eq-curve-wrap">
+                  <svg id="eqCurveSvg" viewBox="0 0 320 100" class="eq-svg"></svg>
+                </div>
+                <div class="eq-sliders-row" id="eqSlidersRow">
+                  <!-- 10 sliders dynamically generated in app.js -->
+                </div>
+                <div class="btn-row" style="margin-top:8px;">
+                  <button class="btn btn-sm" id="btnResetEq" type="button">Сбросить эквалайзер в 0 дБ</button>
+                </div>
+              </div>
+            </details>
 
             <details class="adv-details">
               <summary>Тонкий баланс громкости</summary>
@@ -398,6 +448,37 @@
                 </select>
               </div>
 
+              <div class="grid-2-tight">
+                <div class="form-row">
+                  <label>Стиль часов</label>
+                  <select id="clockStyle">
+                    <option value="classic">Классический</option>
+                    <option value="minimal">Минималистичный</option>
+                    <option value="bold">Жирный (Bold)</option>
+                    <option value="seconds">С секундами</option>
+                    <option value="binary">Бинарные</option>
+                    <option value="neon">Неоновый контур</option>
+                    <option value="retro">Ретро 7-сегментный</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Визуализатор музыки</label>
+                  <select id="visualizerStyle">
+                    <option value="particles">Частицы / Шар</option>
+                    <option value="bars">Столбики (Bars)</option>
+                    <option value="wave">Синус-волна</option>
+                    <option value="fireflies">Светлячки</option>
+                    <option value="aurora">Северное сияние</option>
+                    <option value="matrix">Матрица (Дождь)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-row toggle-row">
+                <label>Авто-визуализатор при музыке</label>
+                <input type="checkbox" id="autoMusicVisualizer" checked />
+              </div>
+
               <div class="form-row">
                 <label>Текст для бегущей строки</label>
                 <input type="text" id="scrText" maxlength="80" value="OPEN STATION MAX" />
@@ -457,7 +538,7 @@
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.2.3</span>
+                <span class="badge ok" id="otaVersionBadge">v1.3.0</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -654,7 +735,7 @@
           <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.2.3</span>
+          <span class="badge ok" id="wizFwBadge">v1.3.0</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>

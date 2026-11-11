@@ -9,6 +9,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
@@ -61,12 +62,52 @@ object LiveOrbState {
     @Volatile var musicHigh: Float = 0f
     @Volatile var musicOverall: Float = 0f
 
+    @Volatile var clockStyle: String = "classic"
+    @Volatile var visualizerStyle: String = "particles"
+    @Volatile var autoMusicVisualizer: Boolean = true
+
+    @Volatile var weatherTemp: Int = 0
+    @Volatile var weatherCondition: String = ""
+    @Volatile var weatherConditionText: String = ""
+    @Volatile var weatherCity: String = ""
+    @Volatile var weatherValid: Boolean = false
+    @Volatile var weatherTimestampMs: Long = 0L
+
+    val rawBands = FloatArray(24)
+
     fun addListener(l: StateListener) {
         listeners.add(l)
     }
 
     fun removeListener(l: StateListener) {
         listeners.remove(l)
+    }
+
+    fun updateStyles(clock: String?, visualizer: String?, autoVis: Boolean?) {
+        var changed = false
+        if (!clock.isNullOrBlank() && clock != clockStyle) {
+            clockStyle = clock
+            changed = true
+        }
+        if (!visualizer.isNullOrBlank() && visualizer != visualizerStyle) {
+            visualizerStyle = visualizer
+            changed = true
+        }
+        if (autoVis != null && autoVis != autoMusicVisualizer) {
+            autoMusicVisualizer = autoVis
+            changed = true
+        }
+        if (changed) notifyListenersDebounced()
+    }
+
+    fun updateWeather(valid: Boolean, temp: Int, cond: String, text: String, city: String) {
+        weatherValid = valid
+        weatherTemp = temp
+        weatherCondition = cond
+        weatherConditionText = text
+        weatherCity = city
+        weatherTimestampMs = android.os.SystemClock.elapsedRealtime()
+        notifyListenersDebounced()
     }
 
     fun notifyListenersDebounced() {
@@ -135,6 +176,10 @@ object LiveOrbState {
     fun updateMusicSpectrum(bands: FloatArray, playing: Boolean) {
         musicPlaying = playing
         if (bands.size < 24) return
+        synchronized(rawBands) {
+            val len = min(bands.size, rawBands.size)
+            System.arraycopy(bands, 0, rawBands, 0, len)
+        }
         var bass = 0f
         for (i in 0..4) bass += bands[i]
         bass /= 5f
@@ -286,6 +331,15 @@ class AliceOrbView @JvmOverloads constructor(
     // 0f on Screen 0 hero, 0..1f during morph -> 1f in docked/overlay bar for luminous gem visibility
     @Volatile
     var compactGlowBoost: Float = 0f
+
+    // Music <-> Visualizer smooth S-curve morph progress (0f = sphere, 1f = visualizer)
+    private var morphProgress = 0f
+    private val visPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val visWavePath = Path()
+    private val visParticles = Array(48) { idx ->
+        val ang = (idx / 48f) * (2f * Math.PI.toFloat())
+        floatArrayOf(ang, 0.45f + (idx % 6) * 0.09f, 0.8f + (idx % 4) * 0.4f, (idx % 7) * 0.8f) // ang, radFraction, speed, phase
+    }
 
     // Smoothed physics state (for liquid morph between idle / music / listening / thinking / speaking)
     private var curSpeed = 0.78f
@@ -486,6 +540,15 @@ class AliceOrbView @JvmOverloads constructor(
         val finalBright = tgtBright + boost * 0.24f
         val finalEnergy = (tgtEnergy + boost * 0.24f).coerceIn(0f, 1f)
 
+        val shouldMorph = LiveOrbState.autoMusicVisualizer && musicOn && (st == "idle")
+        val tgtMorph = if (shouldMorph) 1f else 0f
+        val morphRate = dt * (1f / 0.48f) // 480ms S-curve morph
+        if (morphProgress < tgtMorph) {
+            morphProgress = (morphProgress + morphRate).coerceAtMost(1f)
+        } else if (morphProgress > tgtMorph) {
+            morphProgress = (morphProgress - morphRate).coerceAtLeast(0f)
+        }
+
         val kFast = min(1f, dt * 13f)
         val kSmooth = min(1f, dt * 6.5f)
         curSpeed += (tgtSpeed - curSpeed) * kSmooth
@@ -595,33 +658,41 @@ class AliceOrbView @JvmOverloads constructor(
 
         val save = canvas.save()
         canvas.rotate(rotDeg, cx, cy)
-        val idleSnap = if (LiveOrbState.assistantState == "idle" &&
-            !LiveOrbState.musicPlaying &&
-            LiveOrbState.musicOverall <= 0.045f) 0.22f else 0.14f
-        if (boost > 0.78f || blend < idleSnap || blend > (1f - idleSnap)) {
-            // Single-layer fast path (docked miniature orb or dominant keyframe -> halves Mali-G31 fillrate)
-            val fi = if (blend >= 0.5f) f1 else f0
-            val s = AliceOrbFrames.sheets[fi / perSheet]
-            if (s != null && !s.isRecycled) {
-                bmpPaint0.alpha = 255
-                bmpPaint0.colorFilter = cachedFilter
-                canvas.drawBitmap(s, AliceOrbFrames.srcRects[fi], dstRect, bmpPaint0)
-            }
-        } else {
-            val s0 = AliceOrbFrames.sheets[f0 / perSheet]
-            val s1 = AliceOrbFrames.sheets[f1 / perSheet]
-            if (s0 != null && !s0.isRecycled) {
-                bmpPaint0.alpha = 255
-                bmpPaint0.colorFilter = cachedFilter
-                canvas.drawBitmap(s0, AliceOrbFrames.srcRects[f0], dstRect, bmpPaint0)
-            }
-            if (s1 != null && !s1.isRecycled) {
-                bmpPaint1.alpha = (blend * 255f).toInt().coerceIn(0, 255)
-                bmpPaint1.colorFilter = cachedFilter
-                canvas.drawBitmap(s1, AliceOrbFrames.srcRects[f1], dstRect, bmpPaint1)
+        val sphereAlphaScale = ((1f - morphProgress) * 255f).toInt().coerceIn(0, 255)
+        if (sphereAlphaScale > 0) {
+            val idleSnap = if (LiveOrbState.assistantState == "idle" &&
+                !LiveOrbState.musicPlaying &&
+                LiveOrbState.musicOverall <= 0.045f) 0.22f else 0.14f
+            if (boost > 0.78f || blend < idleSnap || blend > (1f - idleSnap)) {
+                // Single-layer fast path (docked miniature orb or dominant keyframe -> halves Mali-G31 fillrate)
+                val fi = if (blend >= 0.5f) f1 else f0
+                val s = AliceOrbFrames.sheets[fi / perSheet]
+                if (s != null && !s.isRecycled) {
+                    bmpPaint0.alpha = sphereAlphaScale
+                    bmpPaint0.colorFilter = cachedFilter
+                    canvas.drawBitmap(s, AliceOrbFrames.srcRects[fi], dstRect, bmpPaint0)
+                }
+            } else {
+                val s0 = AliceOrbFrames.sheets[f0 / perSheet]
+                val s1 = AliceOrbFrames.sheets[f1 / perSheet]
+                if (s0 != null && !s0.isRecycled) {
+                    bmpPaint0.alpha = sphereAlphaScale
+                    bmpPaint0.colorFilter = cachedFilter
+                    canvas.drawBitmap(s0, AliceOrbFrames.srcRects[f0], dstRect, bmpPaint0)
+                }
+                if (s1 != null && !s1.isRecycled) {
+                    bmpPaint1.alpha = ((blend * sphereAlphaScale)).toInt().coerceIn(0, 255)
+                    bmpPaint1.colorFilter = cachedFilter
+                    canvas.drawBitmap(s1, AliceOrbFrames.srcRects[f1], dstRect, bmpPaint1)
+                }
             }
         }
         canvas.restoreToCount(save)
+
+        // 4. Smooth morphing audio-reactive visualizer (particles / bars / wave / fireflies / aurora / matrix)
+        if (morphProgress > 0.01f) {
+            drawVisualizer(canvas, cx, cy, halfOrb, (morphProgress * 255f).toInt().coerceIn(0, 255))
+        }
     }
 
     private fun updateColorFilterIfNeeded() {
@@ -681,6 +752,183 @@ class AliceOrbView @JvmOverloads constructor(
         val created = ColorMatrixColorFilter(cm)
         filterCache[key] = created
         cachedFilter = created
+    }
+
+    private fun drawVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        if (alpha <= 0) return
+        when (LiveOrbState.visualizerStyle) {
+            "bars" -> drawBarsVisualizer(canvas, cx, cy, radius, alpha)
+            "wave" -> drawWaveVisualizer(canvas, cx, cy, radius, alpha)
+            "fireflies" -> drawFirefliesVisualizer(canvas, cx, cy, radius, alpha)
+            "aurora" -> drawAuroraVisualizer(canvas, cx, cy, radius, alpha)
+            "matrix" -> drawMatrixVisualizer(canvas, cx, cy, radius, alpha)
+            else -> drawParticlesVisualizer(canvas, cx, cy, radius, alpha) // "particles"
+        }
+    }
+
+    private fun drawParticlesVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        val bass = LiveOrbState.musicBass
+        val mid = LiveOrbState.musicMid
+        val high = LiveOrbState.musicHigh
+        val mTot = LiveOrbState.musicOverall
+
+        visPaint.style = Paint.Style.FILL
+
+        // Center pulsating core
+        val coreR = radius * (0.28f + bass * 0.22f)
+        visPaint.color = Color.parseColor("#38BDF8")
+        visPaint.alpha = ((alpha * (0.35f + bass * 0.45f))).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, coreR, visPaint)
+
+        // Orbital particle cloud
+        for (i in visParticles.indices) {
+            val p = visParticles[i]
+            val ang = p[0] + totalTime * p[2] * (0.45f + mid * 0.8f)
+            val radBase = radius * p[1] * (0.85f + bass * 0.45f)
+            val wobble = sin(ang * 3f + totalTime * 2.5f) * radius * 0.08f
+            val px = cx + cos(ang) * (radBase + wobble)
+            val py = cy + sin(ang) * (radBase + wobble)
+
+            val pSize = max(3f, radius * 0.024f * (0.8f + (i % 3) * 0.5f + high * 1.2f))
+            val pCol = when (i % 3) {
+                0 -> Color.parseColor("#00D4FF") // Cyan
+                1 -> Color.parseColor("#A855F7") // Violet
+                else -> Color.parseColor("#FACC15") // Champagne
+            }
+            visPaint.color = pCol
+            visPaint.alpha = alpha
+            canvas.drawCircle(px, py, pSize, visPaint)
+        }
+    }
+
+    private fun drawBarsVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeCap = Paint.Cap.ROUND
+        visPaint.strokeWidth = max(3f, radius * 0.045f)
+
+        val bands = LiveOrbState.rawBands
+        val n = 24
+        val rInner = radius * 0.40f
+        for (i in 0 until n) {
+            val ang = Math.toRadians((i * (360.0 / n) - 90.0))
+            val valB = if (i < bands.size) bands[i] else 0f
+            val rOuter = rInner + valB * radius * 0.65f + radius * 0.04f
+
+            val x0 = cx + cos(ang).toFloat() * rInner
+            val y0 = cy + sin(ang).toFloat() * rInner
+            val x1 = cx + cos(ang).toFloat() * rOuter
+            val y1 = cy + sin(ang).toFloat() * rOuter
+
+            visPaint.color = blendColor(Color.parseColor("#00D4FF"), Color.parseColor("#EC4899"), i / 24f)
+            visPaint.alpha = alpha
+            canvas.drawLine(x0, y0, x1, y1, visPaint)
+        }
+    }
+
+    private fun drawWaveVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeWidth = max(2.5f, radius * 0.035f)
+
+        val bass = LiveOrbState.musicBass
+        val mid = LiveOrbState.musicMid
+        val high = LiveOrbState.musicHigh
+
+        for (w in 0..2) {
+            visWavePath.reset()
+            val amp = radius * (0.12f + (if (w == 0) bass else if (w == 1) mid else high) * 0.28f)
+            val freq = 2f + w * 1.5f
+            val phase = totalTime * (2f + w * 1.2f)
+            val yBase = cy + (w - 1) * radius * 0.16f
+
+            val steps = 30
+            for (i in 0..steps) {
+                val t = i / steps.toFloat()
+                val x = cx - radius * 0.85f + t * radius * 1.7f
+                val env = sin(t * Math.PI.toFloat()) // Window envelope
+                val y = yBase + sin(t * freq * Math.PI.toFloat() * 2f + phase) * amp * env
+                if (i == 0) visWavePath.moveTo(x, y) else visWavePath.lineTo(x, y)
+            }
+
+            visPaint.color = when (w) {
+                0 -> Color.parseColor("#00D4FF")
+                1 -> Color.parseColor("#818CF8")
+                else -> Color.parseColor("#C084FC")
+            }
+            visPaint.alpha = alpha
+            canvas.drawPath(visWavePath, visPaint)
+        }
+    }
+
+    private fun drawFirefliesVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        visPaint.style = Paint.Style.FILL
+        val bass = LiveOrbState.musicBass
+        val mid = LiveOrbState.musicMid
+
+        for (i in 0 until 32) {
+            val seed = (i * 137.5f)
+            val ang = Math.toRadians((seed + totalTime * 18f * (0.8f + (i % 3) * 0.3f)).toDouble())
+            val r = radius * (0.25f + ((i * 31) % 65) / 100f + bass * 0.25f)
+            val px = cx + cos(ang).toFloat() * r
+            val py = cy + sin(ang).toFloat() * r
+
+            val pulse = (sin(totalTime * 4f + i) + 1f) * 0.5f
+            val pSize = max(3f, radius * (0.018f + pulse * 0.035f * (1f + mid)))
+
+            visPaint.color = if (i % 2 == 0) Color.parseColor("#FACC15") else Color.parseColor("#38BDF8")
+            visPaint.alpha = ((alpha * (0.4f + pulse * 0.6f))).toInt().coerceIn(0, 255)
+            canvas.drawCircle(px, py, pSize, visPaint)
+        }
+    }
+
+    private fun drawAuroraVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeWidth = max(5f, radius * 0.08f)
+        val mid = LiveOrbState.musicMid
+        val high = LiveOrbState.musicHigh
+
+        for (a in 0..1) {
+            visWavePath.reset()
+            val steps = 24
+            for (i in 0..steps) {
+                val t = i / steps.toFloat()
+                val ang = Math.toRadians((t * 360.0 - 90.0))
+                val waveR = radius * (0.6f + sin(t * 8f + totalTime * 2.2f + a * 1.5f) * (0.08f + mid * 0.14f))
+                val x = cx + cos(ang).toFloat() * waveR
+                val y = cy + sin(ang).toFloat() * waveR
+                if (i == 0) visWavePath.moveTo(x, y) else visWavePath.lineTo(x, y)
+            }
+            visWavePath.close()
+
+            visPaint.color = if (a == 0) Color.parseColor("#10B981") else Color.parseColor("#8B5CF6")
+            visPaint.alpha = ((alpha * 0.7f)).toInt().coerceIn(0, 255)
+            canvas.drawPath(visWavePath, visPaint)
+        }
+    }
+
+    private fun drawMatrixVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeCap = Paint.Cap.ROUND
+        visPaint.strokeWidth = max(2.5f, radius * 0.03f)
+
+        val energy = LiveOrbState.musicOverall
+        val cols = 12
+        val colWidth = (radius * 1.6f) / cols
+        for (c in 0 until cols) {
+            val x = cx - radius * 0.8f + c * colWidth + colWidth * 0.5f
+            val speed = 80f + (c % 4) * 45f
+            val yHead = (cy - radius * 0.8f + (totalTime * speed + c * 38f) % (radius * 1.6f))
+            val trailLen = radius * (0.25f + energy * 0.35f)
+
+            visPaint.color = Color.parseColor("#22C55E") // Matrix green
+            visPaint.alpha = alpha
+            canvas.drawLine(x, yHead - trailLen, x, yHead, visPaint)
+
+            // Bright head dot
+            visPaint.style = Paint.Style.FILL
+            visPaint.color = Color.parseColor("#86EFAC")
+            canvas.drawCircle(x, yHead, max(3f, radius * 0.024f), visPaint)
+            visPaint.style = Paint.Style.STROKE
+        }
     }
 
     private fun blendColor(c0: Int, c1: Int, t: Float): Int {

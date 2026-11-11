@@ -53,12 +53,18 @@ def resolve_usb_backend():
 
 def parse_cmdline():
     parser = argparse.ArgumentParser(
-        description="USB boot tool for Amlogic G12 SoCs (Yandex Station Max)",
+        description="USB boot tool for Amlogic G12 SoCs (Yandex Station Max: 0008, 00052, 00053)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--version", "-v", action="version", version="%(prog)s 1.1")
-    parser.add_argument("--retries", type=int, default=5, help="Number of retries")
-    parser.add_argument("binary", action="store", help="aml.img / FIP binary to load")
+    parser.add_argument("--version", "-v", action="version", version="%(prog)s 1.3")
+    parser.add_argument("--retries", type=int, default=3, help="Количество повторных попыток")
+    parser.add_argument(
+        "--revision",
+        choices=["auto", "0008", "00052", "00053"],
+        default="auto",
+        help="Ревизия Станции Макс (0008, 00052, 00053 или auto)",
+    )
+    parser.add_argument("binary", nargs="?", default=None, help="Путь к aml.img / bootloader.img (если не указан, выбирается по ревизии)")
     return parser.parse_args()
 
 
@@ -75,79 +81,122 @@ def reset_usb_connection(backend):
     return pyamlboot.AmlogicSoC(backend=backend)
 
 
-def main():
-    args = parse_cmdline()
-    backend = resolve_usb_backend()
+def get_image_candidates(args):
+    if args.binary:
+        return [args.binary]
 
-    with open(args.binary, "rb") as f:
+    rev = args.revision
+    aml_std = os.path.join(SCRIPT_DIR, "aml.img")
+    aml_53 = os.path.join(SCRIPT_DIR, "aml_00053.img")
+    bootloader_53 = os.path.join(SCRIPT_DIR, "bootloader.img")
+
+    if rev == "00053":
+        cands = [aml_53, bootloader_53, aml_std]
+    elif rev in ("0008", "00052"):
+        cands = [aml_std, aml_53, bootloader_53]
+    else:  # auto
+        # Проверяем оба варианта
+        cands = [aml_std, aml_53, bootloader_53]
+
+    valid = [p for p in cands if os.path.isfile(p)]
+    if not valid:
+        raise FileNotFoundError(f"Не найден образ загрузчика aml.img или aml_00053.img в {SCRIPT_DIR}")
+    return valid
+
+
+def boot_single_image(backend, img_path, retries=2):
+    print(f"\n[*] Попытка загрузки образа: {os.path.basename(img_path)} ({os.path.getsize(img_path)} байт)...")
+    with open(img_path, "rb") as f:
         data = f.read()
 
-    retries = max(1, args.retries)
-    while retries > 0:
+    attempt = 0
+    while attempt < retries:
+        attempt += 1
         try:
             dev = pyamlboot.AmlogicSoC(backend=backend)
             try:
                 dev.dev.set_configuration()
             except usb.core.USBError:
                 pass
-            socid = dev.identify()
 
-            print("Firmware Version :")
-            print("ROM: %d.%d Stage: %d.%d" % (ord(socid[0]), ord(socid[1]), ord(socid[2]), ord(socid[3])))
-            print("Need Password: %d Password OK: %d" % (ord(socid[4]), ord(socid[5])))
+            socid = dev.identify()
+            rom_maj, rom_min = ord(socid[0]), ord(socid[1])
+            stage_maj, stage_min = ord(socid[2]), ord(socid[3])
+            print("  Firmware Version :")
+            print(f"  ROM: {rom_maj}.{rom_min} Stage: {stage_maj}.{stage_min}")
+            print(f"  Need Password: {ord(socid[4])} Password OK: {ord(socid[5])}")
+
+            if stage_maj != 0:
+                print(f"  [✓] Устройство уже находится в режиме U-Boot/Update (Stage {stage_maj}.{stage_min})!")
+                return True
 
             loadAddr = 0xFFFA0000
-            seq = 0
-
-            print(f"Writing {args.binary} at 0x{loadAddr:x}...")
+            print(f"  Writing {os.path.basename(img_path)} at 0x{loadAddr:x} (BL2)...")
             dev.writeLargeMemory(loadAddr, data[0:0x10000], 4096)
-            print("[DONE]")
+            print("  [DONE]")
 
-            print(f"Running at 0x{loadAddr:x}...")
+            print(f"  Running at 0x{loadAddr:x}...")
             dev.run(loadAddr)
-            print("[DONE]")
+            print("  [DONE]")
 
             time.sleep(2)
 
             prevLength = -1
             prevOffset = -1
+            seq = 0
             amlc_err = 0
             while True:
                 try:
                     (length, offset) = dev.getBootAMLC()
                     if length == prevLength and offset == prevOffset:
-                        print("[BL2 END]")
-                        break
+                        print("  [BL2 END — Загрузка завершена успешно!]")
+                        return True
 
                     prevLength = length
                     prevOffset = offset
 
-                    print(f"AMLC dataSize={length}, offset={offset}, seq={seq}...")
+                    print(f"  AMLC dataSize={length}, offset={offset}, seq={seq}...")
                     dev.writeAMLCData(seq, offset, data[offset : offset + length])
-                    print("[DONE]")
+                    print("  [DONE]")
 
                     seq += 1
                     amlc_err = 0
                 except (usb.core.USBError, ValueError) as e:
                     amlc_err += 1
-                    print(f"USB Error during AMLC transfer ({amlc_err}/5): {e}")
-                    if amlc_err >= 5:
+                    print(f"  USB Error during AMLC transfer ({amlc_err}/4): {e}")
+                    if amlc_err >= 4:
                         raise
-                    time.sleep(3)
+                    time.sleep(2)
                     dev = reset_usb_connection(backend)
                     continue
 
+        except Exception as e:
+            print(f"  [!] Ошибка при загрузке {os.path.basename(img_path)} (попытка {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(3)
+
+    return False
+
+
+def main():
+    args = parse_cmdline()
+    backend = resolve_usb_backend()
+    candidates = get_image_candidates(args)
+
+    print("====================================================================")
+    print("  Amlogic G12 BootROM -> U-Boot (Yandex Station Max 0008/00052/00053)")
+    print(f"  Режим: ревизия={args.revision}, доступных образов: {len(candidates)}")
+    print("====================================================================")
+
+    for cand in candidates:
+        if boot_single_image(backend, cand, retries=args.retries):
+            print(f"\n[+] УСПЕХ: U-Boot успешно запущен с помощью {os.path.basename(cand)}!")
             return 0
+        else:
+            print(f"[-] Не удалось запустить через {os.path.basename(cand)}, пробуем следующий вариант...")
 
-        except (usb.core.USBError, ValueError) as e:
-            print(f"Ошибка подключения: {e}. Осталось попыток: {retries - 1}")
-            retries -= 1
-            if retries <= 0:
-                break
-            time.sleep(4)
-            continue
-
-    print("Не удалось инициализировать U-Boot через сервисный порт (1B8E:C003).")
+    print("\n[ОШИБКА] Ни один из образов (0008/00052 и 00053) не смог инициализировать U-Boot.")
+    print("Проверьте: контакт сервисного Type-C, перемычку 6 пина на GND и подачу 19V питания.")
     return 1
 
 

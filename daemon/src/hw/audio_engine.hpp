@@ -112,11 +112,25 @@ private:
     size_t aec_pos_ = 0;
     int aec_hangover_ = 0;
     bool aec_x_clean_ = true;
-    float ns_noise_floor_ = 120.0f;
+    float ns_noise_floor_ = 55.0f;
+    float hp1_x_ = 0.0f;
+    float hp1_y_ = 0.0f;
+    float hp2_x_ = 0.0f;
+    float hp2_y_ = 0.0f;
+    float agc_gain_ = 8.0f;
+    float agc_noise_floor_ = 55.0f;
+    int agc_hold_frames_ = 0;
+    int cap_warmup_frames_ = 24;
+    std::atomic<float> last_agc_gain_{8.0f};
+    std::atomic<float> last_noise_floor_{55.0f};
     bool mic_spec_zero_sent_ = false;
 
     double resamp_phase_ = 0.0;
     std::vector<float> clean_buf_;
+    std::vector<float> f48_buf_;
+    std::vector<float> f48_comb_buf_;
+    std::vector<float> f48_rem_;
+    std::vector<float> f16_batch_buf_;
     std::vector<int16_t> mono_buf_;
     std::vector<int16_t> combined_buf_;
     std::vector<int16_t> out_batch_buf_;

@@ -37,6 +37,7 @@ struct AssistantCallbacks {
     std::function<void(const std::string& text, uint8_t r, uint8_t g, uint8_t b, int duration_ms)> show_screen_text;
     std::function<void(const json::Value& evt)> broadcast_event;
     std::function<json::Value(const std::string& name, const json::Value& args)> execute_tool;
+    std::function<std::string()> get_runtime_context;
 };
 
 struct DialogEntry {
@@ -57,6 +58,7 @@ public:
     void stop();
     void update_config(const AssistantConfig& cfg);
     void set_mic_muted(bool muted);
+    void set_mic_sensitivity(int sensitivity);
 
     void feed_audio_16k(const int16_t* samples, size_t count, float rms);
 
@@ -90,9 +92,10 @@ private:
     void set_error(const std::string& msg, bool play_chime = true);
 
     json::Value build_setup_json(const AssistantConfig& c) const;
-    static WakeWordSettings to_ww_settings(const AssistantConfig& c);
+    static WakeWordSettings to_ww_settings(const AssistantConfig& c, int mic_sensitivity);
 
     AssistantConfig cfg_;
+    int mic_sensitivity_ = 85;
     mutable std::mutex cfg_mu_;
     AssistantCallbacks cb_;
     WakeWordEngine wake_word_;

@@ -29,6 +29,9 @@ dist/
 base_rom/
 *.img
 !service_flash/aml.img
+!service_flash/aml_0008_00052.img
+!service_flash/aml_00053.img
+!service_flash/bootloader.img
 
 # IDE & OS metadata
 .idea/

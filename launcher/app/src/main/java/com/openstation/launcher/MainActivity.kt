@@ -60,6 +60,18 @@ import kotlin.math.max
 
 class MainActivity : Activity() {
 
+    companion object {
+        @Volatile
+        private var activeInstance: MainActivity? = null
+
+        fun showWeatherOverlay(temp: Int, condition: String, conditionText: String, city: String) {
+            val act = activeInstance ?: return
+            act.runOnUiThread {
+                act.weatherOverlay.showWeather(temp, condition, conditionText, city)
+            }
+        }
+    }
+
     private data class AppEntry(
         val pkg: String,
         val label: String,
@@ -127,7 +139,9 @@ class MainActivity : Activity() {
     // Top bar status & clock
     private lateinit var tvTopClock: TextView
     private lateinit var tvTopDate: TextView
+    private lateinit var tvTopWeather: TextView
     private lateinit var tvStatusLine: TextView
+    private lateinit var weatherOverlay: WeatherOverlayView
 
     // Screen 2: Duo Clock, QR & BORK Station 3D visual
     private lateinit var tvClock: TextView
@@ -259,6 +273,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeInstance = this
         window.setBackgroundDrawable(null)
 
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -344,6 +359,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (activeInstance === this) activeInstance = null
         LiveOrbState.removeListener(orbStateListener)
         pageAnimator?.cancel()
         vinylAnimator?.cancel()
@@ -515,8 +531,36 @@ class MainActivity : Activity() {
                 marginStart = dp(10)
             }
         }
+        tvTopWeather = TextView(this).apply {
+            text = ""
+            setTextColor(Color.parseColor("#38BDF8"))
+            textSize = 12f
+            maxLines = 1
+            isFocusable = true
+            isClickable = true
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#330369A1"))
+                cornerRadius = dp(12).toFloat()
+            }
+            visibility = View.GONE
+            setOnClickListener {
+                if (LiveOrbState.weatherValid) {
+                    weatherOverlay.showWeather(
+                        LiveOrbState.weatherTemp,
+                        LiveOrbState.weatherCondition,
+                        LiveOrbState.weatherConditionText,
+                        LiveOrbState.weatherCity
+                    )
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dp(10)
+            }
+        }
         topLeft.addView(tvTopClock)
         topLeft.addView(tvTopDate)
+        topLeft.addView(tvTopWeather)
 
         // Center: 3-Screen Pill Switcher
         val tabsPillGroup = LinearLayout(this).apply {
@@ -638,6 +682,15 @@ class MainActivity : Activity() {
         rootFrame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             applyPageVisuals(currentPagePos)
         }
+
+        weatherOverlay = WeatherOverlayView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            elevation = dp(32).toFloat()
+        }
+        rootFrame.addView(weatherOverlay)
 
         setContentView(rootFrame)
 
@@ -2183,7 +2236,22 @@ class MainActivity : Activity() {
         shortDateFmt.timeZone = tz
         fullDateFmt.timeZone = tz
         clockDate.time = System.currentTimeMillis()
-        val timeStr = timeFmt.format(clockDate)
+
+        val style = LiveOrbState.clockStyle
+        val timeStr = when (style) {
+            "seconds" -> {
+                val secFmt = SimpleDateFormat("HH:mm:ss", ruLocale).apply { timeZone = tz }
+                secFmt.format(clockDate)
+            }
+            "binary" -> {
+                val cal = java.util.Calendar.getInstance(tz)
+                val h = cal.get(java.util.Calendar.HOUR_OF_DAY)
+                val m = cal.get(java.util.Calendar.MINUTE)
+                Integer.toBinaryString(h).padStart(5, '0') + " : " + Integer.toBinaryString(m).padStart(6, '0')
+            }
+            else -> timeFmt.format(clockDate)
+        }
+
         val shortDate = shortDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
         val fullDate = fullDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
 
@@ -2191,6 +2259,34 @@ class MainActivity : Activity() {
             lastClockStr = timeStr
             tvTopClock.text = timeStr
             tvClock.text = timeStr
+
+            when (style) {
+                "minimal" -> {
+                    tvClock.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
+                    tvClock.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
+                    tvClock.setTextColor(Color.parseColor("#E2E8F0"))
+                }
+                "bold" -> {
+                    tvClock.typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+                    tvClock.setShadowLayer(8f, 0f, 3f, Color.parseColor("#40000000"))
+                    tvClock.setTextColor(Color.WHITE)
+                }
+                "neon" -> {
+                    tvClock.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    tvClock.setTextColor(Color.parseColor("#E0F2FE"))
+                    tvClock.setShadowLayer(18f, 0f, 0f, Color.parseColor("#00D4FF"))
+                }
+                "retro" -> {
+                    tvClock.typeface = Typeface.MONOSPACE
+                    tvClock.setTextColor(Color.parseColor("#4ADE80"))
+                    tvClock.setShadowLayer(14f, 0f, 0f, Color.parseColor("#15803D"))
+                }
+                else -> {
+                    tvClock.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+                    tvClock.setTextColor(Color.WHITE)
+                    tvClock.setShadowLayer(6f, 0f, 2f, Color.parseColor("#33000000"))
+                }
+            }
         }
         if (force || shortDate != lastShortDateStr) {
             lastShortDateStr = shortDate
@@ -2199,6 +2295,14 @@ class MainActivity : Activity() {
         if (force || fullDate != lastFullDateStr) {
             lastFullDateStr = fullDate
             tvDate.text = fullDate
+        }
+
+        if (LiveOrbState.weatherValid) {
+            val sign = if (LiveOrbState.weatherTemp > 0) "+" else ""
+            tvTopWeather.text = "☀️ $sign${LiveOrbState.weatherTemp}°"
+            tvTopWeather.visibility = View.VISIBLE
+        } else {
+            tvTopWeather.visibility = View.GONE
         }
     }
 
@@ -2424,7 +2528,10 @@ class MainActivity : Activity() {
                     "bass_boost" -> "Бас+"
                     "vocal" -> "Вокал"
                     "night" -> "Ночь"
+                    "rock" -> "Рок"
+                    "electronic" -> "Клуб"
                     "flat" -> "Обычный"
+                    "custom" -> "Кастом"
                     else -> "Баланс"
                 }
             }
@@ -2902,7 +3009,7 @@ class MainActivity : Activity() {
     }
 
     private fun cycleEqPreset() {
-        val order = listOf("balanced", "bass_boost", "vocal", "night", "flat")
+        val order = listOf("balanced", "bass_boost", "vocal", "night", "rock", "electronic", "flat")
         val next = order[(order.indexOf(eqPreset) + 1) % order.size]
         eqPreset = next
         syncPills()

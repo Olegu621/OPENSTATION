@@ -20,6 +20,7 @@ struct WakeWordSettings {
     float threshold = 0.20f;
     float score = 1.5f;
     int num_threads = 1;
+    int mic_sensitivity = 85;
 };
 
 class WakeWordEngine {

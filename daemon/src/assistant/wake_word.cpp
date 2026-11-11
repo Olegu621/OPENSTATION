@@ -151,7 +151,8 @@ void WakeWordEngine::update_settings(const WakeWordSettings& settings) {
         settings.keywords != settings_.keywords ||
         std::abs(settings.threshold - settings_.threshold) > 1e-4f ||
         std::abs(settings.score - settings_.score) > 1e-4f ||
-        settings.num_threads != settings_.num_threads) {
+        settings.num_threads != settings_.num_threads ||
+        settings.mic_sensitivity != settings_.mic_sensitivity) {
         settings_ = settings;
         settings_dirty_ = true;
     }
@@ -253,12 +254,16 @@ void WakeWordEngine::worker_loop() {
             return false;
         }
 
+        const float sens_norm = std::clamp(cur.mic_sensitivity, 10, 100) / 100.0f;
+        const float vad_thr = std::clamp(0.34f - sens_norm * 0.16f, 0.16f, 0.36f);
+        const float eff_kws_thr = std::clamp(cur.threshold * (1.15f - sens_norm * 0.30f), 0.05f, 0.50f);
+
         SherpaOnnxVadModelConfig vad_cfg {};
         memset(&vad_cfg, 0, sizeof(vad_cfg));
         vad_cfg.silero_vad.model = kVadModelPath;
-        vad_cfg.silero_vad.threshold = 0.35f;
-        vad_cfg.silero_vad.min_silence_duration = 0.45f;
-        vad_cfg.silero_vad.min_speech_duration = 0.08f;
+        vad_cfg.silero_vad.threshold = vad_thr;
+        vad_cfg.silero_vad.min_silence_duration = 0.55f;
+        vad_cfg.silero_vad.min_speech_duration = 0.04f;
         vad_cfg.silero_vad.window_size = 512;
         vad_cfg.silero_vad.max_speech_duration = 15.0f;
         vad_cfg.sample_rate = 16000;
@@ -289,7 +294,7 @@ void WakeWordEngine::worker_loop() {
         kws_cfg.max_active_paths = 4;
         kws_cfg.num_trailing_blanks = 1;
         kws_cfg.keywords_score = cur.score;
-        kws_cfg.keywords_threshold = cur.threshold;
+        kws_cfg.keywords_threshold = eff_kws_thr;
         kws_cfg.keywords_file = nullptr;
         kws_cfg.keywords_buf = kw_buf.c_str();
         kws_cfg.keywords_buf_size = static_cast<int32_t>(kw_buf.size());
@@ -310,9 +315,9 @@ void WakeWordEngine::worker_loop() {
 
         ready_.store(true);
         set_status("listening");
-        LOGI("WakeWord", "Initialized (sherpa %s, thr=%.2f, score=%.2f, threads=%d)",
+        LOGI("WakeWord", "Initialized (sherpa %s, kwsThr=%.2f, vadThr=%.2f, score=%.2f, sens=%d%%, threads=%d)",
              g_sherpa.getVersion ? g_sherpa.getVersion() : "?",
-             cur.threshold, cur.score, cur.num_threads);
+             eff_kws_thr, vad_thr, cur.score, cur.mic_sensitivity, cur.num_threads);
         return true;
     };
 
@@ -441,9 +446,12 @@ void WakeWordEngine::worker_loop() {
                 if (av > peak) peak = av;
             }
             float win_rms = std::sqrt(sum_sq * (1.0f / static_cast<float>(kVadWin)));
-            float rms_thr = std::clamp(noise_rms * 1.55f, 0.0075f, 0.040f);
-            float peak_thr = std::clamp(noise_rms * 4.2f, 0.022f, 0.14f);
-            bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.40f);
+            const float sens_norm = std::clamp(cur_cfg.mic_sensitivity, 10, 100) / 100.0f;
+            const float rms_mult = 1.65f - sens_norm * 0.35f;
+            const float rms_floor = 0.0065f - sens_norm * 0.0025f;
+            const float rms_thr = std::clamp(noise_rms * rms_mult, rms_floor, 0.035f);
+            const float peak_thr = std::clamp(noise_rms * (3.6f - sens_norm * 0.8f), rms_floor * 2.8f, 0.12f);
+            bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.35f);
 
             if (energetic) {
                 if (vad_sleeping && lead_count >= kVadWin) {
@@ -456,10 +464,10 @@ void WakeWordEngine::worker_loop() {
                     }
                     vad_sleeping = false;
                 }
-                vad_warm_wins = 14; // ~448 ms active Silero tracking after acoustic activity
+                vad_warm_wins = 20; // ~640 ms active Silero tracking after acoustic activity
             } else if (!kws_active && hangover_wins == 0 && vad_warm_wins == 0) {
                 if (win_rms < noise_rms * 2.2f) {
-                    noise_rms = std::clamp(noise_rms * 0.99f + win_rms * 0.01f, 0.002f, 0.030f);
+                    noise_rms = std::clamp(noise_rms * 0.99f + win_rms * 0.01f, 0.0015f, 0.025f);
                 }
             }
 
@@ -490,7 +498,7 @@ void WakeWordEngine::worker_loop() {
                     feed_lead_to_kws();
                     kws_active = true;
                 }
-                hangover_wins = 12; // ~384 ms extra KWS tail after Silero min_silence_duration
+                hangover_wins = 22; // ~704 ms extra KWS tail after Silero min_silence_duration
                 g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
                 fed_current = true;
             } else if (kws_active && hangover_wins > 0) {

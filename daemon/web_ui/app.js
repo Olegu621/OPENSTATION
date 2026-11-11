@@ -22,6 +22,22 @@
     bootanimation: "Заставка"
   };
 
+  const ISO_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+  const ISO_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+  const EQ_PRESETS = {
+    balanced: [1.0, 1.5, 1.0, 0.5, 0.0, 0.0, 0.5, 1.0, 1.5, 1.5],
+    flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    bass_boost: [4.5, 4.0, 3.0, 1.5, 0.0, -0.5, 0.0, 0.5, 1.0, 1.0],
+    vocal: [-2.0, -1.0, 0.0, 1.5, 3.0, 3.5, 2.0, 1.0, 0.5, -0.5],
+    night: [-3.0, -2.5, -1.5, 0.0, 1.0, 1.0, 0.5, -0.5, -2.0, -3.0],
+    rock: [3.5, 2.5, 1.0, -0.5, -1.0, 0.0, 1.5, 2.5, 3.5, 3.5],
+    electronic: [4.0, 3.5, 2.0, 0.5, -0.5, 0.0, 1.0, 2.0, 3.5, 4.0],
+    custom: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  };
+  let currentEqBands = [1.0, 1.5, 1.0, 0.5, 0.0, 0.0, 0.5, 1.0, 1.5, 1.5];
+  let currentMemoryNotes = [];
+  let eqPushTimer = null;
+
   function showToast(msg, isErr = false) {
     const t = $("toast");
     if (!t) return;
@@ -106,7 +122,10 @@
         mode: $("scrMode").value,
         text: $("scrText")?.value || "",
         color: $("scrColor")?.value || "#ffffff",
-        brightness: parseInt($("scrBri")?.value ?? "100", 10)
+        brightness: parseInt($("scrBri")?.value ?? "100", 10),
+        clockStyle: $("clockStyle")?.value || "classic",
+        visualizerStyle: $("visualizerStyle")?.value || "particles",
+        autoMusicVisualizer: $("autoMusicVisualizer") ? $("autoMusicVisualizer").checked : true
       };
       if ($("scrAutoBri")) ls.autoBrightness = $("scrAutoBri").checked;
       if ($("scrSpeed")) ls.scrollSpeed = parseInt($("scrSpeed").value, 10);
@@ -116,7 +135,16 @@
     if ($("eqPreset")) {
       payload.audio = {
         outputRoute: document.querySelector("#audioRoutes .seg.active")?.dataset.route || "auto",
-        eqPreset: $("eqPreset").value
+        eqPreset: $("eqPreset").value,
+        bassBoost: parseInt($("bassBoost")?.value || "20", 10),
+        eqBands: currentEqBands,
+        micSensitivity: parseInt($("micSensitivity")?.value || "85", 10)
+      };
+    }
+
+    if ($("locCity")) {
+      payload.location = {
+        city: $("locCity").value.trim()
       };
     }
 
@@ -145,6 +173,7 @@
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
+      ast.memoryNotes = currentMemoryNotes;
       payload.assistant = ast;
     }
 
@@ -438,7 +467,7 @@
 
   function applyOtaState(ota, fwVer) {
     ota = ota || {};
-    const instVer = ota.installedVersion || fwVer || "1.2.3";
+    const instVer = ota.installedVersion || fwVer || "1.3.0";
     if ($("otaVersionBadge")) {
       $("otaVersionBadge").textContent = `v${instVer}`;
     }
@@ -621,7 +650,7 @@
 
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
       otaPendingRestart = false;
-      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.2.3") + " активна!");
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.3.0") + " активна!");
     }
     updateAliceLiveBox(ast.liveUserText || "", ast.liveModelText || "");
     if (Array.isArray(ast.history)) {
@@ -656,6 +685,9 @@
       if ($("scrMode")) $("scrMode").value = cfg.ledScreen?.mode || "clock";
       if ($("scrText")) $("scrText").value = cfg.ledScreen?.text || "OPEN STATION MAX";
       if ($("scrColor")) $("scrColor").value = cfg.ledScreen?.color || "#ffffff";
+      if ($("clockStyle") && cfg.ledScreen?.clockStyle) $("clockStyle").value = cfg.ledScreen.clockStyle;
+      if ($("visualizerStyle") && cfg.ledScreen?.visualizerStyle) $("visualizerStyle").value = cfg.ledScreen.visualizerStyle;
+      if ($("autoMusicVisualizer")) $("autoMusicVisualizer").checked = cfg.ledScreen?.autoMusicVisualizer !== false;
       if ($("scrBri")) {
         $("scrBri").value = cfg.ledScreen?.brightness ?? 100;
         if ($("lblScrBri")) $("lblScrBri").textContent = $("scrBri").value;
@@ -680,6 +712,22 @@
       if ($("lblHpVol")) $("lblHpVol").textContent = formatTrimLabel(hTrim);
       if ($("eqPreset")) $("eqPreset").value = cfg.audio?.eqPreset || "balanced";
 
+      if ($("bassBoost")) {
+        $("bassBoost").value = cfg.audio?.bassBoost ?? 20;
+        if ($("lblBassBoost")) $("lblBassBoost").textContent = $("bassBoost").value + "%";
+      }
+      if ($("micSensitivity")) {
+        $("micSensitivity").value = cfg.audio?.micSensitivity ?? 85;
+        if ($("lblMicMicSens") || $("lblMicSens")) ($("lblMicSens") || $("lblMicMicSens")).textContent = $("micSensitivity").value + "%";
+      }
+      if (Array.isArray(cfg.audio?.eqBands) && cfg.audio.eqBands.length >= 10) {
+        currentEqBands = cfg.audio.eqBands.slice(0, 10);
+        updateEqSliders();
+        renderEqCurve();
+      }
+
+      if ($("locCity")) $("locCity").value = cfg.location?.city || "";
+
       if ($("actShort")) $("actShort").value = cfg.input?.actionShort || "assistant";
       if ($("actLong")) $("actLong").value = cfg.input?.actionLong || "led_cycle";
       if ($("rotaryInvert")) $("rotaryInvert").checked = !!cfg.input?.rotaryInvert;
@@ -703,6 +751,10 @@
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
         if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 8;
         if ($("astMaxSess")) $("astMaxSess").value = cfg.assistant.maxSessionSec ?? 120;
+        if (Array.isArray(cfg.assistant.memoryNotes)) {
+          currentMemoryNotes = cfg.assistant.memoryNotes.slice();
+          renderMemoryNotes();
+        }
       }
 
       if ($("wyoEn")) $("wyoEn").checked = !!cfg.wyoming?.enabled;
@@ -835,16 +887,266 @@
   if ($("btnVolDown")) $("btnVolDown").addEventListener("click", () => pushSystemVolume((parseInt($("sysVol")?.value ?? "50", 10) || 0) - 5));
   if ($("btnVolUp")) $("btnVolUp").addEventListener("click", () => pushSystemVolume((parseInt($("sysVol")?.value ?? "50", 10) || 0) + 5));
 
+  function pushEqDebounced() {
+    clearTimeout(eqPushTimer);
+    eqPushTimer = setTimeout(async () => {
+      eqPushTimer = null;
+      try {
+        await api("/api/audio/eq", "POST", {
+          preset: $("eqPreset")?.value || "custom",
+          bands: currentEqBands,
+          bassBoost: parseInt($("bassBoost")?.value || "20", 10)
+        });
+      } catch (e) {
+        showToast("Ошибка EQ: " + e.message, true);
+      }
+    }, 120);
+  }
+
+  function renderEqCurve() {
+    const svg = $("eqCurveSvg");
+    if (!svg) return;
+    svg.innerHTML = "";
+
+    const zeroLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    zeroLine.setAttribute("x1", "10");
+    zeroLine.setAttribute("y1", "45");
+    zeroLine.setAttribute("x2", "310");
+    zeroLine.setAttribute("y2", "45");
+    zeroLine.setAttribute("stroke", "rgba(255,255,255,0.15)");
+    zeroLine.setAttribute("stroke-dasharray", "3 3");
+    svg.appendChild(zeroLine);
+
+    const pts = [];
+    const n = currentEqBands.length;
+    for (let i = 0; i < n; i++) {
+      const x = 20 + i * (280 / (n - 1));
+      const gain = Math.max(-12, Math.min(12, currentEqBands[i] || 0));
+      const y = 45 - (gain / 12) * 36;
+      pts.push({ x, y });
+    }
+
+    if (pts.length === 0) return;
+
+    let d = `M ${pts[0].x} ${pts[0].y}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      const mx = (p0.x + p1.x) / 2;
+      d += ` C ${mx} ${p0.y}, ${mx} ${p1.y}, ${p1.x} ${p1.y}`;
+    }
+
+    const areaD = `${d} L ${pts[pts.length - 1].x} 90 L ${pts[0].x} 90 Z`;
+    const areaPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    areaPath.setAttribute("d", areaD);
+    areaPath.setAttribute("fill", "rgba(0, 212, 255, 0.12)");
+    svg.appendChild(areaPath);
+
+    const linePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    linePath.setAttribute("d", d);
+    linePath.setAttribute("fill", "none");
+    linePath.setAttribute("stroke", "#00d4ff");
+    linePath.setAttribute("stroke-width", "2.2");
+    linePath.setAttribute("stroke-linecap", "round");
+    svg.appendChild(linePath);
+
+    for (let i = 0; i < pts.length; i++) {
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("cx", pts[i].x.toFixed(1));
+      dot.setAttribute("cy", pts[i].y.toFixed(1));
+      dot.setAttribute("r", "3.5");
+      dot.setAttribute("fill", "#38bdf8");
+      svg.appendChild(dot);
+    }
+  }
+
+  function updateEqSliders() {
+    for (let i = 0; i < 10; i++) {
+      const slider = $(`eqSlider_${i}`);
+      const lbl = $(`lblEqVal_${i}`);
+      const val = (currentEqBands[i] !== undefined ? currentEqBands[i] : 0).toFixed(1);
+      if (slider && document.activeElement !== slider) slider.value = val;
+      if (lbl) lbl.textContent = (val > 0 ? `+${val}` : val) + " dB";
+    }
+  }
+
+  function init10BandEq() {
+    const row = $("eqSlidersRow");
+    if (!row) return;
+    row.innerHTML = "";
+    for (let i = 0; i < 10; i++) {
+      const col = document.createElement("div");
+      col.className = "eq-col";
+
+      const val = (currentEqBands[i] || 0).toFixed(1);
+      const valSpan = document.createElement("span");
+      valSpan.className = "eq-val";
+      valSpan.id = `lblEqVal_${i}`;
+      valSpan.textContent = (val > 0 ? `+${val}` : val) + " dB";
+
+      const input = document.createElement("input");
+      input.type = "range";
+      input.id = `eqSlider_${i}`;
+      input.min = "-12";
+      input.max = "12";
+      input.step = "0.5";
+      input.value = val;
+
+      input.addEventListener("input", () => {
+        const num = parseFloat(input.value) || 0;
+        currentEqBands[i] = num;
+        valSpan.textContent = (num > 0 ? `+${num.toFixed(1)}` : num.toFixed(1)) + " dB";
+        if ($("eqPreset")) $("eqPreset").value = "custom";
+        renderEqCurve();
+        pushEqDebounced();
+      });
+
+      const lblSpan = document.createElement("span");
+      lblSpan.className = "eq-lbl";
+      lblSpan.textContent = ISO_LABELS[i];
+
+      col.appendChild(valSpan);
+      col.appendChild(input);
+      col.appendChild(lblSpan);
+      row.appendChild(col);
+    }
+    renderEqCurve();
+
+    if ($("eqPreset")) {
+      $("eqPreset").addEventListener("change", () => {
+        const p = $("eqPreset").value;
+        if (EQ_PRESETS[p]) {
+          currentEqBands = EQ_PRESETS[p].slice();
+          updateEqSliders();
+          renderEqCurve();
+          pushEqDebounced();
+        }
+      });
+    }
+
+    if ($("bassBoost")) {
+      $("bassBoost").addEventListener("input", () => {
+        const b = parseInt($("bassBoost").value, 10) || 0;
+        if ($("lblBassBoost")) $("lblBassBoost").textContent = `${b}%`;
+        pushEqDebounced();
+      });
+    }
+
+    if ($("btnResetEq")) {
+      $("btnResetEq").addEventListener("click", () => {
+        currentEqBands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        if ($("eqPreset")) $("eqPreset").value = "flat";
+        updateEqSliders();
+        renderEqCurve();
+        pushEqDebounced();
+        showToast("Эквалайзер сброшен в 0 дБ");
+      });
+    }
+  }
+
+  function renderMemoryNotes() {
+    const box = $("aliceMemoryBox");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!currentMemoryNotes || currentMemoryNotes.length === 0) {
+      box.innerHTML = '<div class="hint">Заметок пока нет. Добавьте ниже или скажите Алисе голосом «Запомни...»</div>';
+      return;
+    }
+    currentMemoryNotes.forEach((note, idx) => {
+      const item = document.createElement("div");
+      item.className = "memory-note-item";
+      const text = document.createElement("span");
+      text.className = "memory-note-text";
+      text.textContent = note;
+      const btnDel = document.createElement("button");
+      btnDel.className = "memory-note-del";
+      btnDel.innerHTML = "✕";
+      btnDel.title = "Удалить";
+      btnDel.addEventListener("click", () => {
+        currentMemoryNotes.splice(idx, 1);
+        renderMemoryNotes();
+        scheduleConfigPush();
+      });
+      item.appendChild(text);
+      item.appendChild(btnDel);
+      box.appendChild(item);
+    });
+  }
+
+  function initAliceMemoryAndLocation() {
+    if ($("btnAddMemoryNote")) {
+      $("btnAddMemoryNote").addEventListener("click", () => {
+        const inp = $("newMemoryNote");
+        if (!inp) return;
+        const val = inp.value.trim();
+        if (!val) return;
+        currentMemoryNotes.push(val);
+        inp.value = "";
+        renderMemoryNotes();
+        scheduleConfigPush();
+        showToast("Факт добавлен в память Алисы!");
+      });
+    }
+
+    if ($("btnDetectLocation")) {
+      $("btnDetectLocation").addEventListener("click", async () => {
+        try {
+          showToast("Определение местоположения по IP...");
+          const res = await api("/api/location/detect", "POST", {});
+          if (res.city && $("locCity")) {
+            $("locCity").value = res.city;
+            scheduleConfigPush();
+            showToast(`Определено: ${res.city} (${res.country})`);
+          } else {
+            showToast("Город не удалось определить", true);
+          }
+        } catch (e) {
+          showToast("Ошибка геолокации: " + e.message, true);
+        }
+      });
+    }
+
+    if ($("btnTestWeather")) {
+      $("btnTestWeather").addEventListener("click", async () => {
+        try {
+          const res = await api("/api/weather");
+          const el = $("weatherTestResult");
+          if (res && res.valid) {
+            const desc = `🌡 ${res.temperature}°C, ${res.conditionText || "Ясно"} (${res.city})`;
+            if (el) el.textContent = desc;
+            showToast(desc);
+          } else {
+            if (el) el.textContent = "Погода недоступна";
+            showToast("Погода недоступна", true);
+          }
+        } catch (e) {
+          showToast("Ошибка погоды: " + e.message, true);
+        }
+      });
+    }
+
+    if ($("micSensitivity")) {
+      $("micSensitivity").addEventListener("input", () => {
+        const val = parseInt($("micSensitivity").value, 10) || 85;
+        if ($("lblMicSens")) $("lblMicSens").textContent = `${val}%`;
+        scheduleConfigPush();
+      });
+    }
+  }
+
   [
     "ringColor", "ringSecColor", "ringAutoBrightness",
-    "scrMode", "scrText", "scrColor", "scrAutoBri",
-    "eqPreset", "actShort", "actLong", "rotaryInvert", "rotaryStep",
+    "scrMode", "scrText", "scrColor", "scrAutoBri", "clockStyle", "visualizerStyle", "autoMusicVisualizer",
+    "eqPreset", "actShort", "actLong", "rotaryInvert", "rotaryStep", "locCity",
     "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel",
     "astPrompt", "astWakeEn", "astChime", "astSearch", "astEchoGuard",
     "astFollowUp", "astMaxSess", "otaAutoCheck", "otaSyncBootanim", "otaRepo", "otaBranch"
   ].forEach((id) => {
     if ($(id)) $(id).addEventListener("change", scheduleConfigPush);
   });
+
+  init10BandEq();
+  initAliceMemoryAndLocation();
 
   if ($("btnSaveAll")) $("btnSaveAll").addEventListener("click", () => pushConfig(true));
   if ($("btnSaveAlice")) $("btnSaveAlice").addEventListener("click", () => pushConfig(true));
@@ -1181,7 +1483,7 @@
             applyOtaState(msg.data, state?.firmwareVersion);
             if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
               otaPendingRestart = false;
-              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.2.3"));
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.3.0"));
             }
           } else if (msg.type === "assistant_event") {
             const fakeAst = Object.assign({}, state?.assistant || {}, {

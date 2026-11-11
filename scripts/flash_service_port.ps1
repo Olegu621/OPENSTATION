@@ -12,12 +12,14 @@ param(
     [string]$RomDir = "",
     [string]$RomZip = "",
     [string]$ReleaseRepo = "Olegu621/OPENSTATION",
+    [string]$Revision = "auto",
     [switch]$WipeData,
     [switch]$KeepData,
     [switch]$SkipWipe,
     [switch]$ForceWipe,
     [switch]$InstallDriver,
     [switch]$SkipDriverCheck,
+    [switch]$AfterUbt,
     [switch]$NoPause
 )
 
@@ -123,21 +125,16 @@ function Test-WorldCupDriverInstalled {
 }
 
 function Install-WorldCupDriver {
+    $installScript = Join-Path $RootDir "scripts\install_driver.ps1"
+    if (Test-Path $installScript) {
+        Write-Host "[*] Запуск автоматической установки драйвера WorldCup..." -ForegroundColor Yellow
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript -NoPause
+        return
+    }
     $drvDir = Join-Path $ServiceFlashDir "Drivers"
-    $is64 = [Environment]::Is64BitOperatingSystem
-    $dpinst = Join-Path $drvDir $(if ($is64) { "dpinst64.exe" } else { "dpinst32.exe" })
-    if (-not (Test-Path $dpinst)) {
-        throw "Не найден установщик драйвера WorldCup: $dpinst"
-    }
-    Write-Host "[*] Установка USB-драйвера WorldCup (libusb-win32 VID_1B8E&PID_C003)..." -ForegroundColor Yellow
-    Write-Host "    Если Windows покажет запрос UAC / безопасности — нажмите 'Установить' / 'Да'." -ForegroundColor Gray
-    $proc = Start-Process -FilePath $dpinst -WorkingDirectory $drvDir -Verb RunAs -PassThru -Wait
-    # dpinst возвращает маску (бит 0x40000000/reboot или количество установленных драйверов >=0)
-    if ($proc.ExitCode -lt 0 -and $proc.ExitCode -ne -2147418112) {
-        Write-Host ("  [!] dpinst завершён с кодом 0x{0:X}" -f ($proc.ExitCode -band 0xFFFFFFFF)) -ForegroundColor DarkYellow
-    } else {
-        Write-Host "  Драйвер WorldCup установлен." -ForegroundColor DarkGreen
-    }
+    $infPath = Join-Path $drvDir "WorldCup_Device.inf"
+    Write-Host "[*] Регистрация драйвера через pnputil..." -ForegroundColor Yellow
+    & pnputil.exe /add-driver $infPath /install
 }
 
 function Test-RomDirValid {
@@ -431,7 +428,8 @@ if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
 }
 
 if (-not $ubootReady) {
-    & $PythonExe (Join-Path $ServiceFlashDir "boot-g12.py") "--retries" "5" (Join-Path $ServiceFlashDir "aml.img")
+    Write-Host "  -> Запуск boot-g12.py (ревизия: $Revision)..." -ForegroundColor Yellow
+    & $PythonExe (Join-Path $ServiceFlashDir "boot-g12.py") "--revision" $Revision "--retries" "3"
     if ($LASTEXITCODE -ne 0) {
         throw "Не удалось инициализировать Amlogic USB Boot (1B8E:C003). Проверьте: пайку/контакт DATA+/DATA-/GND, перемычку 6 пина на 3 (GND), драйвер WorldCup и подачу питания 19V."
     }
@@ -468,6 +466,32 @@ if ($KeepData -or $SkipWipe) {
     $DoWipeData = (-not $ansWipe) -or ($ansWipe -match '^[YyДд]')
 }
 
+if ($AfterUbt) {
+    Write-Host "[*] Режим 'After UBT': применение параметров U-Boot для предотвращения бутлупа..." -ForegroundColor Yellow
+    $afterUbtCmds = @(
+        "store init",
+        "amlmmc enc",
+        "setenv silent 0",
+        "setenv lock 10000000",
+        "setenv avb2 0",
+        "saveenv"
+    )
+    foreach ($cmd in $afterUbtCmds) {
+        try {
+            Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
+        } catch {
+            Write-Host "  [!] $cmd : $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Green
+    Write-Host "  НАСТРОЙКИ AFTER UBT ПРИМЕНЕНЫ УСПЕШНО!" -ForegroundColor Green
+    Write-Host "========================================================================" -ForegroundColor Green
+    Write-Host "  1) Снимите перемычку с 6 пина." -ForegroundColor Yellow
+    Write-Host "  2) Переподключите питание 19V станции." -ForegroundColor Gray
+    exit 0
+}
+
 Write-Host "[3/4] Прошивка системных разделов OpenStation Max..." -ForegroundColor Yellow
 
 $vbmetaPath = Join-Path $ResolvedRomDir "vbmeta.img"
@@ -488,9 +512,22 @@ if ($DoWipeData) {
     Write-Host "[4/4] Завершение (/data сохранён)..." -ForegroundColor Yellow
 }
 
-# Примечание: vbmeta.img собран с AVB flags=2 (отключённая проверка целостности),
-# а загруженный по USB Boot загрузчик YAOSX aml.img сбрасывает USB-сессию при вызове
-# store init / amlmmc enc / setenv по bulkcmd, поэтому env после mwrite не трогаем.
+Write-Host "  -> Финализация U-Boot (after_ubt: снятие lock=10000000, avb2=0, silent=0, saveenv)..." -ForegroundColor Yellow
+$afterUbtCmds = @(
+    "store init",
+    "amlmmc enc",
+    "setenv silent 0",
+    "setenv lock 10000000",
+    "setenv avb2 0",
+    "saveenv"
+)
+foreach ($cmd in $afterUbtCmds) {
+    try {
+        Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
+    } catch {
+        Write-Host "    [!] $cmd : $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green

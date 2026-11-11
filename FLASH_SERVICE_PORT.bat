@@ -6,28 +6,73 @@ title OpenStation Max — Прошивка системы через серви�
 
 echo.
 echo ========================================================================
-echo   OpenStation Max — Полная прошивка системы через сервисный порт
-echo   Восстановление из кирпича / прошивка с нуля на базе YAOSX + OpenStation
+echo   OpenStation Max — Прошивка через сервисный порт (USB Boot)
+echo   Поддержка всех ревизий: YNDX-0008, YNDX-00052, YNDX-00053
 echo ========================================================================
 echo.
 echo   Выберите действие:
 echo.
+echo     [0] ⚡ Запустить графический интерфейс (OpenStationFlasher GUI)
 echo     [1] Прошить систему + очистить /data (Рекомендуется с нуля / unbrick)
 echo     [2] Прошить систему БЕЗ очистки /data (сохранить ключи и настройки)
-echo     [3] Установить USB-драйвер WorldCup (1B8E:C003) и прошить
-echo     [4] Выбрать свой архив OpenStationMax-ROM-*.zip вручную
-echo     [5] Выход
+echo     [3] Установить USB-драйвер WorldCup (1B8E:C003) в 1 клик
+echo     [4] Вход для апдейта (переход в режим WorldCup U-Boot)
+echo     [5] Запустить After UBT (исправление зависания на логотипе и бутлупа)
+echo     [6] Выбрать свой архив OpenStationMax-ROM-*.zip вручную
+echo     [7] Выход
 echo.
 set "CHOICE="
-set /p "CHOICE=Введите номер [1-5] (Enter = 1): "
-if "%CHOICE%"=="" set "CHOICE=1"
+set /p "CHOICE=Введите номер [0-7] (Enter = 0 для GUI): "
+if "%CHOICE%"=="" set "CHOICE=0"
 
-if "%CHOICE%"=="1" goto MODE_WIPE
-if "%CHOICE%"=="2" goto MODE_KEEP
+if /i "%CHOICE%"=="0" goto MODE_GUI
+if /i "%CHOICE%"=="G" goto MODE_GUI
+if "%CHOICE%"=="1" goto SELECT_REV_WIPE
+if "%CHOICE%"=="2" goto SELECT_REV_KEEP
 if "%CHOICE%"=="3" goto MODE_DRV
-if "%CHOICE%"=="4" goto MODE_ZIP
-if "%CHOICE%"=="5" exit /b 0
-goto MODE_WIPE
+if "%CHOICE%"=="4" goto MODE_UPDATE_ENTRY
+if "%CHOICE%"=="5" goto MODE_AFTER_UBT
+if "%CHOICE%"=="6" goto MODE_ZIP
+if "%CHOICE%"=="7" exit /b 0
+goto MODE_GUI
+
+:MODE_GUI
+if exist "%~dp0OpenStationFlasher.exe" (
+    start "" "%~dp0OpenStationFlasher.exe"
+    exit /b 0
+) else (
+    echo [!] OpenStationFlasher.exe не найден, продолжаем в консольном режиме...
+    goto MODE_WIPE
+)
+
+:MODE_UPDATE_ENTRY
+call "%~dp0ПЕРЕХОД_ДЛЯ_UPDATE.bat"
+goto CHECK_RC
+
+:SELECT_REV_WIPE
+set "REV_PARAM=auto"
+echo.
+echo   Ревизия Станции: [1] Авто  [2] 0008 / 00052  [3] 00053
+set /p "R_CHOICE=Выберите ревизию [1-3] (Enter = 1): "
+if "%R_CHOICE%"=="2" set "REV_PARAM=0008"
+if "%R_CHOICE%"=="3" set "REV_PARAM=00053"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\flash_service_port.ps1" -WipeData -Revision "%REV_PARAM%"
+goto CHECK_RC
+
+:SELECT_REV_KEEP
+set "REV_PARAM=auto"
+echo.
+echo   Ревизия Станции: [1] Авто  [2] 0008 / 00052  [3] 00053
+set /p "R_CHOICE=Выберите ревизию [1-3] (Enter = 1): "
+if "%R_CHOICE%"=="2" set "REV_PARAM=0008"
+if "%R_CHOICE%"=="3" set "REV_PARAM=00053"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\flash_service_port.ps1" -KeepData -Revision "%REV_PARAM%"
+goto CHECK_RC
+
+:MODE_AFTER_UBT
+echo.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\flash_service_port.ps1" -AfterUbt
+goto CHECK_RC
 
 :MODE_WIPE
 echo.

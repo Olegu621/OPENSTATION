@@ -255,7 +255,145 @@ const char* translate_metno_symbol(const std::string& sym) {
     return sym.c_str();
 }
 
+std::string classify_wwo_code(int code) {
+    switch (code) {
+        case 113: return "clear";
+        case 116: return "partly_cloudy";
+        case 119:
+        case 122: return "cloudy";
+        case 143:
+        case 248:
+        case 260: return "fog";
+        case 200:
+        case 386:
+        case 389:
+        case 392:
+        case 395: return "storm";
+        case 179:
+        case 182:
+        case 185:
+        case 227:
+        case 230:
+        case 323:
+        case 326:
+        case 329:
+        case 332:
+        case 335:
+        case 338:
+        case 350:
+        case 368:
+        case 371:
+        case 374:
+        case 377: return "snow";
+        case 176:
+        case 263:
+        case 266:
+        case 281:
+        case 284:
+        case 293:
+        case 296:
+        case 299:
+        case 302:
+        case 305:
+        case 308:
+        case 311:
+        case 314:
+        case 317:
+        case 320:
+        case 353:
+        case 356:
+        case 359:
+        case 362:
+        case 365: return "rain";
+        default: return "";
+    }
+}
+
+std::string classify_weather_condition(const std::string& sym_or_code, const std::string& desc) {
+    if (!sym_or_code.empty()) {
+        int code = std::atoi(sym_or_code.c_str());
+        if (code > 0) {
+            std::string wc = classify_wwo_code(code);
+            if (!wc.empty()) return wc;
+        }
+        std::string s = to_lower_ascii(sym_or_code);
+        if (s.find("thunder") != std::string::npos) return "storm";
+        if (s.find("snow") != std::string::npos || s.find("sleet") != std::string::npos) return "snow";
+        if (s.find("rain") != std::string::npos) return "rain";
+        if (s.find("fog") != std::string::npos) return "fog";
+        if (s.find("partly") != std::string::npos || s.find("fair") != std::string::npos) return "partly_cloudy";
+        if (s.find("cloud") != std::string::npos) return "cloudy";
+        if (s.find("clear") != std::string::npos) return "clear";
+    }
+    std::string d = to_lower_ascii(desc);
+    auto has = [&](const char* a, const char* b = nullptr) {
+        return d.find(a) != std::string::npos || (b && d.find(b) != std::string::npos);
+    };
+    if (has("гроз", "Гроз") || has("thunder")) return "storm";
+    if (has("снег", "Снег") || has("снеж", "Снеж") || has("метел", "Метел") ||
+        has("snow", "blizzard") || has("sleet")) return "snow";
+    if (has("дожд", "Дожд") || has("ливн", "Ливн") || has("ливен", "Ливен") ||
+        has("морос", "Морос") || has("осадк", "Осадк") || has("rain", "shower") || has("drizzle")) return "rain";
+    if (has("туман", "Туман") || has("дымк", "Дымк") || has("fog", "mist")) return "fog";
+    if (has("перемен", "Перемен") || has("малооблач", "Малооблач") ||
+        has("небольшая облач", "partly")) return "partly_cloudy";
+    if (has("облач", "Облач") || has("пасмур", "Пасмур") ||
+        has("cloud", "overcast")) return "cloudy";
+    return "clear";
+}
+
 } // namespace
+
+GeoLocationResult detect_location_by_ip(const std::atomic<bool>* abort_req) {
+    GeoLocationResult out;
+    // Provider 1: ip-api.com (fast JSON with Russian city names)
+    {
+        HttpClientRequest req;
+        req.url = "http://ip-api.com/json/?lang=ru&fields=status,message,country,regionName,city,lat,lon,timezone";
+        req.timeout_ms = 4500;
+        req.abort_req = abort_req;
+        HttpClientResponse r = http_perform(req);
+        json::Value doc;
+        if (r.ok && r.status_code == 200 && json::Parser::parse(r.body, doc)) {
+            std::string st = doc.get("status") ? doc.get("status")->as_str() : "";
+            if (st == "success") {
+                out.ok = true;
+                if (const auto* x = doc.get("city")) out.city = trim_ws(x->as_str());
+                if (const auto* x = doc.get("country")) out.country = trim_ws(x->as_str());
+                if (const auto* x = doc.get("regionName")) out.region = trim_ws(x->as_str());
+                if (const auto* x = doc.get("timezone")) out.timezone = trim_ws(x->as_str());
+                if (const auto* x = doc.get("lat")) out.lat = x->as_double();
+                if (const auto* x = doc.get("lon")) out.lon = x->as_double();
+                if (!out.city.empty() || (out.lat != 0.0 && out.lon != 0.0)) return out;
+            }
+        }
+    }
+    // Provider 2 fallback: ipwho.is
+    {
+        HttpClientRequest req;
+        req.url = "https://ipwho.is/?lang=ru";
+        req.timeout_ms = 5500;
+        req.abort_req = abort_req;
+        HttpClientResponse r = http_perform(req);
+        json::Value doc;
+        if (r.ok && r.status_code == 200 && json::Parser::parse(r.body, doc)) {
+            if (doc.get("success") && doc.get("success")->as_bool(false)) {
+                out.ok = true;
+                if (const auto* x = doc.get("city")) out.city = trim_ws(x->as_str());
+                if (const auto* x = doc.get("country")) out.country = trim_ws(x->as_str());
+                if (const auto* x = doc.get("region")) out.region = trim_ws(x->as_str());
+                if (const auto* tz = doc.get("timezone"); tz && tz->is_obj()) {
+                    if (const auto* id = tz->get("id")) out.timezone = trim_ws(id->as_str());
+                }
+                if (const auto* x = doc.get("latitude")) out.lat = x->as_double();
+                if (const auto* x = doc.get("longitude")) out.lon = x->as_double();
+                if (!out.city.empty() || (out.lat != 0.0 && out.lon != 0.0)) return out;
+            }
+        }
+        out.error = r.error.empty() ? "IP geolocation unreachable" : r.error;
+    }
+    return out;
+}
 
 json::Value tool_web_search(const std::string& query, int count, const std::atomic<bool>* abort_req) {
     using json::Value;
@@ -312,11 +450,46 @@ json::Value tool_web_search(const std::string& query, int count, const std::atom
     return res;
 }
 
-json::Value tool_get_weather(const std::string& city, int days, const std::atomic<bool>* abort_req) {
+json::Value tool_get_weather(const std::string& city,
+                             int days,
+                             double fallback_lat,
+                             double fallback_lon,
+                             const std::string& fallback_city,
+                             const std::atomic<bool>* abort_req) {
     using json::Value;
     Value res = Value::make_obj();
     std::string c = trim_ws(city);
-    if (c.empty()) c = "Moscow";
+    double use_lat = 0.0;
+    double use_lon = 0.0;
+    std::string hint_city;
+    bool using_station_location = false;
+    if (c.empty()) {
+        using_station_location = true;
+        std::string fc = trim_ws(fallback_city);
+        if (!fc.empty() || (fallback_lat != 0.0 || fallback_lon != 0.0)) {
+            c = fc;
+            hint_city = fc;
+            use_lat = fallback_lat;
+            use_lon = fallback_lon;
+        } else {
+            GeoLocationResult geo = detect_location_by_ip(abort_req);
+            if (geo.ok) {
+                c = geo.city;
+                hint_city = geo.city;
+                use_lat = geo.lat;
+                use_lon = geo.lon;
+            }
+        }
+        if (c.empty()) {
+            if (use_lat != 0.0 || use_lon != 0.0) {
+                char llbuf[48];
+                snprintf(llbuf, sizeof(llbuf), "%.3f,%.3f", use_lat, use_lon);
+                c = llbuf;
+            } else {
+                c = "Moscow";
+            }
+        }
+    }
     int n_days = std::clamp(days, 1, 3);
 
     // Provider 1: wttr.in JSON (localized in Russian, works for Cyrillic & Latin cities)
@@ -332,11 +505,13 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
             const auto* cc_arr = doc.get("current_condition");
             if (cc_arr && cc_arr->is_arr() && !cc_arr->arr_val.empty()) {
                 const auto& cur = cc_arr->arr_val[0];
-                std::string resolved_city = c;
+                std::string resolved_city = !hint_city.empty() ? hint_city : c;
                 std::string country;
                 if (const auto* na = doc.get("nearest_area"); na && na->is_arr() && !na->arr_val.empty()) {
                     if (const auto* an = na->arr_val[0].get("areaName"); an && an->is_arr() && !an->arr_val.empty()) {
-                        if (const auto* v = an->arr_val[0].get("value"); v && v->is_str()) resolved_city = v->as_str();
+                        if (const auto* v = an->arr_val[0].get("value"); v && v->is_str()) {
+                            if (hint_city.empty()) resolved_city = v->as_str();
+                        }
                     }
                     if (const auto* cn = na->arr_val[0].get("country"); cn && cn->is_arr() && !cn->arr_val.empty()) {
                         if (const auto* v = cn->arr_val[0].get("value"); v && v->is_str()) country = v->as_str();
@@ -348,15 +523,26 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
                 } else if (const auto* wd = cur.get("weatherDesc"); wd && wd->is_arr() && !wd->arr_val.empty()) {
                     if (const auto* v = wd->arr_val[0].get("value"); v && v->is_str()) desc = v->as_str();
                 }
+                std::string wwo = cur.get("weatherCode") ? cur.get("weatherCode")->as_str() : "";
+                std::string cond_code = classify_weather_condition(wwo, desc);
 
                 res["ok"] = Value::make_bool(true);
                 res["provider"] = Value::make_str("wttr.in");
                 res["city"] = Value::make_str(resolved_city);
+                res["stationLocation"] = Value::make_bool(using_station_location);
                 if (!country.empty()) res["country"] = Value::make_str(country);
 
                 Value cur_out = Value::make_obj();
-                if (const auto* x = cur.get("temp_C")) cur_out["tempC"] = Value::make_str(x->as_str());
-                if (const auto* x = cur.get("FeelsLikeC")) cur_out["feelsLikeC"] = Value::make_str(x->as_str());
+                int temp_num = 0;
+                if (const auto* x = cur.get("temp_C")) {
+                    cur_out["tempC"] = Value::make_str(x->as_str());
+                    temp_num = static_cast<int>(std::lround(std::atof(x->as_str().c_str())));
+                    cur_out["tempNum"] = Value::make_int(temp_num);
+                }
+                if (const auto* x = cur.get("FeelsLikeC")) {
+                    cur_out["feelsLikeC"] = Value::make_str(x->as_str());
+                    cur_out["feelsLikeNum"] = Value::make_int(static_cast<int>(std::lround(std::atof(x->as_str().c_str()))));
+                }
                 if (const auto* x = cur.get("humidity")) cur_out["humidityPct"] = Value::make_str(x->as_str());
                 if (const auto* x = cur.get("pressure")) cur_out["pressureHpa"] = Value::make_str(x->as_str());
                 if (const auto* x = cur.get("windspeedKmph")) {
@@ -366,6 +552,7 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
                 }
                 if (const auto* x = cur.get("winddir16Point")) cur_out["windDir"] = Value::make_str(x->as_str());
                 if (!desc.empty()) cur_out["condition"] = Value::make_str(desc);
+                cur_out["conditionCode"] = Value::make_str(cond_code);
                 res["current"] = std::move(cur_out);
 
                 Value fc = Value::make_arr();
@@ -376,14 +563,21 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
                         if (const auto* dt = d.get("date")) item["date"] = Value::make_str(dt->as_str());
                         if (const auto* mn = d.get("mintempC")) item["minC"] = Value::make_str(mn->as_str());
                         if (const auto* mx = d.get("maxtempC")) item["maxC"] = Value::make_str(mx->as_str());
+                        std::string day_desc;
+                        std::string day_wwo;
                         if (const auto* h_arr = d.get("hourly"); h_arr && h_arr->is_arr() && h_arr->arr_val.size() > 4) {
                             const auto& noon = h_arr->arr_val[4];
                             if (const auto* lr = noon.get("lang_ru"); lr && lr->is_arr() && !lr->arr_val.empty()) {
                                 if (const auto* v = lr->arr_val[0].get("value"); v && v->is_str()) {
-                                    item["dayCondition"] = Value::make_str(v->as_str());
+                                    day_desc = v->as_str();
+                                    item["dayCondition"] = Value::make_str(day_desc);
                                 }
                             }
+                            if (const auto* wc = noon.get("weatherCode"); wc && wc->is_str()) {
+                                day_wwo = wc->as_str();
+                            }
                         }
+                        item["conditionCode"] = Value::make_str(classify_weather_condition(day_wwo, day_desc));
                         fc.push(std::move(item));
                     }
                 }
@@ -393,30 +587,37 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
         }
     }
 
-    // Provider 2 Fallback: Open-Meteo Geocoding + Met.no Locationforecast 2.0
-    HttpClientRequest geo_req;
-    geo_req.url = "https://geocoding-api.open-meteo.com/v1/search?name=" + url_encode(c) +
-                  "&count=1&language=ru&format=json";
-    geo_req.timeout_ms = 5500;
-    geo_req.abort_req = abort_req;
-    HttpClientResponse geo_r = http_perform(geo_req);
-    json::Value geo_doc;
-    if (!geo_r.ok || geo_r.status_code != 200 || !json::Parser::parse(geo_r.body, geo_doc)) {
-        res["ok"] = Value::make_bool(false);
-        res["error"] = Value::make_str("Weather providers unreachable: " + geo_r.error);
-        return res;
+    // Provider 2 Fallback: direct coordinates (if known) or Open-Meteo Geocoding + Met.no Locationforecast 2.0
+    double lat = use_lat;
+    double lon = use_lon;
+    std::string rname = !hint_city.empty() ? hint_city : c;
+    std::string rcountry;
+
+    if (lat == 0.0 && lon == 0.0) {
+        HttpClientRequest geo_req;
+        geo_req.url = "https://geocoding-api.open-meteo.com/v1/search?name=" + url_encode(c) +
+                      "&count=1&language=ru&format=json";
+        geo_req.timeout_ms = 5500;
+        geo_req.abort_req = abort_req;
+        HttpClientResponse geo_r = http_perform(geo_req);
+        json::Value geo_doc;
+        if (!geo_r.ok || geo_r.status_code != 200 || !json::Parser::parse(geo_r.body, geo_doc)) {
+            res["ok"] = Value::make_bool(false);
+            res["error"] = Value::make_str("Weather providers unreachable: " + geo_r.error);
+            return res;
+        }
+        const auto* g_arr = geo_doc.get("results");
+        if (!g_arr || !g_arr->is_arr() || g_arr->arr_val.empty()) {
+            res["ok"] = Value::make_bool(false);
+            res["error"] = Value::make_str("City not found: " + c);
+            return res;
+        }
+        const auto& g0 = g_arr->arr_val[0];
+        lat = g0.get("latitude") ? g0.get("latitude")->as_double(55.7558) : 55.7558;
+        lon = g0.get("longitude") ? g0.get("longitude")->as_double(37.6176) : 37.6176;
+        rname = g0.get("name") ? g0.get("name")->as_str(c) : c;
+        rcountry = g0.get("country") ? g0.get("country")->as_str() : "";
     }
-    const auto* g_arr = geo_doc.get("results");
-    if (!g_arr || !g_arr->is_arr() || g_arr->arr_val.empty()) {
-        res["ok"] = Value::make_bool(false);
-        res["error"] = Value::make_str("City not found: " + c);
-        return res;
-    }
-    const auto& g0 = g_arr->arr_val[0];
-    double lat = g0.get("latitude") ? g0.get("latitude")->as_double(55.7558) : 55.7558;
-    double lon = g0.get("longitude") ? g0.get("longitude")->as_double(37.6176) : 37.6176;
-    std::string rname = g0.get("name") ? g0.get("name")->as_str(c) : c;
-    std::string rcountry = g0.get("country") ? g0.get("country")->as_str() : "";
 
     char met_url[192];
     snprintf(met_url, sizeof(met_url),
@@ -425,7 +626,7 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
     met_req.url = met_url;
     met_req.timeout_ms = 6500;
     met_req.abort_req = abort_req;
-    met_req.headers["User-Agent"] = "OpenStationMax/1.0 (https://openstation.local)";
+    met_req.headers["User-Agent"] = "OpenStationMax/1.3 (https://openstation.local)";
     HttpClientResponse met_r = http_perform(met_req);
     json::Value met_doc;
     if (!met_r.ok || met_r.status_code != 200 || !json::Parser::parse(met_r.body, met_doc)) {
@@ -450,24 +651,82 @@ json::Value tool_get_weather(const std::string& city, int days, const std::atomi
     res["ok"] = Value::make_bool(true);
     res["provider"] = Value::make_str("met.no");
     res["city"] = Value::make_str(rname);
+    res["stationLocation"] = Value::make_bool(using_station_location);
     if (!rcountry.empty()) res["country"] = Value::make_str(rcountry);
 
     Value cur_out = Value::make_obj();
     if (det) {
-        if (const auto* x = det->get("air_temperature")) cur_out["tempC"] = *x;
-        if (const auto* x = det->get("relative_humidity")) cur_out["humidityPct"] = *x;
+        if (const auto* x = det->get("air_temperature")) {
+            double td = x->as_double(0.0);
+            int ti = static_cast<int>(std::lround(td));
+            cur_out["tempC"] = Value::make_str(std::to_string(ti));
+            cur_out["tempNum"] = Value::make_int(ti);
+            cur_out["feelsLikeC"] = Value::make_str(std::to_string(ti));
+            cur_out["feelsLikeNum"] = Value::make_int(ti);
+        }
+        if (const auto* x = det->get("relative_humidity")) cur_out["humidityPct"] = Value::make_str(std::to_string(static_cast<int>(std::lround(x->as_double(0.0)))));
         if (const auto* x = det->get("wind_speed")) cur_out["windMs"] = *x;
         if (const auto* x = det->get("air_pressure_at_sea_level")) cur_out["pressureHpa"] = *x;
     }
+    std::string sym0;
     if (d0) {
         const auto* n1 = d0->get("next_1_hours") ? d0->get("next_1_hours") : d0->get("next_6_hours");
         const auto* sum = n1 ? n1->get("summary") : nullptr;
         const auto* sc = sum ? sum->get("symbol_code") : nullptr;
         if (sc && sc->is_str()) {
-            cur_out["condition"] = Value::make_str(translate_metno_symbol(sc->as_str()));
+            sym0 = sc->as_str();
+            cur_out["condition"] = Value::make_str(translate_metno_symbol(sym0));
         }
     }
+    cur_out["conditionCode"] = Value::make_str(classify_weather_condition(sym0, ""));
     res["current"] = std::move(cur_out);
+
+    // Build daily summary forecast from Met.no timeseries (up to n_days)
+    Value fc = Value::make_arr();
+    std::string cur_date;
+    double d_min = 999.0, d_max = -999.0;
+    std::string d_sym;
+    auto flush_day = [&]() {
+        if (cur_date.empty() || d_min > 500.0) return;
+        Value item = Value::make_obj();
+        item["date"] = Value::make_str(cur_date);
+        item["minC"] = Value::make_str(std::to_string(static_cast<int>(std::lround(d_min))));
+        item["maxC"] = Value::make_str(std::to_string(static_cast<int>(std::lround(d_max))));
+        if (!d_sym.empty()) {
+            item["dayCondition"] = Value::make_str(translate_metno_symbol(d_sym));
+        }
+        item["conditionCode"] = Value::make_str(classify_weather_condition(d_sym, ""));
+        fc.push(std::move(item));
+    };
+    for (const auto& step : ts->arr_val) {
+        const auto* tm = step.get("time");
+        if (!tm || !tm->is_str() || tm->as_str().size() < 10) continue;
+        std::string dt = tm->as_str().substr(0, 10);
+        if (dt != cur_date) {
+            flush_day();
+            if (fc.arr_val.size() >= static_cast<size_t>(n_days)) break;
+            cur_date = dt;
+            d_min = 999.0;
+            d_max = -999.0;
+            d_sym.clear();
+        }
+        const auto* d_obj = step.get("data");
+        const auto* i_obj = d_obj ? d_obj->get("instant") : nullptr;
+        const auto* s_det = i_obj ? i_obj->get("details") : nullptr;
+        if (s_det && s_det->get("air_temperature")) {
+            double t = s_det->get("air_temperature")->as_double(0.0);
+            if (t < d_min) d_min = t;
+            if (t > d_max) d_max = t;
+        }
+        if (d_obj && (d_sym.empty() || tm->as_str().find("T12:") != std::string::npos)) {
+            const auto* nx = d_obj->get("next_6_hours") ? d_obj->get("next_6_hours") : d_obj->get("next_1_hours");
+            const auto* sum = nx ? nx->get("summary") : nullptr;
+            const auto* sc = sum ? sum->get("symbol_code") : nullptr;
+            if (sc && sc->is_str()) d_sym = sc->as_str();
+        }
+    }
+    if (fc.arr_val.size() < static_cast<size_t>(n_days)) flush_day();
+    res["forecast"] = std::move(fc);
     return res;
 }
 

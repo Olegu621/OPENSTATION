@@ -109,7 +109,7 @@ class StationAudioService : Service() {
         if (running) pushVolumeStateToDaemon(showOsd = true)
     }
 
-    private val bandFreqs = floatArrayOf(80f, 250f, 1000f, 4000f, 12000f)
+    private val bandFreqs = floatArrayOf(31f, 62f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f)
 
     private val volumeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -271,20 +271,28 @@ class StationAudioService : Service() {
     }
 
     fun applyEqPreset(preset: String) {
+        applyEq(preset, null, 20)
+    }
+
+    fun applyEq(preset: String, customBands: FloatArray? = null, bassBoostPct: Int = 20) {
         currentPreset = preset
         val gainsDb = when (preset) {
-            "flat" -> floatArrayOf(0.0f, 0.0f, 0.0f, 0.0f, 0.0f)
-            "bass_boost" -> floatArrayOf(6.0f, 3.0f, 0.0f, 0.8f, 1.2f)
-            "vocal" -> floatArrayOf(-2.0f, 1.0f, 4.0f, 3.0f, 0.5f)
-            "night" -> floatArrayOf(-5.0f, -1.0f, 2.2f, 1.0f, -2.5f)
-            else -> floatArrayOf(2.5f, 1.0f, 0.0f, 1.5f, 2.0f) // "balanced"
+            "flat" -> floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            "bass_boost" -> floatArrayOf(4.5f, 4.0f, 3.0f, 1.5f, 0.0f, -0.5f, 0.0f, 0.5f, 1.0f, 1.0f)
+            "vocal" -> floatArrayOf(-2.0f, -1.0f, 0.0f, 1.5f, 3.0f, 3.5f, 2.0f, 1.0f, 0.5f, -0.5f)
+            "night" -> floatArrayOf(-3.0f, -2.5f, -1.5f, 0.0f, 1.0f, 1.0f, 0.5f, -0.5f, -2.0f, -3.0f)
+            "rock" -> floatArrayOf(3.5f, 2.5f, 1.0f, -0.5f, -1.0f, 0.0f, 1.5f, 2.5f, 3.5f, 3.5f)
+            "electronic" -> floatArrayOf(4.0f, 3.5f, 2.0f, 0.5f, -0.5f, 0.0f, 1.0f, 2.0f, 3.5f, 4.0f)
+            "custom" -> customBands ?: floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            else -> floatArrayOf(1.0f, 1.5f, 1.0f, 0.5f, 0.0f, 0.0f, 0.5f, 1.0f, 1.5f, 1.5f) // "balanced"
         }
 
         try {
             dynProc?.let { dp ->
                 val eq = DynamicsProcessing.Eq(true, true, bandFreqs.size)
                 for (i in bandFreqs.indices) {
-                    eq.setBand(i, DynamicsProcessing.EqBand(true, bandFreqs[i], gainsDb[i]))
+                    val g = if (i < gainsDb.size) gainsDb[i] else 0f
+                    eq.setBand(i, DynamicsProcessing.EqBand(true, bandFreqs[i], g))
                 }
                 dp.setPreEqAllChannelsTo(eq)
                 return
@@ -305,12 +313,7 @@ class StationAudioService : Service() {
             }
             legacyBass?.let { bb ->
                 if (bb.strengthSupported) {
-                    val str = when (preset) {
-                        "bass_boost" -> 700
-                        "balanced" -> 300
-                        "night", "flat", "vocal" -> 0
-                        else -> 250
-                    }
+                    val str = (bassBoostPct * 10).coerceIn(0, 1000)
                     bb.setStrength(str.toShort())
                 }
             }
@@ -355,8 +358,32 @@ class StationAudioService : Service() {
             when (obj.optString("cmd")) {
                 "eq" -> {
                     val preset = obj.optString("preset", "balanced")
-                    applyEqPreset(preset)
-                    Log.i(TAG, "Applied EQ preset via daemon -> $preset")
+                    val bb = obj.optInt("bassBoost", 20)
+                    var customBands: FloatArray? = null
+                    val arr = obj.optJSONArray("bands")
+                    if (arr != null && arr.length() >= 10) {
+                        customBands = FloatArray(10) { i -> arr.optDouble(i, 0.0).toFloat() }
+                    }
+                    applyEq(preset, customBands, bb)
+                    Log.i(TAG, "Applied EQ via daemon -> $preset, bassBoost=$bb")
+                }
+                "style_sync" -> {
+                    val clk = obj.optString("clockStyle", "")
+                    val vis = obj.optString("visualizerStyle", "")
+                    val autoVis = if (obj.has("autoMusicVisualizer")) obj.optBoolean("autoMusicVisualizer") else null
+                    LiveOrbState.updateStyles(clk, vis, autoVis)
+                    Log.i(TAG, "Synced styles: clock=$clk, vis=$vis, autoVis=$autoVis")
+                }
+                "weather_event" -> {
+                    val valid = obj.optBoolean("valid", false)
+                    val temp = obj.optInt("temp", 0)
+                    val cond = obj.optString("condition", "sunny")
+                    val text = obj.optString("conditionText", "")
+                    val city = obj.optString("city", "")
+                    LiveOrbState.updateWeather(valid, temp, cond, text, city)
+                    if (valid) {
+                        MainActivity.showWeatherOverlay(temp, cond, text, city)
+                    }
                 }
                 "launch" -> {
                     val pkg = obj.optString("package")
@@ -597,17 +624,25 @@ class StationAudioService : Service() {
             var visEnabled = false
             var fftBuf: ByteArray? = null
 
+            var lastReportedPlaying: Boolean? = null
+            fun sendUdpMusicState(playing: Boolean) {
+                if (lastReportedPlaying == playing) return
+                lastReportedPlaying = playing
+                try {
+                    val payload = JSONObject().put("cmd", "music_active").put("playing", playing).toString().toByteArray(Charsets.UTF_8)
+                    val sock = specUdpSocket?.takeUnless { it.isClosed } ?: DatagramSocket().also { specUdpSocket = it }
+                    val pkt = DatagramPacket(payload, payload.size, InetAddress.getByName("127.0.0.1"), 8087)
+                    sock.send(pkt)
+                } catch (_: Throwable) {}
+            }
+
             fun sendUdpBands(arr: FloatArray) {
                 try {
-                    var s = specUdpSocket
-                    if (s == null || s.isClosed) {
-                        s = DatagramSocket()
-                        specUdpSocket = s
-                    }
+                    val sock = specUdpSocket?.takeUnless { it.isClosed } ?: DatagramSocket().also { specUdpSocket = it }
                     specBuf.clear()
                     for (b in 0 until 24) specBuf.putFloat(arr[b])
                     specPkt.length = specBytes.size
-                    s.send(specPkt)
+                    sock.send(specPkt)
                 } catch (_: Throwable) {
                     // openstationd or loopback socket not ready yet
                 }
@@ -701,6 +736,7 @@ class StationAudioService : Service() {
                                 }
 
                                 val isPlaying = musicPlayer.getSnapshot().playing
+                                sendUdpMusicState(isPlaying)
                                 if (peak > 0.025f) {
                                     silentTicks = 0
                                     zeroSpectrumSent = false

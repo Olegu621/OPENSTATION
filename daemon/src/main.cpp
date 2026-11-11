@@ -45,7 +45,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.2.3";
+constexpr const char* kFirmwareVersion = "1.3.0";
 
 std::atomic<bool> g_stop{false};
 
@@ -354,7 +354,110 @@ std::string b64_encode_str(const std::string& s) {
 }
 
 bool is_valid_eq_preset(const std::string& p) {
-    return p == "balanced" || p == "flat" || p == "bass_boost" || p == "vocal" || p == "night";
+    return p == "balanced" || p == "flat" || p == "bass_boost" || p == "vocal" ||
+           p == "night" || p == "rock" || p == "electronic" || p == "custom";
+}
+
+bool is_valid_clock_style(const std::string& s) {
+    return s == "classic" || s == "minimal" || s == "bold" || s == "seconds" ||
+           s == "binary" || s == "neon" || s == "retro";
+}
+
+bool is_valid_visualizer_style(const std::string& s) {
+    return s == "particles" || s == "bars" || s == "wave" ||
+           s == "fireflies" || s == "aurora" || s == "matrix";
+}
+
+std::string url_decode_str(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '+') {
+            out.push_back(' ');
+        } else if (s[i] == '%' && i + 2 < s.size()) {
+            int hi = hex_val(s[i + 1]);
+            int lo = hex_val(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+            out.push_back(s[i]);
+        } else {
+            out.push_back(s[i]);
+        }
+    }
+    return out;
+}
+
+std::string normalize_voice_name(const std::string& raw, const std::string& current_voice) {
+    static const char* kAllVoices[] = {"Aoede", "Kore", "Leda", "Zephyr", "Puck", "Charon", "Fenrir", "Orus"};
+    static const char* kFemaleVoices[] = {"Aoede", "Kore", "Leda", "Zephyr"};
+    static const char* kMaleVoices[] = {"Charon", "Fenrir", "Puck", "Orus"};
+
+    std::string low;
+    low.reserve(raw.size());
+    for (unsigned char ch : raw) {
+        if (ch < 128) low.push_back(static_cast<char>(std::tolower(ch)));
+        else low.push_back(static_cast<char>(ch));
+    }
+    for (const char* v : kAllVoices) {
+        std::string lv;
+        for (const char* p = v; *p; ++p) lv.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*p))));
+        if (low.find(lv) != std::string::npos) return v;
+    }
+    if (low.find("нежный") != std::string::npos || low.find("мягк") != std::string::npos ||
+        low.find("kore") != std::string::npos) return "Kore";
+    if (low.find("тепл") != std::string::npos || low.find("тёпл") != std::string::npos) return "Aoede";
+    if (low.find("выраз") != std::string::npos) return "Leda";
+    if (low.find("ярк") != std::string::npos || low.find("бодр") != std::string::npos) return "Zephyr";
+    if (low.find("глубок") != std::string::npos || low.find("спокой") != std::string::npos ||
+        low.find("низк") != std::string::npos) return "Charon";
+    if (low.find("энерг") != std::string::npos) return "Fenrir";
+    if (low.find("дружел") != std::string::npos) return "Puck";
+    if (low.find("уверен") != std::string::npos) return "Orus";
+
+    if (low.find("муж") != std::string::npos || low.find("male") != std::string::npos ||
+        low.find("парен") != std::string::npos || low.find("парн") != std::string::npos) {
+        for (const char* v : kMaleVoices) {
+            if (current_voice != v) return v;
+        }
+        return "Charon";
+    }
+    if (low.find("жен") != std::string::npos || low.find("female") != std::string::npos ||
+        low.find("девуш") != std::string::npos) {
+        for (const char* v : kFemaleVoices) {
+            if (current_voice != v) return v;
+        }
+        return "Aoede";
+    }
+    for (size_t i = 0; i < sizeof(kAllVoices) / sizeof(kAllVoices[0]); ++i) {
+        if (current_voice == kAllVoices[i]) {
+            return kAllVoices[(i + 1) % (sizeof(kAllVoices) / sizeof(kAllVoices[0]))];
+        }
+    }
+    return "Aoede";
+}
+
+size_t find_nearest_eq_band(int freq_hz) {
+    static constexpr int kCenters[10] = {31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
+    size_t best_idx = 0;
+    double best_dist = 1e9;
+    double lf = std::log2(static_cast<double>(std::max(10, freq_hz)));
+    for (size_t i = 0; i < 10; ++i) {
+        double d = std::abs(lf - std::log2(static_cast<double>(kCenters[i])));
+        if (d < best_dist) {
+            best_dist = d;
+            best_idx = i;
+        }
+    }
+    return best_idx;
 }
 
 void parse_hex_rgb(const std::string& hex, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -1229,6 +1332,105 @@ int main(int argc, char** argv) {
         reconcile_unlocked();
     };
 
+    std::atomic<bool> ext_music_playing{false};
+    auto update_led_music_playing = [&]() {
+        bool ym_playing = false;
+        {
+            std::lock_guard<std::mutex> lk(music_mu);
+            ym_playing = music_state.playing && !music_state.paused;
+        }
+        leds.set_music_playing(ym_playing || ext_music_playing.load());
+    };
+
+    auto push_eq_to_launcher = [&](const DaemonConfig& c) {
+        if (!is_udp_port_bound(8086)) return;
+        json::Value lcmd = json::Value::make_obj();
+        lcmd["cmd"] = json::Value::make_str("eq");
+        lcmd["preset"] = json::Value::make_str(c.audio.eq_preset);
+        lcmd["bassBoost"] = json::Value::make_int(c.audio.bass_boost);
+        json::Value bands = json::Value::make_arr();
+        for (float g : c.audio.eq_bands) {
+            bands.push(json::Value::make_num(g));
+        }
+        lcmd["bands"] = std::move(bands);
+        send_udp_json(8086, lcmd.dump(-1));
+    };
+
+    auto push_style_sync_to_launcher = [&](const DaemonConfig& c) {
+        if (!is_udp_port_bound(8086)) return;
+        json::Value scmd = json::Value::make_obj();
+        scmd["cmd"] = json::Value::make_str("style_sync");
+        scmd["clockStyle"] = json::Value::make_str(c.led_screen.clock_style);
+        scmd["visualizerStyle"] = json::Value::make_str(c.led_screen.visualizer_style);
+        scmd["autoMusicVisualizer"] = json::Value::make_bool(c.led_screen.auto_music_visualizer);
+        scmd["eqPreset"] = json::Value::make_str(c.audio.eq_preset);
+        scmd["bassBoost"] = json::Value::make_int(c.audio.bass_boost);
+        json::Value bands = json::Value::make_arr();
+        for (float g : c.audio.eq_bands) {
+            bands.push(json::Value::make_num(g));
+        }
+        scmd["eqBands"] = std::move(bands);
+        std::string loc_city = !c.location.city.empty() ? c.location.city : c.location.resolved_city;
+        scmd["locationCity"] = json::Value::make_str(loc_city);
+        send_udp_json(8086, scmd.dump(-1));
+    };
+
+    std::mutex last_weather_mu;
+    json::Value last_weather_json = json::Value::make_obj();
+    bool has_last_weather = false;
+    auto trigger_weather_visuals = [&](const json::Value& w, bool show_visuals = true) {
+        if (!w.get("ok") || !w.get("ok")->as_bool(false)) return;
+        const json::Value* cur = w.get("current");
+        if (!cur || !cur->is_obj()) cur = &w;
+
+        int temp_i = 0;
+        if (const auto* tn = cur->get("tempNum"); tn && tn->is_num()) {
+            temp_i = static_cast<int>(std::lround(tn->as_double(0.0)));
+        } else if (const auto* tc = cur->get("tempC"); tc && tc->is_str()) {
+            temp_i = static_cast<int>(std::lround(std::atof(tc->as_str().c_str())));
+        }
+        std::string cond_code = cur->get("conditionCode") ? cur->get("conditionCode")->as_str("clear") : "clear";
+        std::string cond_str = cur->get("condition") ? cur->get("condition")->as_str() : "";
+        std::string city_str = w.get("city") ? w.get("city")->as_str() : "";
+
+        json::Value flat = json::Value::make_obj();
+        flat["ok"] = json::Value::make_bool(true);
+        flat["city"] = json::Value::make_str(city_str);
+        if (const auto* sc = w.get("country")) flat["country"] = *sc;
+        if (const auto* sl = w.get("stationLocation")) flat["stationLocation"] = *sl;
+        if (const auto* pv = w.get("provider")) flat["provider"] = *pv;
+        flat["tempNum"] = json::Value::make_int(temp_i);
+        flat["tempC"] = cur->get("tempC") ? *cur->get("tempC") : json::Value::make_str(std::to_string(temp_i));
+        if (const auto* fln = cur->get("feelsLikeNum")) flat["feelsLikeNum"] = *fln;
+        if (const auto* flc = cur->get("feelsLikeC")) flat["feelsLikeC"] = *flc;
+        flat["conditionCode"] = json::Value::make_str(cond_code);
+        flat["condition"] = json::Value::make_str(cond_str);
+        if (const auto* hm = cur->get("humidityPct")) flat["humidityPct"] = *hm;
+        if (const auto* wm = cur->get("windMs")) flat["windMs"] = *wm;
+        if (const auto* fc = w.get("forecast")) flat["forecast"] = *fc;
+        flat["current"] = *cur;
+        flat["updatedEpoch"] = json::Value::make_int(static_cast<int64_t>(std::time(nullptr)));
+
+        {
+            std::lock_guard<std::mutex> lk(last_weather_mu);
+            last_weather_json = flat;
+            has_last_weather = true;
+        }
+        if (show_visuals) {
+            leds.trigger_weather(temp_i, cond_code, 12000);
+            json::Value u = flat;
+            u["cmd"] = json::Value::make_str("weather_event");
+            u["durationMs"] = json::Value::make_int(15000);
+            send_udp_json(8086, u.dump(-1));
+            if (http.ws_client_count() > 0) {
+                json::Value ws_evt = json::Value::make_obj();
+                ws_evt["type"] = json::Value::make_str("weather_event");
+                ws_evt["data"] = flat;
+                http.broadcast_ws_text(ws_evt.dump(-1));
+            }
+        }
+    };
+
     auto apply_hw_config = [&](const DaemonConfig& c, bool /*hp_plugged*/) {
         leds.update_config(c.led_ring, c.led_screen);
         leds.set_mic_muted(c.audio.mic_muted);
@@ -1246,17 +1448,15 @@ int main(int argc, char** argv) {
         audio.set_mic_muted(c.audio.mic_muted);
         assistant.update_config(c.assistant);
         assistant.set_mic_muted(c.audio.mic_muted);
+        assistant.set_mic_sensitivity(c.audio.mic_sensitivity);
         wyoming.update_config(c.wyoming);
         mdns.update_hostname(c.device_hostname);
         adb_mgr.update_config(c.network, c.device_hostname);
         mqtt.update_config(c.mqtt);
         ota.update_config(c.ota);
 
-        // Notify Launcher Android AudioEffect EQ service
-        json::Value lcmd = json::Value::make_obj();
-        lcmd["cmd"] = json::Value::make_str("eq");
-        lcmd["preset"] = json::Value::make_str(c.audio.eq_preset);
-        send_udp_json(8086, lcmd.dump(-1));
+        push_eq_to_launcher(c);
+        push_style_sync_to_launcher(c);
     };
 
     auto set_android_volume_pct = [&](int pct,
@@ -1448,6 +1648,46 @@ int main(int argc, char** argv) {
     // Apply loaded hardware configuration right away
     apply_hw_config(cfg, inputs.headphone_plugged());
 
+    std::thread geo_thread([&]() {
+        bool need_geo = false;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            int64_t age = static_cast<int64_t>(std::time(nullptr)) - cfg.location.resolved_epoch;
+            need_geo = cfg.location.auto_detect &&
+                       (cfg.location.resolved_city.empty() || age < 0 || age > 21600);
+        }
+        if (!need_geo) return;
+        for (int i = 0; i < 10 && !g_stop.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        }
+        for (int attempt = 0; attempt < 3 && !g_stop.load(); ++attempt) {
+            GeoLocationResult geo = detect_location_by_ip(&g_stop);
+            if (geo.ok && !geo.city.empty()) {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.location.resolved_city = geo.city;
+                    cfg.location.resolved_country = geo.country;
+                    cfg.location.resolved_epoch = static_cast<int64_t>(std::time(nullptr));
+                    if (cfg.location.city.empty()) {
+                        cfg.location.lat = geo.lat;
+                        cfg.location.lon = geo.lon;
+                    }
+                    cfg.sanitize_and_validate();
+                    c = cfg;
+                }
+                save_cfg(c);
+                push_style_sync_to_launcher(c);
+                LOGI("Location", "Auto-detected station city: %s (%s, %.3f, %.3f)",
+                     geo.city.c_str(), geo.country.c_str(), geo.lat, geo.lon);
+                return;
+            }
+            for (int w = 0; w < 25 && !g_stop.load(); ++w) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(160));
+            }
+        }
+    });
+
     timers.start([&](const TimerEntry& t) {
         leds.trigger_flash(255, 140, 0, 2200);
         leds.trigger_screen_text("ТАЙМЕР: " + t.label, 255, 165, 0, 5000);
@@ -1576,6 +1816,54 @@ int main(int argc, char** argv) {
         u["cmd"] = json::Value::make_str("assistant_event");
         send_udp_json(8086, u.dump(-1));
     };
+    acb.get_runtime_context = [&]() -> std::string {
+        DaemonConfig c;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            c = cfg;
+        }
+        MusicPlaybackState ms;
+        {
+            std::lock_guard<std::mutex> lk(music_mu);
+            ms = music_state;
+        }
+        std::string weather_summary;
+        {
+            std::lock_guard<std::mutex> lk(last_weather_mu);
+            if (has_last_weather) {
+                std::string wcity = last_weather_json.get("city") ? last_weather_json.get("city")->as_str() : "";
+                std::string wt = last_weather_json.get("tempC") ? last_weather_json.get("tempC")->as_str() : "";
+                std::string wc = last_weather_json.get("condition") ? last_weather_json.get("condition")->as_str() : "";
+                if (!wcity.empty() && !wt.empty()) {
+                    weather_summary = wcity + ": " + wt + "°C" + (wc.empty() ? "" : ", " + wc);
+                }
+            }
+        }
+        std::string eff_city = !c.location.city.empty() ? c.location.city : c.location.resolved_city;
+        if (eff_city.empty()) eff_city = "автоопределение";
+        std::string ctx = "Текущее состояние колонки:\n";
+        ctx += "- Местоположение: " + eff_city +
+               (c.location.city.empty() ? " (авто по IP)" : " (указано вручную)") + "\n";
+        ctx += "- Голос: " + c.assistant.voice_name +
+               "; стиль часов: " + c.led_screen.clock_style +
+               "; стиль визуализатора: " + c.led_screen.visualizer_style +
+               "; авто-визуализатор музыки: " + std::string(c.led_screen.auto_music_visualizer ? "вкл" : "выкл") + "\n";
+        ctx += "- Громкость: " + std::to_string(volume_osd_pct.load()) + "%" +
+               "; выход: " + c.audio.output_route +
+               "; эквалайзер: " + c.audio.eq_preset +
+               " (Bass Boost " + std::to_string(c.audio.bass_boost) + "%)\n";
+        ctx += "- LED-кольцо: " + c.led_ring.mode + " (" + c.led_ring.color + ")" +
+               "; экран: " + c.led_screen.mode +
+               "; микрофон: " + std::string(c.audio.mic_muted ? "выкл" : "вкл") +
+               " (чувствительность " + std::to_string(c.audio.mic_sensitivity) + "%)\n";
+        if (ms.playing && !ms.title.empty()) {
+            ctx += "- Сейчас играет: " + ms.artist + " — " + ms.title + "\n";
+        }
+        if (!weather_summary.empty()) {
+            ctx += "- Последняя погода: " + weather_summary + "\n";
+        }
+        return ctx;
+    };
     acb.execute_tool = [&](const std::string& name, const json::Value& args) -> json::Value {
         using json::Value;
         Value res = Value::make_obj();
@@ -1588,9 +1876,48 @@ int main(int argc, char** argv) {
         }
 
         if (name == "get_weather") {
-            std::string city = args.get("city") ? args.get("city")->as_str("Москва") : "Москва";
+            std::string city = args.get("city") ? args.get("city")->as_str() : "";
             int days = args.get("days") ? args.get("days")->as_int(3) : 3;
-            return tool_get_weather(city, days, &g_stop);
+            std::string fb_city;
+            double fb_lat = 0.0, fb_lon = 0.0;
+            bool auto_det = true;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                auto_det = cfg.location.auto_detect;
+                fb_city = !cfg.location.city.empty() ? cfg.location.city : cfg.location.resolved_city;
+                if (cfg.location.city.empty()) {
+                    fb_lat = cfg.location.lat;
+                    fb_lon = cfg.location.lon;
+                }
+            }
+            if (city.empty() && fb_city.empty() && fb_lat == 0.0 && fb_lon == 0.0 && auto_det) {
+                GeoLocationResult geo = detect_location_by_ip(&g_stop);
+                if (geo.ok) {
+                    fb_city = geo.city;
+                    fb_lat = geo.lat;
+                    fb_lon = geo.lon;
+                    DaemonConfig c;
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
+                        cfg.location.resolved_city = geo.city;
+                        cfg.location.resolved_country = geo.country;
+                        cfg.location.resolved_epoch = static_cast<int64_t>(std::time(nullptr));
+                        if (cfg.location.city.empty()) {
+                            cfg.location.lat = geo.lat;
+                            cfg.location.lon = geo.lon;
+                        }
+                        cfg.sanitize_and_validate();
+                        c = cfg;
+                    }
+                    save_cfg(c);
+                    push_style_sync_to_launcher(c);
+                }
+            }
+            Value wres = tool_get_weather(city, days, fb_lat, fb_lon, fb_city, &g_stop);
+            if (wres.get("ok") && wres.get("ok")->as_bool(false)) {
+                trigger_weather_visuals(wres, true);
+            }
+            return wres;
         }
 
         if (name == "fetch_url") {
@@ -1622,9 +1949,23 @@ int main(int argc, char** argv) {
             res["tweetersVolume"] = Value::make_int(c.audio.tweeters_volume);
             res["headphoneVolume"] = Value::make_int(c.audio.headphone_volume);
             res["eqPreset"] = Value::make_str(c.audio.eq_preset);
+            res["bassBoost"] = Value::make_int(c.audio.bass_boost);
+            {
+                Value eb = Value::make_arr();
+                for (float g : c.audio.eq_bands) eb.push(Value::make_num(g));
+                res["eqBands"] = std::move(eb);
+            }
             res["outputRoute"] = Value::make_str(c.audio.output_route);
             res["headphonePlugged"] = Value::make_bool(inputs.headphone_plugged());
             res["micMuted"] = Value::make_bool(c.audio.mic_muted);
+            res["micSensitivity"] = Value::make_int(c.audio.mic_sensitivity);
+            res["voiceName"] = Value::make_str(c.assistant.voice_name);
+            res["clockStyle"] = Value::make_str(c.led_screen.clock_style);
+            res["visualizerStyle"] = Value::make_str(c.led_screen.visualizer_style);
+            res["autoMusicVisualizer"] = Value::make_bool(c.led_screen.auto_music_visualizer);
+            res["locationAuto"] = Value::make_bool(c.location.auto_detect);
+            res["locationCity"] = Value::make_str(!c.location.city.empty() ? c.location.city : c.location.resolved_city);
+            res["memoryCount"] = Value::make_int(static_cast<int64_t>(c.assistant.memory_notes.size()));
             res["ledRingMode"] = Value::make_str(c.led_ring.mode);
             res["ledRingColor"] = Value::make_str(c.led_ring.color);
             res["ledRingBrightness"] = Value::make_int(leds.effective_brightness());
@@ -1830,13 +2171,56 @@ int main(int argc, char** argv) {
             DaemonConfig c;
             {
                 std::lock_guard<std::mutex> lk(cfg_mu);
+                bool preset_given = false;
+                bool bands_given = false;
+                bool bass_given = false;
+                std::string next_preset = cfg.audio.eq_preset;
+
                 if (const auto* p = args.get("preset"); p && p->is_str()) {
                     if (!is_valid_eq_preset(p->as_str())) {
                         res["ok"] = Value::make_bool(false);
-                        res["error"] = Value::make_str("invalid preset (balanced/flat/bass_boost/vocal/night)");
+                        res["error"] = Value::make_str("invalid preset (balanced/flat/bass_boost/vocal/night/rock/electronic/custom)");
                         return res;
                     }
-                    cfg.audio.eq_preset = p->as_str();
+                    next_preset = p->as_str();
+                    cfg.audio.eq_preset = next_preset;
+                    preset_given = true;
+                }
+                if (const auto* bcsv = args.get("bands_csv"); bcsv && bcsv->is_str()) {
+                    std::string s = bcsv->as_str();
+                    std::array<float, 10> parsed = cfg.audio.eq_bands;
+                    size_t idx = 0;
+                    size_t pos = 0;
+                    while (pos < s.size() && idx < 10) {
+                        while (pos < s.size() && (s[pos] == ',' || s[pos] == ' ' || s[pos] == ';')) ++pos;
+                        if (pos >= s.size()) break;
+                        char* endp = nullptr;
+                        double val = std::strtod(s.c_str() + pos, &endp);
+                        if (endp == s.c_str() + pos) break;
+                        parsed[idx++] = std::clamp(static_cast<float>(val), -12.0f, 12.0f);
+                        pos = static_cast<size_t>(endp - s.c_str());
+                    }
+                    if (idx > 0) {
+                        cfg.audio.eq_bands = parsed;
+                        bands_given = true;
+                    }
+                }
+                if (const auto* bhz = args.get("band_hz"); bhz && bhz->is_num()) {
+                    double gdb = args.get("gain_db") ? args.get("gain_db")->as_double(0.0) : 0.0;
+                    size_t idx = find_nearest_eq_band(bhz->as_int(1000));
+                    cfg.audio.eq_bands[idx] = std::clamp(static_cast<float>(gdb), -12.0f, 12.0f);
+                    bands_given = true;
+                }
+                if (const auto* bb = args.get("bass_boost"); bb && bb->is_num()) {
+                    cfg.audio.bass_boost = std::clamp(bb->as_int(30), 0, 100);
+                    bass_given = true;
+                }
+                if (preset_given && next_preset != "custom" && !bands_given) {
+                    int def_bass = cfg.audio.bass_boost;
+                    apply_eq_preset_defaults(next_preset, cfg.audio.eq_bands, def_bass);
+                    if (!bass_given) cfg.audio.bass_boost = def_bass;
+                } else if ((bands_given || bass_given) && !preset_given) {
+                    cfg.audio.eq_preset = "custom";
                 }
                 if (const auto* x = args.get("woofer_eq"); x && x->is_bool()) cfg.audio.woofer_eq = x->as_bool(true);
                 if (const auto* x = args.get("woofer_drc"); x && x->is_bool()) cfg.audio.woofer_drc = x->as_bool(true);
@@ -1852,15 +2236,192 @@ int main(int argc, char** argv) {
             mixer.set_bool("Tweeters DRC Switch", c.audio.tweeters_drc);
             mixer.set_enum("Loopback Enable", c.audio.loopback_enable ? "Enable" : "Disable");
             audio.update_config(c.audio);
-            json::Value lcmd = json::Value::make_obj();
-            lcmd["cmd"] = Value::make_str("eq");
-            lcmd["preset"] = Value::make_str(c.audio.eq_preset);
-            send_udp_json(8086, lcmd.dump(-1));
+            push_eq_to_launcher(c);
+            push_style_sync_to_launcher(c);
             save_cfg(c);
             res["ok"] = Value::make_bool(true);
             res["preset"] = Value::make_str(c.audio.eq_preset);
+            res["bassBoost"] = Value::make_int(c.audio.bass_boost);
+            {
+                Value eb = Value::make_arr();
+                for (float g : c.audio.eq_bands) eb.push(Value::make_num(g));
+                res["eqBands"] = std::move(eb);
+            }
             res["wooferEq"] = Value::make_bool(c.audio.woofer_eq);
             res["tweetersEq"] = Value::make_bool(c.audio.tweeters_eq);
+            return res;
+        }
+
+        if (name == "set_assistant_voice") {
+            std::string req_voice;
+            if (const auto* vp = args.get("voice"); vp && vp->is_str()) req_voice = vp->as_str();
+            else if (const auto* vp2 = args.get("voice_name"); vp2 && vp2->is_str()) req_voice = vp2->as_str();
+
+            DaemonConfig c;
+            std::string chosen;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                chosen = normalize_voice_name(req_voice, cfg.assistant.voice_name);
+                cfg.assistant.voice_name = chosen;
+                cfg.sanitize_and_validate();
+                c = cfg;
+            }
+            assistant.update_config(c.assistant);
+            save_cfg(c);
+            res["ok"] = Value::make_bool(true);
+            res["voice"] = Value::make_str(c.assistant.voice_name);
+            res["reloadVoice"] = Value::make_bool(true);
+            return res;
+        }
+
+        if (name == "set_styles") {
+            DaemonConfig c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                const Value* cs = args.get("clock_style") ? args.get("clock_style") : args.get("clockStyle");
+                if (cs && cs->is_str()) {
+                    if (!is_valid_clock_style(cs->as_str())) {
+                        res["ok"] = Value::make_bool(false);
+                        res["error"] = Value::make_str("invalid clock_style");
+                        return res;
+                    }
+                    cfg.led_screen.clock_style = cs->as_str();
+                }
+                const Value* vs = args.get("visualizer_style") ? args.get("visualizer_style") : args.get("visualizerStyle");
+                if (vs && vs->is_str()) {
+                    if (!is_valid_visualizer_style(vs->as_str())) {
+                        res["ok"] = Value::make_bool(false);
+                        res["error"] = Value::make_str("invalid visualizer_style");
+                        return res;
+                    }
+                    cfg.led_screen.visualizer_style = vs->as_str();
+                }
+                const Value* amv = args.get("auto_music_visualizer")
+                                       ? args.get("auto_music_visualizer")
+                                       : args.get("autoMusicVisualizer");
+                if (amv && amv->is_bool()) {
+                    cfg.led_screen.auto_music_visualizer = amv->as_bool(true);
+                }
+                const Value* sc = args.get("screen_color") ? args.get("screen_color") : args.get("color");
+                if (sc && sc->is_str() && !sc->as_str().empty()) {
+                    cfg.led_screen.color = sc->as_str();
+                }
+                const Value* sm = args.get("screen_mode");
+                if (sm && sm->is_str() && is_valid_screen_mode(sm->as_str())) {
+                    cfg.led_screen.mode = sm->as_str();
+                }
+                cfg.sanitize_and_validate();
+                c = cfg;
+            }
+            leds.update_config(c.led_ring, c.led_screen);
+            push_style_sync_to_launcher(c);
+            save_cfg(c);
+            res["ok"] = Value::make_bool(true);
+            res["clockStyle"] = Value::make_str(c.led_screen.clock_style);
+            res["visualizerStyle"] = Value::make_str(c.led_screen.visualizer_style);
+            res["autoMusicVisualizer"] = Value::make_bool(c.led_screen.auto_music_visualizer);
+            res["screenColor"] = Value::make_str(c.led_screen.color);
+            res["screenMode"] = Value::make_str(c.led_screen.mode);
+            return res;
+        }
+
+        if (name == "set_location") {
+            bool has_city = (args.get("city") && args.get("city")->is_str());
+            std::string city_val = has_city ? trim_ws_copy(args.get("city")->as_str()) : "";
+            bool run_auto = false;
+            DaemonConfig c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                if (const auto* ad = args.get("auto_detect"); ad && ad->is_bool()) {
+                    cfg.location.auto_detect = ad->as_bool(true);
+                } else if (!has_city || city_val.empty()) {
+                    cfg.location.auto_detect = true;
+                }
+                if (has_city) {
+                    cfg.location.city = city_val;
+                    if (!city_val.empty()) {
+                        cfg.location.lat = 0.0;
+                        cfg.location.lon = 0.0;
+                    }
+                }
+                run_auto = cfg.location.auto_detect && cfg.location.city.empty();
+                cfg.sanitize_and_validate();
+                c = cfg;
+            }
+            if (run_auto) {
+                GeoLocationResult geo = detect_location_by_ip(&g_stop);
+                if (geo.ok) {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.location.resolved_city = geo.city;
+                    cfg.location.resolved_country = geo.country;
+                    cfg.location.resolved_epoch = static_cast<int64_t>(std::time(nullptr));
+                    cfg.location.lat = geo.lat;
+                    cfg.location.lon = geo.lon;
+                    cfg.sanitize_and_validate();
+                    c = cfg;
+                }
+            }
+            save_cfg(c);
+            push_style_sync_to_launcher(c);
+            res["ok"] = Value::make_bool(true);
+            res["autoDetect"] = Value::make_bool(c.location.auto_detect);
+            res["city"] = Value::make_str(c.location.city);
+            res["resolvedCity"] = Value::make_str(c.location.resolved_city);
+            res["resolvedCountry"] = Value::make_str(c.location.resolved_country);
+            return res;
+        }
+
+        if (name == "manage_memory") {
+            std::string act = args.get("action") ? args.get("action")->as_str("list") : "list";
+            std::string note = args.get("note") ? trim_ws_copy(args.get("note")->as_str()) : "";
+            int idx_1b = args.get("index") ? args.get("index")->as_int(-1) : -1;
+            bool dirty = false;
+            DaemonConfig c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                if (act == "add") {
+                    if (note.empty()) {
+                        res["ok"] = Value::make_bool(false);
+                        res["error"] = Value::make_str("note is required for action='add'");
+                        return res;
+                    }
+                    cfg.assistant.memory_notes.push_back(note);
+                    dirty = true;
+                } else if (act == "delete") {
+                    if (idx_1b >= 1 && static_cast<size_t>(idx_1b) <= cfg.assistant.memory_notes.size()) {
+                        cfg.assistant.memory_notes.erase(cfg.assistant.memory_notes.begin() + (idx_1b - 1));
+                        dirty = true;
+                    } else if (!note.empty()) {
+                        auto& vec = cfg.assistant.memory_notes;
+                        auto it = std::remove_if(vec.begin(), vec.end(), [&](const std::string& item) {
+                            return contains_case_insensitive(item, note);
+                        });
+                        if (it != vec.end()) {
+                            vec.erase(it, vec.end());
+                            dirty = true;
+                        }
+                    }
+                } else if (act == "clear") {
+                    if (!cfg.assistant.memory_notes.empty()) {
+                        cfg.assistant.memory_notes.clear();
+                        dirty = true;
+                    }
+                }
+                if (dirty) {
+                    cfg.sanitize_and_validate();
+                }
+                c = cfg;
+            }
+            if (dirty) {
+                assistant.update_config(c.assistant);
+                save_cfg(c);
+            }
+            res["ok"] = Value::make_bool(true);
+            res["action"] = Value::make_str(act);
+            res["count"] = Value::make_int(static_cast<int64_t>(c.assistant.memory_notes.size()));
+            Value notes = Value::make_arr();
+            for (const auto& s : c.assistant.memory_notes) notes.push(Value::make_str(s));
+            res["notes"] = std::move(notes);
             return res;
         }
 
@@ -1925,6 +2486,23 @@ int main(int argc, char** argv) {
             res["ok"] = Value::make_bool(true);
             res["muted"] = Value::make_bool(muted);
             if (muted) res["stopSession"] = Value::make_bool(true);
+            return res;
+        }
+
+        if (name == "set_mic_sensitivity") {
+            int sens = args.get("sensitivity") ? std::clamp(args.get("sensitivity")->as_int(85), 10, 100) : 85;
+            DaemonConfig c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                cfg.audio.mic_sensitivity = sens;
+                cfg.sanitize_and_validate();
+                c = cfg;
+            }
+            audio.update_config(c.audio);
+            assistant.set_mic_sensitivity(c.audio.mic_sensitivity);
+            save_cfg(c);
+            res["ok"] = Value::make_bool(true);
+            res["micSensitivity"] = Value::make_int(c.audio.mic_sensitivity);
             return res;
         }
 
@@ -2637,6 +3215,12 @@ int main(int argc, char** argv) {
         root["ota"] = ota.get_status_json();
         root["bootanim"] = ota.get_bootanim_status_json();
         root["wifiAdb"] = adb_mgr.get_status_json(local_ip, c.device_hostname);
+        {
+            std::lock_guard<std::mutex> lk(last_weather_mu);
+            if (has_last_weather) {
+                root["lastWeather"] = last_weather_json;
+            }
+        }
         root["config"] = c.to_json();
         return root;
     };
@@ -2683,6 +3267,141 @@ int main(int argc, char** argv) {
                 }
                 leds.trigger_calibration(mode, 4500);
                 return HttpResponse::json("{\"ok\":true}");
+            }
+            if (req.method == "GET" && req.path == "/api/weather") {
+                std::string city = url_decode_str(get_query_param(req.query, "city"));
+                int days = 3;
+                std::string ds = get_query_param(req.query, "days");
+                if (!ds.empty()) days = std::clamp(atoi(ds.c_str()), 1, 3);
+                bool silent = (get_query_param(req.query, "silent") == "1");
+
+                std::string fb_city;
+                double fb_lat = 0.0, fb_lon = 0.0;
+                bool auto_det = true;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    auto_det = cfg.location.auto_detect;
+                    fb_city = !cfg.location.city.empty() ? cfg.location.city : cfg.location.resolved_city;
+                    if (cfg.location.city.empty()) {
+                        fb_lat = cfg.location.lat;
+                        fb_lon = cfg.location.lon;
+                    }
+                }
+                if (city.empty() && fb_city.empty() && fb_lat == 0.0 && fb_lon == 0.0 && auto_det) {
+                    GeoLocationResult geo = detect_location_by_ip(&g_stop);
+                    if (geo.ok) {
+                        fb_city = geo.city;
+                        fb_lat = geo.lat;
+                        fb_lon = geo.lon;
+                        DaemonConfig c;
+                        {
+                            std::lock_guard<std::mutex> lk(cfg_mu);
+                            cfg.location.resolved_city = geo.city;
+                            cfg.location.resolved_country = geo.country;
+                            cfg.location.resolved_epoch = static_cast<int64_t>(std::time(nullptr));
+                            if (cfg.location.city.empty()) {
+                                cfg.location.lat = geo.lat;
+                                cfg.location.lon = geo.lon;
+                            }
+                            cfg.sanitize_and_validate();
+                            c = cfg;
+                        }
+                        save_cfg(c);
+                        push_style_sync_to_launcher(c);
+                    }
+                }
+                json::Value wres = tool_get_weather(city, days, fb_lat, fb_lon, fb_city, &g_stop);
+                if (wres.get("ok") && wres.get("ok")->as_bool(false)) {
+                    trigger_weather_visuals(wres, !silent);
+                }
+                return HttpResponse::json(wres.dump(-1), (wres.get("ok") && wres.get("ok")->as_bool(false)) ? 200 : 502);
+            }
+            if (req.method == "POST" && req.path == "/api/location/detect") {
+                GeoLocationResult geo = detect_location_by_ip(&g_stop);
+                if (!geo.ok) {
+                    json::Value err = json::Value::make_obj();
+                    err["ok"] = json::Value::make_bool(false);
+                    err["error"] = json::Value::make_str(geo.error.empty() ? "IP geolocation failed" : geo.error);
+                    return HttpResponse::json(err.dump(-1), 502);
+                }
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.location.auto_detect = true;
+                    cfg.location.resolved_city = geo.city;
+                    cfg.location.resolved_country = geo.country;
+                    cfg.location.resolved_epoch = static_cast<int64_t>(std::time(nullptr));
+                    if (cfg.location.city.empty()) {
+                        cfg.location.lat = geo.lat;
+                        cfg.location.lon = geo.lon;
+                    }
+                    cfg.sanitize_and_validate();
+                    c = cfg;
+                }
+                save_cfg(c);
+                push_style_sync_to_launcher(c);
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["city"] = json::Value::make_str(geo.city);
+                out["country"] = json::Value::make_str(geo.country);
+                out["lat"] = json::Value::make_num(geo.lat);
+                out["lon"] = json::Value::make_num(geo.lon);
+                out["location"] = c.to_json()["location"];
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/audio/eq") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    bool preset_given = false;
+                    bool bands_given = false;
+                    bool bass_given = false;
+                    std::string next_preset = cfg.audio.eq_preset;
+                    if (const auto* p = v.get("preset"); p && p->is_str()) {
+                        if (!is_valid_eq_preset(p->as_str())) {
+                            return HttpResponse::json("{\"error\":\"invalid preset\"}", 400);
+                        }
+                        next_preset = p->as_str();
+                        cfg.audio.eq_preset = next_preset;
+                        preset_given = true;
+                    }
+                    if (const auto* eb = v.get("bands") ? v.get("bands") : v.get("eqBands");
+                        eb && eb->is_arr() && !eb->arr_val.empty()) {
+                        for (size_t i = 0; i < 10 && i < eb->arr_val.size(); ++i) {
+                            cfg.audio.eq_bands[i] = std::clamp(static_cast<float>(eb->arr_val[i].as_double(0.0)), -12.0f, 12.0f);
+                        }
+                        bands_given = true;
+                    }
+                    if (const auto* bb = v.get("bassBoost"); bb && bb->is_num()) {
+                        cfg.audio.bass_boost = std::clamp(bb->as_int(cfg.audio.bass_boost), 0, 100);
+                        bass_given = true;
+                    }
+                    if (preset_given && next_preset != "custom" && !bands_given) {
+                        int def_bass = cfg.audio.bass_boost;
+                        apply_eq_preset_defaults(next_preset, cfg.audio.eq_bands, def_bass);
+                        if (!bass_given) cfg.audio.bass_boost = def_bass;
+                    } else if ((bands_given || bass_given) && !preset_given) {
+                        cfg.audio.eq_preset = "custom";
+                    }
+                    cfg.sanitize_and_validate();
+                    c = cfg;
+                }
+                audio.update_config(c.audio);
+                push_eq_to_launcher(c);
+                push_style_sync_to_launcher(c);
+                save_cfg(c);
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["preset"] = json::Value::make_str(c.audio.eq_preset);
+                out["bassBoost"] = json::Value::make_int(c.audio.bass_boost);
+                json::Value eb = json::Value::make_arr();
+                for (float g : c.audio.eq_bands) eb.push(json::Value::make_num(g));
+                out["eqBands"] = std::move(eb);
+                return HttpResponse::json(out.dump(-1));
             }
             if (req.method == "POST" && req.path == "/api/audio/route") {
                 json::Value v;
@@ -3193,6 +3912,7 @@ int main(int argc, char** argv) {
                     std::lock_guard<std::mutex> lk(music_mu);
                     music_state.update_from_json(v, now_ms);
                 }
+                update_led_music_playing();
                 return HttpResponse::json("{\"ok\":true}");
             }
             if (req.method == "POST" && req.path == "/api/music/command") {
@@ -3371,12 +4091,24 @@ int main(int argc, char** argv) {
 
     // Main telemetry, spectrum & MQTT periodic sync loop (adaptive cadence: 50ms voice / 100ms WS / 250ms idle)
     bool prev_voice_active = false;
+    bool initial_udp_synced = false;
     auto last_voice_udp_tp = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_ws_tp = std::chrono::steady_clock::now();
     auto last_mqtt_tp = std::chrono::steady_clock::now();
 
     while (!g_stop.load()) {
-        // Drain any incoming UDP 8087 spectrum datagrams and push only the latest frame
+        if (!initial_udp_synced && is_udp_port_bound(8086)) {
+            DaemonConfig c_init;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                c_init = cfg;
+            }
+            push_eq_to_launcher(c_init);
+            push_style_sync_to_launcher(c_init);
+            initial_udp_synced = true;
+        }
+
+        // Drain any incoming UDP 8087 spectrum & music_active datagrams
         if (spec_udp_fd >= 0) {
             std::array<float, 24> latest_bands{};
             bool has_latest = false;
@@ -3395,6 +4127,12 @@ int main(int argc, char** argv) {
                     ubuf[n] = '\0';
                     json::Value v;
                     if (json::Parser::parse(std::string(ubuf, static_cast<size_t>(n)), v)) {
+                        const json::Value* cmd_v = v.get("cmd");
+                        if (cmd_v && cmd_v->is_str() && cmd_v->as_str() == "music_active") {
+                            bool pl = v.get("playing") ? v.get("playing")->as_bool(false) : false;
+                            ext_music_playing.store(pl);
+                            update_led_music_playing();
+                        }
                         const json::Value* arr = v.get("bands");
                         if (arr && arr->is_arr()) {
                             latest_bands.fill(0.0f);
@@ -3488,6 +4226,7 @@ int main(int argc, char** argv) {
     if (spec_udp_fd >= 0) ::close(spec_udp_fd);
     Logger::instance().set_sink(nullptr);
     ota.stop();
+    if (geo_thread.joinable()) geo_thread.join();
     timers.stop();
     http.stop();
     mqtt.stop();

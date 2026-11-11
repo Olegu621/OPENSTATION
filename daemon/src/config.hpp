@@ -1,11 +1,18 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 #include "utils/json_min.hpp"
 
 namespace openstation {
+
+// 10 ISO EQ center frequencies: 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz
+void apply_eq_preset_defaults(const std::string& preset,
+                              std::array<float, 10>& out_bands,
+                              int& out_bass_boost);
 
 struct LedRingConfig {
     std::string mode = "rainbow";  // off, solid, breathe, spinner, rainbow, music, voice
@@ -22,10 +29,13 @@ struct LedRingConfig {
 };
 
 struct LedScreenConfig {
-    std::string mode = "clock";    // off, clock, text, spectrum, snake
+    std::string mode = "clock";          // off, clock, text, spectrum, snake
+    std::string clock_style = "classic"; // classic, minimal, bold, seconds, binary, neon, retro
+    std::string visualizer_style = "particles"; // particles, bars, wave, fireflies, aurora, matrix
+    bool auto_music_visualizer = true;   // smooth auto morph orb + LED screen when music plays
     std::string text = "OPEN STATION MAX";
     std::string color = "#ffffff";
-    int brightness = 100;          // 0..100 or max_brightness
+    int brightness = 100;                // 0..100 or max_brightness
     bool auto_brightness = true;
     int scroll_speed = 45;
 };
@@ -42,16 +52,29 @@ struct AudioConfig {
     bool woofer_drc = true;
     bool tweeters_eq = true;
     bool tweeters_drc = true;
-    std::string eq_preset = "balanced"; // flat, balanced, bass_boost, vocal, night, custom
-    int pdm_gain = 3;                   // 0..8 (~6dB * val)
-    int pdm_filter = 1;                 // 0..4
+    std::string eq_preset = "balanced"; // flat, balanced, bass_boost, vocal, night, rock, electronic, custom
+    std::array<float, 10> eq_bands = {2.0f, 1.5f, 0.5f, 0.0f, 0.0f, 0.5f, 1.0f, 1.5f, 1.5f, 1.0f}; // dB -12..+12
+    int bass_boost = 30;               // 0..100%
+    int pdm_gain = 3;                  // 0..8 (~6dB * val)
+    int pdm_filter = 1;                // 0..4
     bool loopback_enable = true;
     bool aec_enable = true;
     bool ns_enable = true;
+    int mic_sensitivity = 85;          // 10..100% far-field mic & wake-word sensitivity
     bool mic_muted = false;
     std::string capture_mode = "alsa_16ch"; // alsa_16ch (raw 16ch /dev/snd/pcmC0D1c, low CPU) or aaudio (1ch 16k VQE/shared)
-    int primary_mic_channel = 1;       // 0..15 or -1 = auto beamform average
+    int primary_mic_channel = -1;      // 0..15 or -1 = 7-mic array beamform average
     int loopback_channel = 8;          // reference channel in 16ch frame (calibrated empirically)
+};
+
+struct LocationConfig {
+    bool auto_detect = true;
+    std::string city;                  // Manual override if non-empty
+    double lat = 0.0;
+    double lon = 0.0;
+    std::string resolved_city;
+    std::string resolved_country;
+    int64_t resolved_epoch = 0;
 };
 
 struct InputConfig {
@@ -86,6 +109,7 @@ struct AssistantConfig {
     int follow_up_sec = 8;
     int max_session_sec = 120;
     int vad_silence_ms = 900;
+    std::vector<std::string> memory_notes;
 };
 
 struct WyomingConfig {
@@ -128,6 +152,7 @@ struct DaemonConfig {
     LedRingConfig led_ring;
     LedScreenConfig led_screen;
     AudioConfig audio;
+    LocationConfig location;
     InputConfig input;
     AssistantConfig assistant;
     WyomingConfig wyoming;
