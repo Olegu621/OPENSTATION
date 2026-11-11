@@ -111,6 +111,7 @@ def main():
 
             prevLength = -1
             prevOffset = -1
+            amlc_err = 0
             while True:
                 try:
                     (length, offset) = dev.getBootAMLC()
@@ -126,8 +127,12 @@ def main():
                     print("[DONE]")
 
                     seq += 1
-                except usb.core.USBError as e:
-                    print(f"USB Error during AMLC transfer: {e}. Retrying...")
+                    amlc_err = 0
+                except (usb.core.USBError, ValueError) as e:
+                    amlc_err += 1
+                    print(f"USB Error during AMLC transfer ({amlc_err}/5): {e}")
+                    if amlc_err >= 5:
+                        raise
                     time.sleep(3)
                     dev = reset_usb_connection(backend)
                     continue

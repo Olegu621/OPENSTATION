@@ -399,15 +399,35 @@ if (-not $ForceWipe -and -not $NoPause) {
 Write-Host "[2/4] Инициализация BootROM и загрузка U-Boot (boot-g12.py -> aml.img)..." -ForegroundColor Yellow
 
 $ubootReady = $false
-Push-Location $ServiceFlashDir
-try {
-    & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  U-Boot Update уже активен, пропускаем повторную загрузку aml.img." -ForegroundColor Gray
-        $ubootReady = $true
+$probeStagePy = @'
+import importlib.util, os, sys
+sf = sys.argv[1]
+sys.path.insert(0, sf)
+s = importlib.util.spec_from_file_location("bg", os.path.join(sf, "boot-g12.py"))
+m = importlib.util.module_from_spec(s)
+s.loader.exec_module(m)
+be = m.resolve_usb_backend()
+from pyamlboot import pyamlboot
+d = pyamlboot.AmlogicSoC(backend=be)
+try:
+    d.dev.set_configuration()
+except Exception:
+    pass
+idb = d.identify()
+print("STAGE=" + str(ord(idb[3])))
+'@
+$stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
+if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
+    Push-Location $ServiceFlashDir
+    try {
+        & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  U-Boot Update уже активен (Stage=$($Matches[1])), пропускаем повторную загрузку aml.img." -ForegroundColor Gray
+            $ubootReady = $true
+        }
+    } finally {
+        Pop-Location
     }
-} finally {
-    Pop-Location
 }
 
 if (-not $ubootReady) {
@@ -461,19 +481,16 @@ Invoke-UpdateExe @("mwrite", $vendorPath, "store", "vendor", "normal") "Запи
 Invoke-UpdateExe @("mwrite", $systemPath, "store", "system", "normal") "Запись system (~1.44 ГБ, подождите 1-2 минуты)"
 
 if ($DoWipeData) {
-    Write-Host "[4/4] Очистка /data и /cache + сохранение флагов U-Boot..." -ForegroundColor Yellow
+    Write-Host "[4/4] Очистка пользовательских разделов (/data и /cache)..." -ForegroundColor Yellow
     Invoke-UpdateExe @("bulkcmd", "amlmmc erase data") "Очистка раздела data"
     Invoke-UpdateExe @("bulkcmd", "amlmmc erase cache") "Очистка раздела cache"
 } else {
-    Write-Host "[4/4] Сохранение флагов U-Boot (/data сохранён)..." -ForegroundColor Yellow
+    Write-Host "[4/4] Завершение (/data сохранён)..." -ForegroundColor Yellow
 }
 
-Invoke-UpdateExe @("bulkcmd", "store init") "Инициализация store"
-Invoke-UpdateExe @("bulkcmd", "amlmmc enc") "Настройка eMMC ключей (amlmmc enc)"
-Invoke-UpdateExe @("bulkcmd", "setenv silent 0") "Включение вывода консоли (silent=0)"
-Invoke-UpdateExe @("bulkcmd", "setenv lock 10000000") "Фиксация флага разблокировки (lock=10000000)"
-Invoke-UpdateExe @("bulkcmd", "setenv avb2 0") "Отключение AVB2 проверки (avb2=0)"
-Invoke-UpdateExe @("bulkcmd", "saveenv") "Сохранение U-Boot окружения (saveenv)"
+# Примечание: vbmeta.img собран с AVB flags=2 (отключённая проверка целостности),
+# а загруженный по USB Boot загрузчик YAOSX aml.img сбрасывает USB-сессию при вызове
+# store init / amlmmc enc / setenv по bulkcmd, поэтому env после mwrite не трогаем.
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
