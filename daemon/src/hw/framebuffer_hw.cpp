@@ -224,6 +224,13 @@ FramebufferHw::~FramebufferHw() {
     stop();
 }
 
+void FramebufferHw::update_needs_spectrum_locked() {
+    const bool v_speak = (voice_state_ == VoiceVisualState::Speaking);
+    const bool ns = (ring_cfg_.mode == "music" || ring_cfg_.mode == "voice" || v_speak ||
+                     (fb5_present_.load() && (screen_cfg_.mode == "spectrum" || v_speak)));
+    needs_spectrum_.store(ns, std::memory_order_relaxed);
+}
+
 void FramebufferHw::start(const LedRingConfig& ring_cfg, const LedScreenConfig& screen_cfg) {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -256,31 +263,47 @@ void FramebufferHw::start(const LedRingConfig& ring_cfg, const LedScreenConfig& 
         LOGI("Framebuffer", "Front LED screen not connected (dynamic hotplug scan enabled)");
     }
 
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        update_needs_spectrum_locked();
+    }
     running_.store(true);
     worker_ = std::thread(&FramebufferHw::worker_loop, this);
 }
 
 void FramebufferHw::stop() {
     running_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        ++wake_seq_;
+    }
+    cv_.notify_all();
     if (worker_.joinable()) {
         worker_.join();
     }
     if (fb4_.fd >= 0) {
         std::fill(fb4_.buf.begin(), fb4_.buf.end(), 0);
+        fb4_.has_prev = false;
         flush_fb(fb4_);
         close_fb(fb4_);
     }
     if (fb5_.fd >= 0) {
         std::fill(fb5_.buf.begin(), fb5_.buf.end(), 0);
+        fb5_.has_prev = false;
         flush_fb(fb5_);
         close_fb(fb5_);
     }
 }
 
 void FramebufferHw::update_config(const LedRingConfig& ring_cfg, const LedScreenConfig& screen_cfg) {
-    std::lock_guard<std::mutex> lk(mu_);
-    ring_cfg_ = ring_cfg;
-    screen_cfg_ = screen_cfg;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        ring_cfg_ = ring_cfg;
+        screen_cfg_ = screen_cfg;
+        update_needs_spectrum_locked();
+        ++wake_seq_;
+    }
+    cv_.notify_all();
 }
 
 void FramebufferHw::set_spectrum(const std::array<float, 24>& bands) {
@@ -291,50 +314,87 @@ void FramebufferHw::set_spectrum(const std::array<float, 24>& bands) {
 }
 
 void FramebufferHw::set_voice_state(VoiceVisualState st) {
-    std::lock_guard<std::mutex> lk(mu_);
-    voice_state_ = st;
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (voice_state_ != st) {
+            voice_state_ = st;
+            update_needs_spectrum_locked();
+            ++wake_seq_;
+            notify = true;
+        }
+    }
+    if (notify) cv_.notify_all();
 }
 
 void FramebufferHw::set_mic_muted(bool muted) {
-    std::lock_guard<std::mutex> lk(mu_);
-    if (mic_muted_ != muted) {
-        mic_muted_ = muted;
-        flash_color_ = muted ? Rgb{255, 24, 24} : Rgb{0, 220, 255};
-        flash_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(650);
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (mic_muted_ != muted) {
+            mic_muted_ = muted;
+            flash_color_ = muted ? Rgb{255, 24, 24} : Rgb{0, 220, 255};
+            flash_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(650);
+            ++wake_seq_;
+            notify = true;
+        }
     }
+    if (notify) cv_.notify_all();
 }
 
 void FramebufferHw::trigger_volume_osd(int percent) {
-    std::lock_guard<std::mutex> lk(mu_);
-    osd_volume_pct_ = std::clamp(percent, 0, 100);
-    osd_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(1900);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        osd_volume_pct_ = std::clamp(percent, 0, 100);
+        osd_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(1900);
+        ++wake_seq_;
+    }
+    cv_.notify_all();
 }
 
 void FramebufferHw::update_volume_osd_if_active(int percent) {
-    std::lock_guard<std::mutex> lk(mu_);
-    if (std::chrono::steady_clock::now() < osd_until_) {
-        osd_volume_pct_ = std::clamp(percent, 0, 100);
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (std::chrono::steady_clock::now() < osd_until_) {
+            osd_volume_pct_ = std::clamp(percent, 0, 100);
+            ++wake_seq_;
+            notify = true;
+        }
     }
+    if (notify) cv_.notify_all();
 }
 
 void FramebufferHw::trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_ms) {
-    std::lock_guard<std::mutex> lk(mu_);
-    flash_color_ = Rgb{r, g, b};
-    flash_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        flash_color_ = Rgb{r, g, b};
+        flash_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms);
+        ++wake_seq_;
+    }
+    cv_.notify_all();
 }
 
 void FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint8_t g, uint8_t b, int duration_ms) {
-    std::lock_guard<std::mutex> lk(mu_);
-    scr_override_text_ = text;
-    scr_override_color_ = Rgb{r, g, b};
-    scr_override_start_ = std::chrono::steady_clock::now();
-    scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 300, 30000));
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        scr_override_text_ = text;
+        scr_override_color_ = Rgb{r, g, b};
+        scr_override_start_ = std::chrono::steady_clock::now();
+        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 300, 30000));
+        ++wake_seq_;
+    }
+    cv_.notify_all();
 }
 
 void FramebufferHw::trigger_calibration(int cal_mode, int duration_ms) {
-    std::lock_guard<std::mutex> lk(mu_);
-    cal_mode_ = cal_mode;
-    cal_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        cal_mode_ = cal_mode;
+        cal_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms);
+        ++wake_seq_;
+    }
+    cv_.notify_all();
 }
 
 bool FramebufferHw::open_fb_by_name(const char* preferred_name, const char* fallback_dev, FbDevice& out) {
@@ -407,11 +467,17 @@ void FramebufferHw::close_fb(FbDevice& dev) {
     dev.blue_off = 16;
     dev.grayscale = 0;
     dev.pan_supported = false;
+    dev.has_prev = false;
     dev.buf.clear();
+    dev.prev_buf.clear();
 }
 
 void FramebufferHw::flush_fb(FbDevice& dev) {
     if (dev.fd < 0 || dev.buf.empty()) return;
+    if (dev.has_prev && dev.prev_buf.size() == dev.buf.size() &&
+        std::memcmp(dev.buf.data(), dev.prev_buf.data(), dev.buf.size()) == 0) {
+        return;
+    }
     ssize_t wr = pwrite(dev.fd, dev.buf.data(), dev.buf.size(), 0);
     if (wr < 0) {
         LOGW("Framebuffer", "Write error on %s: %s", dev.dev_path.c_str(), strerror(errno));
@@ -420,7 +486,11 @@ void FramebufferHw::flush_fb(FbDevice& dev) {
             close_fb(fb5_);
             fb5_present_.store(false);
             last_fb5_bl_ = -1;
+            update_needs_spectrum_locked();
         }
+    } else {
+        dev.prev_buf = dev.buf;
+        dev.has_prev = true;
     }
 }
 
@@ -869,11 +939,11 @@ void FramebufferHw::worker_loop() {
         auto now = clock::now();
         double t_sec = std::chrono::duration<double>(now - start_tp).count();
 
-        if (now - last_sensor_tp >= std::chrono::milliseconds(500)) {
+        if (now - last_sensor_tp >= std::chrono::milliseconds(2000)) {
             poll_sensors();
             last_sensor_tp = now;
         }
-        if (fb5_.fd < 0 && now - last_fb5_probe_tp >= std::chrono::seconds(3)) {
+        if (fb5_.fd < 0 && now - last_fb5_probe_tp >= std::chrono::seconds(5)) {
             FbDevice cand;
             if (open_fb_by_name("YNDX LED screen", "/dev/graphics/fb5", cand)) {
                 int max_bl = 255;
@@ -890,8 +960,9 @@ void FramebufferHw::worker_loop() {
                     fb5_ = std::move(cand);
                     fb5_max_bl_ = max_bl;
                     last_fb5_bl_ = -1;
+                    fb5_present_.store(true);
+                    update_needs_spectrum_locked();
                 }
-                fb5_present_.store(true);
                 LOGI("Framebuffer", "Hotplug detected LED screen on %s (%ux%u %ubpp, max_bl=%d)",
                      cand_dev.c_str(), cand_w, cand_h, cand_bpp, max_bl);
             }
@@ -909,7 +980,23 @@ void FramebufferHw::worker_loop() {
         render_ring(t_sec, rcfg);
         render_screen(t_sec, scfg);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
+        {
+            std::unique_lock<std::mutex> lk(mu_);
+            bool transient_active = (voice_state_ != VoiceVisualState::Idle) || mic_muted_ ||
+                                    (now < osd_until_) || (now < flash_until_) ||
+                                    (now < cal_until_) || (now < scr_text_until_);
+            bool ring_static = (rcfg.mode == "off" || rcfg.mode == "solid");
+            bool scr_has = fb5_present_.load();
+            bool scr_static = (!scr_has || scfg.mode == "off" || scfg.mode == "clock");
+            int sleep_ms = 33; // ~30 FPS for animated modes / transient flashes
+            if (!transient_active && ring_static && scr_static) {
+                sleep_ms = (scr_has && scfg.mode == "clock") ? 250 : 500;
+            }
+            uint64_t seen_seq = wake_seq_;
+            cv_.wait_for(lk, std::chrono::milliseconds(sleep_ms), [&] {
+                return !running_.load() || wake_seq_ != seen_seq;
+            });
+        }
     }
 }
 

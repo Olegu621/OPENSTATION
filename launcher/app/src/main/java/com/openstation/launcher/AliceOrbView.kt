@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Rect
@@ -278,6 +279,8 @@ class AliceOrbView @JvmOverloads constructor(
     private var totalTime = 0f
     private var rotDeg = 0f
     private var lastNs = 0L
+    private var activeHoldUntilNs = 0L
+    private var lastBoost = 0f
     private var running = false
 
     // 0f on Screen 0 hero, 0..1f during morph -> 1f in docked/overlay bar for luminous gem visibility
@@ -293,7 +296,7 @@ class AliceOrbView @JvmOverloads constructor(
     private var curBright = 1.0f
     private var curGlowColor = Color.parseColor("#38BDF8")
 
-    // Preallocated Paint/Matrix objects (zero allocations per frame)
+    // Preallocated Paint/Matrix/LRU Shader objects (zero per-frame allocations in steady state)
     private val bmpPaint0 = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val bmpPaint1 = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val auraPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -303,14 +306,15 @@ class AliceOrbView @JvmOverloads constructor(
     }
     private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val dstRect = RectF()
-    private val auraColors = IntArray(3)
+    private val auraMatrix = Matrix()
     private val auraStops = floatArrayOf(0f, 0.56f, 1f)
-    private var cachedAuraCx = -1f
-    private var cachedAuraCy = -1f
-    private var cachedAuraR = -1f
-    private var cachedAuraCol = 0
+    private var cachedAuraShader: RadialGradient? = null
+    private var cachedAuraQKey = 0
+    private val auraShaderCache = object : LinkedHashMap<Int, RadialGradient>(24, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, RadialGradient>?): Boolean = size > 24
+    }
 
-    // Hue/Sat/Bright filter state
+    // Hue/Sat/Bright filter state + bounded LRU cache to avoid per-frame JNI SkColorFilter allocations
     private val cm = ColorMatrix()
     private val satCm = ColorMatrix()
     private val brightArr = floatArrayOf(
@@ -321,13 +325,13 @@ class AliceOrbView @JvmOverloads constructor(
     )
     private val brightCm = ColorMatrix()
     private val hueMatArr = FloatArray(20)
-    private var lastFilterHue = -9999f
-    private var lastFilterSat = -1f
-    private var lastFilterBright = -1f
+    private var lastFilterKey = Int.MIN_VALUE
     private var cachedFilter: ColorMatrixColorFilter? = null
+    private val filterCache = object : LinkedHashMap<Int, ColorMatrixColorFilter>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ColorMatrixColorFilter>?): Boolean = size > 64
+    }
 
     init {
-        setLayerType(LAYER_TYPE_HARDWARE, null)
         AliceOrbFrames.preloadAsync(context) { invalidate() }
     }
 
@@ -365,7 +369,26 @@ class AliceOrbView @JvmOverloads constructor(
 
     override fun doFrame(frameTimeNanos: Long) {
         if (!running) return
-        val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.05f)
+        val boost = compactGlowBoost
+        val morphing = abs(boost - lastBoost) > 0.004f
+        val st = LiveOrbState.assistantState
+        val musicOn = LiveOrbState.musicPlaying || LiveOrbState.musicOverall > 0.045f
+        val activeNow = (st != "idle") || musicOn || morphing
+        if (activeNow) {
+            activeHoldUntilNs = frameTimeNanos + 1_200_000_000L
+        }
+        val highRate = activeNow || frameTimeNanos < activeHoldUntilNs
+        if (!highRate && lastNs != 0L) {
+            val minStepNs = if (boost > 0.85f) 52_000_000L else 36_000_000L
+            if ((frameTimeNanos - lastNs) < minStepNs) {
+                // Calm idle: 1:2 VSync (~25fps) for hero orb, 1:3 (~16.7fps) when docked miniature
+                Choreographer.getInstance().postFrameCallback(this)
+                return
+            }
+        }
+
+        lastBoost = boost
+        val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.08f)
         lastNs = frameTimeNanos
         stepPhysics(dt)
         invalidate()
@@ -495,31 +518,42 @@ class AliceOrbView @JvmOverloads constructor(
         val halfOrb = orbDiameter * 0.5f
         val auraRadius = min(baseDim * 0.50f, halfOrb * (1.16f + curEnergy * 0.14f))
 
-        // 1. Reactive ambient glow behind sphere
+        // 1. Reactive ambient glow behind sphere (unit RadialGradient cached by quantized ARGB + Matrix transform)
         if (auraRadius > 2f) {
             val auraAlphaCore = ((68 + curEnergy * 125).toInt()).coerceIn(48, 195)
-            val auraAlphaMid = (auraAlphaCore * 0.46f).toInt()
-            val cCore = Color.argb(auraAlphaCore, Color.red(curGlowColor), Color.green(curGlowColor), Color.blue(curGlowColor))
-            val cMid = Color.argb(auraAlphaMid, Color.red(curGlowColor), Color.green(curGlowColor), Color.blue(curGlowColor))
-            if (abs(cachedAuraCx - cx) > 0.5f || abs(cachedAuraCy - cy) > 0.5f ||
-                abs(cachedAuraR - auraRadius) > 2f || cachedAuraCol != cCore
-            ) {
-                auraColors[0] = cCore
-                auraColors[1] = cMid
-                auraColors[2] = Color.TRANSPARENT
-                auraPaint.shader = RadialGradient(cx, cy, auraRadius, auraColors, auraStops, Shader.TileMode.CLAMP)
-                cachedAuraCx = cx
-                cachedAuraCy = cy
-                cachedAuraR = auraRadius
-                cachedAuraCol = cCore
+            val qA = ((auraAlphaCore + 4) and 0xF8).coerceIn(48, 200)
+            val qR = ((Color.red(curGlowColor) + 4) and 0xF8).coerceIn(0, 248)
+            val qG = ((Color.green(curGlowColor) + 4) and 0xF8).coerceIn(0, 248)
+            val qB = ((Color.blue(curGlowColor) + 4) and 0xF8).coerceIn(0, 248)
+            val qKey = (qA shl 24) or (qR shl 16) or (qG shl 8) or qB
+
+            var shader = if (cachedAuraQKey == qKey) cachedAuraShader else null
+            if (shader == null) {
+                shader = auraShaderCache[qKey]
+                if (shader == null) {
+                    val cMid = Color.argb((qA * 0.46f).toInt(), qR, qG, qB)
+                    shader = RadialGradient(
+                        0f, 0f, 1f,
+                        intArrayOf(qKey, cMid, Color.TRANSPARENT),
+                        auraStops,
+                        Shader.TileMode.CLAMP
+                    )
+                    auraShaderCache[qKey] = shader
+                }
+                cachedAuraShader = shader
+                cachedAuraQKey = qKey
+                auraPaint.shader = shader
             }
+            auraMatrix.setScale(auraRadius, auraRadius)
+            auraMatrix.postTranslate(cx, cy)
+            shader.setLocalMatrix(auraMatrix)
             canvas.drawCircle(cx, cy, auraRadius, auraPaint)
         }
 
         // 2. Precision BORK x Duo luminescent orbital rim ring + thinking/speaking energy arcs
+        val boost = compactGlowBoost.coerceIn(0f, 1f)
         run {
             val ringR = halfOrb * 1.018f
-            val boost = compactGlowBoost.coerceIn(0f, 1f)
             val ringAlpha = (54 + curEnergy * 130 + boost * 45).toInt().coerceIn(42, 225)
             val rimCol = blendColor(curGlowColor, Color.WHITE, 0.22f + boost * 0.15f)
             ringPaint.color = Color.argb(ringAlpha, Color.red(rimCol), Color.green(rimCol), Color.blue(rimCol))
@@ -555,44 +589,62 @@ class AliceOrbView @JvmOverloads constructor(
         val f1 = (f0 + 1) % nFrames
         val blend = (framePhase - f0).coerceIn(0f, 1f)
 
-        val s0 = AliceOrbFrames.sheets[f0 / perSheet]
-        val s1 = AliceOrbFrames.sheets[f1 / perSheet]
-        val r0 = AliceOrbFrames.srcRects[f0]
-        val r1 = AliceOrbFrames.srcRects[f1]
-
         // Notice in 200x200 tile the sphere occupies r ~95.5px out of 100px (diameter = 95.5% of tile)
         val drawHalf = halfOrb / 0.955f
         dstRect.set(cx - drawHalf, cy - drawHalf, cx + drawHalf, cy + drawHalf)
 
         val save = canvas.save()
         canvas.rotate(rotDeg, cx, cy)
-        if (s0 != null && !s0.isRecycled) {
-            bmpPaint0.alpha = 255
-            bmpPaint0.colorFilter = cachedFilter
-            canvas.drawBitmap(s0, r0, dstRect, bmpPaint0)
-        }
-        if (blend > 0.05f && s1 != null && !s1.isRecycled) {
-            bmpPaint1.alpha = (blend * 255f).toInt().coerceIn(0, 255)
-            bmpPaint1.colorFilter = cachedFilter
-            canvas.drawBitmap(s1, r1, dstRect, bmpPaint1)
+        val idleSnap = if (LiveOrbState.assistantState == "idle" &&
+            !LiveOrbState.musicPlaying &&
+            LiveOrbState.musicOverall <= 0.045f) 0.22f else 0.14f
+        if (boost > 0.78f || blend < idleSnap || blend > (1f - idleSnap)) {
+            // Single-layer fast path (docked miniature orb or dominant keyframe -> halves Mali-G31 fillrate)
+            val fi = if (blend >= 0.5f) f1 else f0
+            val s = AliceOrbFrames.sheets[fi / perSheet]
+            if (s != null && !s.isRecycled) {
+                bmpPaint0.alpha = 255
+                bmpPaint0.colorFilter = cachedFilter
+                canvas.drawBitmap(s, AliceOrbFrames.srcRects[fi], dstRect, bmpPaint0)
+            }
+        } else {
+            val s0 = AliceOrbFrames.sheets[f0 / perSheet]
+            val s1 = AliceOrbFrames.sheets[f1 / perSheet]
+            if (s0 != null && !s0.isRecycled) {
+                bmpPaint0.alpha = 255
+                bmpPaint0.colorFilter = cachedFilter
+                canvas.drawBitmap(s0, AliceOrbFrames.srcRects[f0], dstRect, bmpPaint0)
+            }
+            if (s1 != null && !s1.isRecycled) {
+                bmpPaint1.alpha = (blend * 255f).toInt().coerceIn(0, 255)
+                bmpPaint1.colorFilter = cachedFilter
+                canvas.drawBitmap(s1, AliceOrbFrames.srcRects[f1], dstRect, bmpPaint1)
+            }
         }
         canvas.restoreToCount(save)
     }
 
     private fun updateColorFilterIfNeeded() {
-        if (cachedFilter != null &&
-            abs(curHue - lastFilterHue) < 1.2f &&
-            abs(curSat - lastFilterSat) < 0.02f &&
-            abs(curBright - lastFilterBright) < 0.015f
-        ) {
+        val qHue = Math.round(curHue / 3f).coerceIn(-250, 250)
+        val qSat = Math.round(curSat / 0.06f).coerceIn(0, 255)
+        val qBright = Math.round(curBright / 0.04f).coerceIn(0, 255)
+        val key = ((qHue + 512) shl 16) or (qSat shl 8) or qBright
+        if (cachedFilter != null && key == lastFilterKey) {
             return
         }
-        lastFilterHue = curHue
-        lastFilterSat = curSat
-        lastFilterBright = curBright
+        lastFilterKey = key
+        val existing = filterCache[key]
+        if (existing != null) {
+            cachedFilter = existing
+            return
+        }
+
+        val hueDeg = qHue * 3f
+        val satVal = qSat * 0.06f
+        val brightVal = qBright * 0.04f
 
         // Luminance-preserving RGB hue rotation matrix
-        val rad = curHue * (PI.toFloat() / 180f)
+        val rad = hueDeg * (PI.toFloat() / 180f)
         val cosV = cos(rad)
         val sinV = sin(rad)
         val lumR = 0.213f
@@ -617,16 +669,18 @@ class AliceOrbView @JvmOverloads constructor(
         hueMatArr[15] = 0f; hueMatArr[16] = 0f; hueMatArr[17] = 0f; hueMatArr[18] = 1f; hueMatArr[19] = 0f
 
         cm.set(hueMatArr)
-        satCm.setSaturation(curSat)
+        satCm.setSaturation(satVal)
         cm.postConcat(satCm)
 
-        brightArr[0] = curBright
-        brightArr[6] = curBright
-        brightArr[12] = curBright
+        brightArr[0] = brightVal
+        brightArr[6] = brightVal
+        brightArr[12] = brightVal
         brightCm.set(brightArr)
         cm.postConcat(brightCm)
 
-        cachedFilter = ColorMatrixColorFilter(cm)
+        val created = ColorMatrixColorFilter(cm)
+        filterCache[key] = created
+        cachedFilter = created
     }
 
     private fun blendColor(c0: Int, c1: Int, t: Float): Int {

@@ -10,6 +10,7 @@
   let volTimer = null;
   let toastTimer = null;
   let lastHistSig = "";
+  let lastAlsaSig = "";
 
   function showToast(msg, isErr = false) {
     const t = $("toast");
@@ -144,7 +145,7 @@
         kwsKeywords: $("astKeywords").value.trim() || "▁а ли са @алиса",
         kwsThreshold: parseFloat($("astKwsThr").value) || 0.20,
         kwsScore: parseFloat($("astKwsScore").value) || 1.5,
-        kwsThreads: parseInt($("astKwsThreads").value, 10) || 2,
+        kwsThreads: parseInt($("astKwsThreads").value, 10) || 1,
         chimeEnabled: $("astChime").checked,
         googleSearch: $("astSearch").checked,
         echoGuard: $("astEchoGuard").checked,
@@ -396,7 +397,11 @@
     }
     $("micBackendInfo").textContent = `Backend: ${eng.backend || "--"} | ${eng.sampleRate || 0} Гц | ${eng.channels || 0} кан. | Mono RMS: ${Math.round(eng.monoRms || 0)}`;
     $("btnCaptureToggle").textContent = eng.captureEnabled === false ? "Возобновить захват" : "Пауза захвата (для ТВ-приложений)";
-    $("alsaDump").textContent = JSON.stringify(mixer, null, 2);
+    const alsaSig = JSON.stringify(mixer);
+    if (alsaSig !== lastAlsaSig) {
+      lastAlsaSig = alsaSig;
+      $("alsaDump").textContent = JSON.stringify(mixer, null, 2);
+    }
 
     $("wyoStatusBanner").textContent = wyo.clientConnected
       ? `Home Assistant подключен (${wyo.peerIp})${wyo.streaming ? " • СТРИМИНГ" : ""}${wyo.lastTranscript ? " • Текст: " + wyo.lastTranscript : ""}`
@@ -462,7 +467,7 @@
       $("loopbackEn").checked = !!cfg.audio?.loopbackEnable;
       $("aecEn").checked = !!cfg.audio?.aecEnable;
       $("nsEn").checked = !!cfg.audio?.nsEnable;
-      $("captureMode").value = cfg.audio?.captureMode || "aaudio";
+      $("captureMode").value = cfg.audio?.captureMode || "alsa_16ch";
       $("primaryMicCh").value = String(cfg.audio?.primaryMicChannel ?? 1);
       $("loopbackCh").value = String(cfg.audio?.loopbackChannel ?? 8);
 
@@ -489,7 +494,7 @@
         $("lblKwsThr").textContent = parseFloat($("astKwsThr").value).toFixed(2);
         $("astKwsScore").value = cfg.assistant.kwsScore ?? 1.5;
         $("lblKwsScore").textContent = parseFloat($("astKwsScore").value).toFixed(1);
-        $("astKwsThreads").value = cfg.assistant.kwsThreads ?? 2;
+        $("astKwsThreads").value = cfg.assistant.kwsThreads ?? 1;
         $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         $("astSearch").checked = cfg.assistant.googleSearch === true;
         $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;

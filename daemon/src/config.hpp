@@ -46,7 +46,7 @@ struct AudioConfig {
     bool aec_enable = true;
     bool ns_enable = true;
     bool mic_muted = false;
-    std::string capture_mode = "aaudio"; // aaudio (1ch 16k VQE/shared) or alsa_16ch (raw 16ch /dev/snd/pcmC0D1c)
+    std::string capture_mode = "alsa_16ch"; // alsa_16ch (raw 16ch /dev/snd/pcmC0D1c, low CPU) or aaudio (1ch 16k VQE/shared)
     int primary_mic_channel = 1;       // 0..15 or -1 = auto beamform average
     int loopback_channel = 8;          // reference channel in 16ch frame (calibrated empirically)
 };
@@ -75,7 +75,7 @@ struct AssistantConfig {
     std::string kws_keywords = "\xE2\x96\x81\xD0\xB0 \xD0\xBB\xD0\xB8 \xD1\x81\xD0\xB0 @\xD0\xB0\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
     float kws_threshold = 0.20f;
     float kws_score = 1.5f;
-    int kws_threads = 2;
+    int kws_threads = 1;
     bool chime_enabled = true;
     bool google_search = false;
     bool echo_guard = true;

@@ -3,6 +3,7 @@
 #include "utils/logger.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -125,6 +126,10 @@ bool WakeWordEngine::start(const WakeWordSettings& settings, WakeCallback cb) {
         settings_dirty_ = false;
     }
     cb_ = std::move(cb);
+    {
+        std::lock_guard<std::mutex> lk(q_mu_);
+        pcm_q_.reserve(4096);
+    }
     running_.store(true);
     worker_ = std::thread(&WakeWordEngine::worker_loop, this);
     return true;
@@ -320,22 +325,55 @@ void WakeWordEngine::worker_loop() {
     create_engines(cur_cfg);
 
     constexpr size_t kVadWin = 512;      // 32 ms @ 16 kHz
-    constexpr size_t kLeadInMax = 16 * kVadWin; // 512 ms pre-speech context
+    constexpr size_t kLeadInWins = 16; // 512 ms pre-speech context
+    constexpr size_t kLeadInMax = kLeadInWins * kVadWin;
+
+    std::vector<float> batch;
+    batch.reserve(4096);
     std::vector<float> acc;
-    std::vector<float> lead_in;
-    lead_in.reserve(kLeadInMax + kVadWin);
+    acc.reserve(8192);
+    size_t acc_head = 0;
+
+    std::vector<float> lead_ring(kLeadInMax, 0.0f);
+    size_t lead_head = 0;
+    size_t lead_count = 0;
+
+    auto push_lead_win = [&](const float* w) {
+        std::memcpy(lead_ring.data() + lead_head, w, kVadWin * sizeof(float));
+        lead_head = (lead_head + kVadWin) % kLeadInMax;
+        if (lead_count < kLeadInMax) {
+            lead_count += kVadWin;
+        }
+    };
+    auto feed_lead_to_kws = [&]() {
+        if (lead_count == 0) return;
+        size_t start = (lead_head + kLeadInMax - lead_count) % kLeadInMax;
+        size_t first = std::min(lead_count, kLeadInMax - start);
+        if (first > 0) {
+            g_sherpa.streamAccept(kws_stream, 16000, lead_ring.data() + start, static_cast<int32_t>(first));
+        }
+        size_t second = lead_count - first;
+        if (second > 0) {
+            g_sherpa.streamAccept(kws_stream, 16000, lead_ring.data(), static_cast<int32_t>(second));
+        }
+        lead_count = 0;
+    };
 
     bool kws_active = false;
     int hangover_wins = 0;
+    int vad_warm_wins = 0;
+    bool vad_sleeping = true;
+    uint32_t vad_clr_cnt = 0;
+    float noise_rms = 0.0055f;
     auto last_trigger_tp = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
     while (running_.load()) {
-        std::vector<float> batch;
+        batch.clear();
         bool need_recreate = false;
         bool do_reset = false;
         {
             std::unique_lock<std::mutex> lk(q_mu_);
-            q_cv_.wait_for(lk, std::chrono::milliseconds(100), [&] {
+            q_cv_.wait_for(lk, std::chrono::milliseconds(150), [&] {
                 if (!running_.load() || !pcm_q_.empty() || reset_req_) return true;
                 std::lock_guard<std::mutex> clk(cfg_mu_);
                 return settings_dirty_;
@@ -361,17 +399,25 @@ void WakeWordEngine::worker_loop() {
 
         if (need_recreate) {
             acc.clear();
-            lead_in.clear();
+            acc_head = 0;
+            lead_head = 0;
+            lead_count = 0;
             kws_active = false;
             hangover_wins = 0;
+            vad_warm_wins = 0;
+            vad_sleeping = true;
             create_engines(cur_cfg);
         }
 
         if (do_reset) {
             acc.clear();
-            lead_in.clear();
+            acc_head = 0;
+            lead_head = 0;
+            lead_count = 0;
             kws_active = false;
             hangover_wins = 0;
+            vad_warm_wins = 0;
+            vad_sleeping = true;
             if (vad) g_sherpa.vadReset(vad);
             if (kws && kws_stream) g_sherpa.resetKwsStream(kws, kws_stream);
             vad_speech_active_.store(false);
@@ -382,27 +428,69 @@ void WakeWordEngine::worker_loop() {
         }
 
         acc.insert(acc.end(), batch.begin(), batch.end());
-        while (acc.size() >= kVadWin && running_.load() && !paused_.load()) {
-            const float* win = acc.data();
+        while ((acc.size() - acc_head) >= kVadWin && running_.load() && !paused_.load()) {
+            const float* win = acc.data() + acc_head;
 
-            g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
-            bool speech = (g_sherpa.vadDetected(vad) != 0);
-            vad_speech_active_.store(speech);
+            // Fast acoustic energy check (avoids running Silero VAD neural net 31.25x/s in room silence)
+            float sum_sq = 0.0f;
+            float peak = 0.0f;
+            for (size_t i = 0; i < kVadWin; ++i) {
+                float v = win[i];
+                sum_sq += v * v;
+                float av = std::fabs(v);
+                if (av > peak) peak = av;
+            }
+            float win_rms = std::sqrt(sum_sq * (1.0f / static_cast<float>(kVadWin)));
+            float rms_thr = std::clamp(noise_rms * 1.55f, 0.0075f, 0.040f);
+            float peak_thr = std::clamp(noise_rms * 4.2f, 0.022f, 0.14f);
+            bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.40f);
 
-            // Prevent unbounded internal VAD speech-segment queue buildup
-            g_sherpa.vadClear(vad);
+            if (energetic) {
+                if (vad_sleeping && lead_count >= kVadWin) {
+                    // Warm up Silero LSTM state with up to 4 pre-onset windows from lead_ring
+                    size_t warm_samples = std::min<size_t>(lead_count, 4 * kVadWin);
+                    size_t wstart = (lead_head + kLeadInMax - warm_samples) % kLeadInMax;
+                    for (size_t off = 0; off < warm_samples; off += kVadWin) {
+                        size_t idx = (wstart + off) % kLeadInMax;
+                        g_sherpa.vadAccept(vad, lead_ring.data() + idx, static_cast<int32_t>(kVadWin));
+                    }
+                    vad_sleeping = false;
+                }
+                vad_warm_wins = 14; // ~448 ms active Silero tracking after acoustic activity
+            } else if (!kws_active && hangover_wins == 0 && vad_warm_wins == 0) {
+                if (win_rms < noise_rms * 2.2f) {
+                    noise_rms = std::clamp(noise_rms * 0.99f + win_rms * 0.01f, 0.002f, 0.030f);
+                }
+            }
+
+            bool speech = false;
+            if (kws_active || hangover_wins > 0 || vad_warm_wins > 0) {
+                vad_sleeping = false;
+                if (vad_warm_wins > 0 && !energetic) {
+                    --vad_warm_wins;
+                }
+                g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
+                speech = (g_sherpa.vadDetected(vad) != 0);
+                vad_speech_active_.store(speech);
+
+                if (speech || (++vad_clr_cnt & 31U) == 0U) {
+                    g_sherpa.vadClear(vad);
+                }
+            } else {
+                if (!vad_sleeping) {
+                    vad_sleeping = true;
+                    g_sherpa.vadReset(vad);
+                    vad_speech_active_.store(false);
+                }
+            }
 
             bool fed_current = false;
             if (speech) {
                 if (!kws_active) {
-                    if (!lead_in.empty()) {
-                        g_sherpa.streamAccept(kws_stream, 16000, lead_in.data(),
-                                              static_cast<int32_t>(lead_in.size()));
-                        lead_in.clear();
-                    }
+                    feed_lead_to_kws();
                     kws_active = true;
                 }
-                hangover_wins = 28; // ~900 ms hangover after speech stops
+                hangover_wins = 12; // ~384 ms extra KWS tail after Silero min_silence_duration
                 g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
                 fed_current = true;
             } else if (kws_active && hangover_wins > 0) {
@@ -416,11 +504,7 @@ void WakeWordEngine::worker_loop() {
             }
 
             if (!fed_current) {
-                lead_in.insert(lead_in.end(), win, win + kVadWin);
-                if (lead_in.size() > kLeadInMax) {
-                    lead_in.erase(lead_in.begin(),
-                                  lead_in.begin() + static_cast<ptrdiff_t>(lead_in.size() - kLeadInMax));
-                }
+                push_lead_win(win);
             }
 
             if (kws_active || hangover_wins > 0) {
@@ -438,7 +522,8 @@ void WakeWordEngine::worker_loop() {
                         g_sherpa.resetKwsStream(kws, kws_stream);
                         kws_active = false;
                         hangover_wins = 0;
-                        lead_in.clear();
+                        vad_warm_wins = 0;
+                        lead_count = 0;
 
                         auto now = std::chrono::steady_clock::now();
                         if (now - last_trigger_tp >= std::chrono::milliseconds(1500)) {
@@ -452,8 +537,17 @@ void WakeWordEngine::worker_loop() {
                 }
             }
 
-            acc.erase(acc.begin(), acc.begin() + static_cast<ptrdiff_t>(kVadWin));
+            acc_head += kVadWin;
         }
+
+        size_t rem = acc.size() - acc_head;
+        if (rem == 0) {
+            acc.clear();
+        } else if (acc_head > 0) {
+            std::memmove(acc.data(), acc.data() + acc_head, rem * sizeof(float));
+            acc.resize(rem);
+        }
+        acc_head = 0;
     }
 
     destroy_engines();

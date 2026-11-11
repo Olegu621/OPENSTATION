@@ -22,6 +22,7 @@ public:
     using Pcm16kCallback = std::function<void(const int16_t* samples, size_t count, float rms)>;
     using WsAudioCallback = std::function<void(const int16_t* samples, size_t count)>;
     using SpectrumCallback = std::function<void(const std::array<float, 24>& bands)>;
+    using SpectrumNeededCallback = std::function<bool()>;
 
     AudioEngine() = default;
     ~AudioEngine();
@@ -35,6 +36,7 @@ public:
     bool capture_enabled() const { return capture_enabled_.load(); }
 
     void set_ws_audio_sink(WsAudioCallback cb);
+    void set_spectrum_needed_cb(SpectrumNeededCallback cb);
     void push_external_spectrum(const std::array<float, 24>& bands);
 
     void play_pcm(const int16_t* samples, size_t frame_count, int sample_rate, int channels);
@@ -69,6 +71,8 @@ private:
 
     Pcm16kCallback pcm_cb_;
     SpectrumCallback spec_cb_;
+    SpectrumNeededCallback spec_needed_cb_;
+    std::mutex spec_needed_mu_;
     WsAudioCallback ws_audio_cb_;
     std::mutex ws_cb_mu_;
 
@@ -102,14 +106,23 @@ private:
     std::mutex wav_mu_;
 
     static constexpr size_t kAecTaps = 64;
+    static_assert((kAecTaps & (kAecTaps - 1)) == 0, "kAecTaps must be power of two");
     std::vector<float> aec_w_;
     std::vector<float> aec_x_;
     size_t aec_pos_ = 0;
+    int aec_hangover_ = 0;
+    bool aec_x_clean_ = true;
     float ns_noise_floor_ = 120.0f;
+    bool mic_spec_zero_sent_ = false;
 
     double resamp_phase_ = 0.0;
+    std::vector<float> clean_buf_;
+    std::vector<int16_t> mono_buf_;
+    std::vector<int16_t> combined_buf_;
+    std::vector<int16_t> out_batch_buf_;
     std::vector<int16_t> mono48k_rem_;
     std::vector<int16_t> out16k_acc_;
+    size_t out16k_head_ = 0;
 
     static constexpr size_t kMaxPlayQueueChunks = 1024;
     std::mutex play_mu_;

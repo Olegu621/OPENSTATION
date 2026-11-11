@@ -52,7 +52,7 @@ public:
 
     void broadcast_ws_text(const std::string& text);
     void broadcast_ws_audio(const int16_t* pcm, size_t samples);
-    size_t ws_client_count();
+    size_t ws_client_count() const;
 
 private:
     struct WsClient {
@@ -87,6 +87,7 @@ private:
 
     std::mutex ws_mu_;
     std::vector<std::shared_ptr<WsClient>> ws_clients_;
+    std::atomic<size_t> ws_client_count_{0};
 };
 
 } // namespace openstation

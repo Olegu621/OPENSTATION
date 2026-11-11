@@ -135,6 +135,7 @@ class MainActivity : Activity() {
     private lateinit var tvStationTelemetry: TextView
     private lateinit var ivQr: ImageView
     private lateinit var ivStationRingGlow: View
+    private var stationRingGlowBg: GradientDrawable? = null
     private lateinit var ivDialRing: ImageView
     private var dialAnimator: ObjectAnimator? = null
 
@@ -175,7 +176,7 @@ class MainActivity : Activity() {
     private var micMuted = false
     private var outputRoute = "auto"
     private var eqPreset = "balanced"
-    private var captureMode = "aaudio"
+    private var captureMode = "alsa_16ch"
     private var capturePaused = false
     private var assistantState = "idle"
     private var assistantEnabled = true
@@ -183,6 +184,29 @@ class MainActivity : Activity() {
     @Volatile private var daemonOnline = false
     @Volatile private var cachedAppsJson = ""
     private var lastQrIp = ""
+
+    // Cached formatters & diff keys to eliminate redundant main-thread allocations/relayouts
+    private val ruLocale = Locale("ru")
+    private val timeFmt by lazy { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    private val fullDateFmt by lazy { SimpleDateFormat("EEEE, d MMMM yyyy", ruLocale) }
+    private val shortDateFmt by lazy { SimpleDateFormat("EEE, d MMM", ruLocale) }
+    private val clockDate = Date()
+    private var lastClockStr = ""
+    private var lastShortDateStr = ""
+    private var lastFullDateStr = ""
+    @Volatile private var cachedLocalIp = "127.0.0.1"
+    @Volatile private var lastIpDetectMs = 0L
+    private var lastIpLineStr = ""
+    private var lastStatusLineText = ""
+    private var lastTelemetryText = ""
+    private var lastOrbUiKey = ""
+    private var lastPillsKey = ""
+    private var lastGlowStateKey = ""
+    private var lastRenderedMicMuted: Boolean? = null
+    private var lastMusicChipStr = ""
+    private var lastDockMusicStr = ""
+    private var lastTrackLiked: Boolean? = null
+    private var lastPlayPauseIconKey = ""
 
     private val orbStateListener = LiveOrbState.StateListener {
         renderOrbAssistantUi()
@@ -214,12 +238,15 @@ class MainActivity : Activity() {
     private val pollRunnable = object : Runnable {
         override fun run() {
             pollDaemonStatus()
-            handler.postDelayed(this, 2500L)
+            val active = (assistantState != "idle") || (LiveOrbState.assistantState != "idle") ||
+                latestMusicSnap.playing || (currentPage == 2)
+            handler.postDelayed(this, if (active) 2000L else 5000L)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setBackgroundDrawable(null)
 
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 101)
@@ -383,7 +410,14 @@ class MainActivity : Activity() {
     private fun buildUi() {
         rootFrame = FrameLayout(this)
 
-        // 0. Atmospheric Wallpaper Backdrop + Obsidian Gradient Scrim
+        // 0. Atmospheric Wallpaper Backdrop + Obsidian Gradient Scrim (baked once in GPU layer)
+        val bgLayerHost = FrameLayout(this).apply {
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
         val ivBg = ImageView(this).apply {
             setImageResource(R.drawable.bg_tv_stage)
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -406,8 +440,9 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        rootFrame.addView(ivBg)
-        rootFrame.addView(scrimView)
+        bgLayerHost.addView(ivBg)
+        bgLayerHost.addView(scrimView)
+        rootFrame.addView(bgLayerHost)
 
         // Main vertical container: Top Bar + 3-Screen Morphing Stage
         val shellCol = LinearLayout(this).apply {
@@ -1181,13 +1216,14 @@ class MainActivity : Activity() {
         val stationVisualBox = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(128), dp(128))
         }
+        stationRingGlowBg = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.parseColor("#4438BDF8"), Color.parseColor("#33E8C686"))
+        ).apply {
+            shape = GradientDrawable.OVAL
+        }
         ivStationRingGlow = View(this).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.parseColor("#4438BDF8"), Color.parseColor("#33E8C686"))
-            ).apply {
-                shape = GradientDrawable.OVAL
-            }
+            background = stationRingGlowBg
             layoutParams = FrameLayout.LayoutParams(dp(106), dp(106), Gravity.CENTER)
         }
         ivDialRing = ImageView(this).apply {
@@ -1240,7 +1276,7 @@ class MainActivity : Activity() {
         tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Микрофоны: ВКЛ") { toggleMute() }
         tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
         tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
-        tileCapMode = makeHwTile(R.drawable.ic_hw_chip, "Захват: AAudio") { toggleCaptureMode() }
+        tileCapMode = makeHwTile(R.drawable.ic_hw_chip, "Захват: 16ch") { toggleCaptureMode() }
         tileMicPause = makeHwTile(R.drawable.ic_hw_eq, "Поток: ВКЛ") { toggleCapturePause() }
         tileCecWake = makeHwTile(R.drawable.ic_hw_tv, "ТВ Вкл (CEC)") { sendCec("wake") }
         tileCecOff = makeHwTile(R.drawable.ic_hw_tv, "ТВ Выкл (CEC)") { sendCec("standby") }
@@ -1458,6 +1494,14 @@ class MainActivity : Activity() {
         pageAnimator?.cancel()
         updateTabsAppearance()
 
+        if (clamped == 1) {
+            renderMusicSnapshot(latestMusicSnap, forceViews = true)
+        } else if (clamped == 2) {
+            updateClock(force = true)
+            updateNetworkHeader(cachedLocalIp, force = true)
+            syncPills(forceViews = true)
+        }
+
         // Make involved pages visible during slide transition
         page0View.visibility = View.VISIBLE
         page1Scroll.visibility = View.VISIBLE
@@ -1507,6 +1551,7 @@ class MainActivity : Activity() {
             bottomDockBar.visibility = View.VISIBLE
             bottomDockBar.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
+        updateAnimationsState()
     }
 
     private fun focusInitialControlOnPage(idx: Int) {
@@ -1599,6 +1644,9 @@ class MainActivity : Activity() {
         val st = LiveOrbState.assistantState
         val userTxt = LiveOrbState.liveUserText.trim()
         val display = LiveOrbState.bestDisplayText()
+        val uiKey = "$st|$assistantEnabled|$userTxt|$display"
+        if (uiKey == lastOrbUiKey) return
+        lastOrbUiKey = uiKey
 
         val accent: Int
         val borderColor: Int
@@ -2071,21 +2119,35 @@ class MainActivity : Activity() {
     // -----------------------------------------------------------------------------------------
     // CLOCK, NETWORK & DAEMON TELEMETRY
     // -----------------------------------------------------------------------------------------
-    private fun updateClock() {
-        val now = Date()
-        val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
-        val fullDate = SimpleDateFormat("EEEE, d MMMM yyyy", Locale("ru"))
-            .format(now).replaceFirstChar { it.uppercase() }
-        val shortDate = SimpleDateFormat("EEE, d MMM", Locale("ru"))
-            .format(now).replaceFirstChar { it.uppercase() }
+    private fun updateClock(force: Boolean = false) {
+        clockDate.time = System.currentTimeMillis()
+        val timeStr = timeFmt.format(clockDate)
+        val shortDate = shortDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
+        val fullDate = fullDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
 
-        tvTopClock.text = timeStr
-        tvTopDate.text = shortDate
-        tvClock.text = timeStr
-        tvDate.text = fullDate
+        if (force || timeStr != lastClockStr) {
+            tvTopClock.text = timeStr
+            if (currentPage == 2 || force) {
+                tvClock.text = timeStr
+            }
+            if (!force || currentPage == 2) lastClockStr = timeStr
+        }
+        if (force || shortDate != lastShortDateStr) {
+            lastShortDateStr = shortDate
+            tvTopDate.text = shortDate
+        }
+        if ((currentPage == 2 || force) && (force || fullDate != lastFullDateStr)) {
+            lastFullDateStr = fullDate
+            tvDate.text = fullDate
+        }
     }
 
-    private fun detectLocalIp(): String {
+    private fun detectLocalIp(force: Boolean = false): String {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (!force && cachedLocalIp != "127.0.0.1" && (nowMs - lastIpDetectMs) < 20_000L) {
+            return cachedLocalIp
+        }
+        var result = "127.0.0.1"
         try {
             val ifaces = NetworkInterface.getNetworkInterfaces()
             var candidate = ""
@@ -2097,27 +2159,42 @@ class MainActivity : Activity() {
                     val a = addrs.nextElement()
                     if (a is Inet4Address && !a.isLoopbackAddress) {
                         val ip = a.hostAddress ?: continue
-                        if (iface.name.startsWith("wlan") || iface.name.startsWith("eth")) return ip
+                        if (iface.name.startsWith("wlan") || iface.name.startsWith("eth")) {
+                            result = ip
+                            cachedLocalIp = result
+                            lastIpDetectMs = nowMs
+                            return result
+                        }
                         candidate = ip
                     }
                 }
             }
-            if (candidate.isNotEmpty()) return candidate
+            if (candidate.isNotEmpty()) result = candidate
         } catch (_: Throwable) {}
-        return "127.0.0.1"
+        cachedLocalIp = result
+        lastIpDetectMs = nowMs
+        return result
     }
 
-    private fun updateNetworkHeader() {
-        val ip = detectLocalIp()
+    private fun updateNetworkHeader(ipOverride: String? = null, force: Boolean = false) {
+        val ip = ipOverride ?: detectLocalIp(force)
         val url = "http://$ip:8080"
-        val onlineNet = try {
-            val cm = getSystemService(ConnectivityManager::class.java)
-            cm.activeNetwork != null
-        } catch (_: Throwable) { false }
-        tvIpLine.text = if (onlineNet || ip != "127.0.0.1") {
+        val onlineNet = if (ip != "127.0.0.1") {
+            true
+        } else {
+            try {
+                val cm = getSystemService(ConnectivityManager::class.java)
+                cm.activeNetwork != null
+            } catch (_: Throwable) { false }
+        }
+        val ipLine = if (onlineNet || ip != "127.0.0.1") {
             "$ip:8080 · station-max.local"
         } else {
             "Локально: 127.0.0.1:8080"
+        }
+        if ((currentPage == 2 || force) && (force || ipLine != lastIpLineStr)) {
+            lastIpLineStr = ipLine
+            tvIpLine.text = ipLine
         }
         if (ip != lastQrIp && ip.isNotEmpty()) {
             lastQrIp = ip
@@ -2184,24 +2261,37 @@ class MainActivity : Activity() {
                     }
 
                     val ip = detectLocalIp()
-                    handler.post {
-                        updateNetworkHeader()
-                        val scrStr = if (screenConn) "OLED ОК" else "OLED выкл"
-                        tvStatusLine.text = String.format(
-                            Locale.US,
-                            "● Гр:%d%% · %.0f°C · %s",
-                            volumePct, temp, ip
-                        )
-                        tvStationTelemetry.text = String.format(
+                    val statusStr = String.format(
+                        Locale.US,
+                        "● Гр:%d%% · %.0f°C · %s",
+                        volumePct, temp, ip
+                    )
+                    val scrStr = if (screenConn) "OLED ОК" else "OLED выкл"
+                    val telStr = if (currentPage == 2) {
+                        String.format(
                             Locale.US,
                             "● %.0f°C · %.1flx · %s · %s · EQ: %s",
                             temp, lux, scrStr,
                             if (StationAudioService.visualizerActive) "Спектр ОК" else "Спектр —",
                             StationAudioService.eqBackend
                         )
+                    } else ""
+
+                    handler.post {
+                        updateNetworkHeader(ip)
+                        if (statusStr != lastStatusLineText) {
+                            lastStatusLineText = statusStr
+                            tvStatusLine.text = statusStr
+                        }
+                        if (currentPage == 2 && telStr != lastTelemetryText) {
+                            lastTelemetryText = telStr
+                            tvStationTelemetry.text = telStr
+                        }
                         val svcSnap = StationAudioService.instance?.musicPlayer?.getSnapshot()
                         if (svcSnap != null) {
-                            renderMusicSnapshot(svcSnap)
+                            if (svcSnap.seq != latestMusicSnap.seq || svcSnap.playing != latestMusicSnap.playing) {
+                                renderMusicSnapshot(svcSnap)
+                            }
                         } else if (daemonMusic != null && daemonMusic.optLong("seq", 0L) > 0L) {
                             renderMusicSnapshot(YmPlayerSnapshot.fromJson(daemonMusic))
                         }
@@ -2221,60 +2311,83 @@ class MainActivity : Activity() {
     private fun markDaemonOffline() {
         daemonOnline = false
         handler.post {
-            tvStatusLine.text = "○ openstationd:8080"
-            tvStationTelemetry.text = "○ Ожидание openstationd (порт 8080)"
+            val s = "○ openstationd:8080"
+            if (s != lastStatusLineText) {
+                lastStatusLineText = s
+                tvStatusLine.text = s
+            }
+            if (currentPage == 2) {
+                val t = "○ Ожидание openstationd (порт 8080)"
+                if (t != lastTelemetryText) {
+                    lastTelemetryText = t
+                    tvStationTelemetry.text = t
+                }
+            }
             syncPills()
         }
     }
 
-    private fun syncPills() {
-        val ringLabel = when (ringMode) {
-            "rainbow" -> "Радуга"
-            "solid" -> "Статика"
-            "breathe" -> "Дыхание"
-            "spinner" -> "Спиннер"
-            "spectrum", "music" -> "Спектр"
-            "off" -> "Выкл"
-            else -> ringMode
-        }
-        tileRing.label.text = "Кольцо: $ringLabel"
-        tileMute.label.text = if (micMuted) "Мик: MUTE" else "Мик: ВКЛ"
-        tileMute.icon.setImageResource(if (micMuted) R.drawable.ic_hw_mic_off else R.drawable.ic_hw_mic_on)
-        tileMute.root.isSelected = micMuted
+    private fun syncPills(forceViews: Boolean = false) {
+        if (currentPage == 2 || forceViews) {
+            val pillsKey = "$ringMode|$micMuted|$outputRoute|$eqPreset|$captureMode|$capturePaused"
+            if (forceViews || pillsKey != lastPillsKey) {
+                lastPillsKey = pillsKey
+                val ringLabel = when (ringMode) {
+                    "rainbow" -> "Радуга"
+                    "solid" -> "Статика"
+                    "breathe" -> "Дыхание"
+                    "spinner" -> "Спиннер"
+                    "spectrum", "music" -> "Спектр"
+                    "off" -> "Выкл"
+                    else -> ringMode
+                }
+                tileRing.label.text = "Кольцо: $ringLabel"
+                tileMute.label.text = if (micMuted) "Мик: MUTE" else "Мик: ВКЛ"
+                if (lastRenderedMicMuted != micMuted) {
+                    lastRenderedMicMuted = micMuted
+                    tileMute.icon.setImageResource(if (micMuted) R.drawable.ic_hw_mic_off else R.drawable.ic_hw_mic_on)
+                }
+                tileMute.root.isSelected = micMuted
 
-        tileRoute.label.text = "Выход: " + when (outputRoute) {
-            "speakers" -> "Динам."
-            "headphones" -> "3.5мм"
-            "hdmi" -> "HDMI"
-            "both" -> "Все"
-            else -> "Авто"
-        }
-        tileEq.label.text = "EQ: " + when (eqPreset) {
-            "bass_boost" -> "Бас+"
-            "vocal" -> "Вокал"
-            "night" -> "Ночь"
-            "flat" -> "Flat"
-            else -> "Баланс"
-        }
-        tileCapMode.label.text = if (captureMode == "alsa_16ch") "Захват: 16ch" else "Захват: AAudio"
-        tileMicPause.label.text = if (capturePaused) "Поток: ПАУЗА" else "Поток: ВКЛ"
-        tileMicPause.root.isSelected = capturePaused
+                tileRoute.label.text = "Выход: " + when (outputRoute) {
+                    "speakers" -> "Динам."
+                    "headphones" -> "3.5мм"
+                    "hdmi" -> "HDMI"
+                    "both" -> "Все"
+                    else -> "Авто"
+                }
+                tileEq.label.text = "EQ: " + when (eqPreset) {
+                    "bass_boost" -> "Бас+"
+                    "vocal" -> "Вокал"
+                    "night" -> "Ночь"
+                    "flat" -> "Flat"
+                    else -> "Баланс"
+                }
+                tileCapMode.label.text = if (captureMode == "alsa_16ch") "Захват: 16ch" else "Захват: AAudio"
+                tileMicPause.label.text = if (capturePaused) "Поток: ПАУЗА" else "Поток: ВКЛ"
+                tileMicPause.root.isSelected = capturePaused
+            }
 
-        val glowColors = when {
-            assistantState != "idle" -> intArrayOf(Color.parseColor("#7700D4FF"), Color.parseColor("#66A855F7"))
-            ringMode == "off" -> intArrayOf(Color.parseColor("#11FFFFFF"), Color.parseColor("#00FFFFFF"))
-            ringMode == "solid" -> intArrayOf(Color.parseColor("#55E8C686"), Color.parseColor("#3338BDF8"))
-            else -> intArrayOf(Color.parseColor("#4438BDF8"), Color.parseColor("#38E8C686"))
-        }
-        ivStationRingGlow.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, glowColors).apply {
-            shape = GradientDrawable.OVAL
+            val astBusy = assistantState != "idle"
+            val glowKey = "$astBusy|$ringMode"
+            if (forceViews || glowKey != lastGlowStateKey) {
+                lastGlowStateKey = glowKey
+                val glowColors = when {
+                    astBusy -> intArrayOf(Color.parseColor("#7700D4FF"), Color.parseColor("#66A855F7"))
+                    ringMode == "off" -> intArrayOf(Color.parseColor("#11FFFFFF"), Color.parseColor("#00FFFFFF"))
+                    ringMode == "solid" -> intArrayOf(Color.parseColor("#55E8C686"), Color.parseColor("#3338BDF8"))
+                    else -> intArrayOf(Color.parseColor("#4438BDF8"), Color.parseColor("#38E8C686"))
+                }
+                stationRingGlowBg?.colors = glowColors
+            }
         }
         renderOrbAssistantUi()
         updateAnimationsState()
     }
 
     private fun updateAnimationsState() {
-        if (latestMusicSnap.playing) {
+        val runVinyl = (currentPage == 1) && latestMusicSnap.playing
+        if (runVinyl) {
             vinylAnimator?.let {
                 if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
             }
@@ -2282,7 +2395,8 @@ class MainActivity : Activity() {
             vinylAnimator?.let { if (it.isRunning) it.pause() }
         }
 
-        if (latestMusicSnap.playing || LiveOrbState.assistantState != "idle") {
+        val runDial = (currentPage == 2) && (latestMusicSnap.playing || LiveOrbState.assistantState != "idle")
+        if (runDial) {
             dialAnimator?.let {
                 if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
             }
@@ -2322,105 +2436,127 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderMusicSnapshot(snap: YmPlayerSnapshot) {
+    private fun renderMusicSnapshot(snap: YmPlayerSnapshot, forceViews: Boolean = false) {
         latestMusicSnap = snap
         LiveOrbState.musicPlaying = snap.playing
-        tvHomeSourceBadge.text = snap.sourceLabel.uppercase(Locale.getDefault())
-
-        if (snap.codecLabel.isNotBlank()) {
-            tvHomeCodecBadge.text = snap.codecLabel
-            tvHomeCodecBadge.visibility = View.VISIBLE
-        } else {
-            tvHomeCodecBadge.visibility = View.GONE
-        }
-
-        val err = snap.lastError
-        val errClean = err.removePrefix("AUTH_REQUIRED:").trim()
-        when {
-            err.isNotBlank() -> {
-                tvHomeAuthBadge.text = "⚠ $errClean"
-                tvHomeAuthBadge.setTextColor(Color.parseColor("#FCA5A5"))
-            }
-            snap.buffering -> {
-                tvHomeAuthBadge.text = "Загрузка потока..."
-                tvHomeAuthBadge.setTextColor(Color.parseColor("#E8C686"))
-            }
-            snap.account.loggedIn -> {
-                val nm = snap.account.login.ifBlank { snap.account.fullName.ifBlank { "OK" } }
-                val plus = if (snap.account.hasPlus) " · Плюс" else ""
-                tvHomeAuthBadge.text = "● $nm$plus"
-                tvHomeAuthBadge.setTextColor(Color.parseColor("#6EE7B7"))
-            }
-            else -> {
-                tvHomeAuthBadge.text = "Нужен вход · нажмите «Плеер»"
-                tvHomeAuthBadge.setTextColor(Color.parseColor("#E8C686"))
-            }
-        }
 
         val tr = snap.currentTrack
-        if (tr != null) {
-            tvHomeTrackTitle.text = tr.title
-            tvHomeTrackArtist.text = if (tr.album.isNotBlank()) "${tr.artists}  ·  ${tr.album}" else tr.artists
-            val dur = maxOf(snap.durationMs, tr.durationMs)
-            val pos = snap.positionMs.coerceAtLeast(0L)
-            pbHomeTrack.progress = if (dur > 0L) ((pos * 1000L) / dur).toInt().coerceIn(0, 1000) else 0
-            tvHomeTrackTime.text = "${formatTimeMs(pos)} / ${formatTimeMs(dur)}"
-
+        val chipText = if (tr != null) {
             val prefix = if (snap.playing) "♫ " else "❚❚ "
-            val snippet = "$prefix${tr.artists} — ${tr.title}"
-            tvHeroMusicChip.text = snippet
-            tvDockMusic.text = snippet
-            tvDockMusic.visibility = View.VISIBLE
+            "$prefix${tr.artists} — ${tr.title}"
+        } else {
+            "Яндекс Музыка · Моя волна"
+        }
+        if (chipText != lastMusicChipStr) {
+            lastMusicChipStr = chipText
+            tvHeroMusicChip.text = chipText
+        }
+        val dockStr = if (tr != null) chipText else ""
+        if (dockStr != lastDockMusicStr) {
+            lastDockMusicStr = dockStr
+            tvDockMusic.text = dockStr
+            tvDockMusic.visibility = if (dockStr.isNotEmpty()) View.VISIBLE else View.GONE
+        }
 
-            val likeDrawable = getDrawable(if (tr.liked) R.drawable.ic_heart_filled else R.drawable.ic_heart_outline)
-            btnHomeLike.icon.setImageDrawable(likeDrawable)
+        if (currentPage == 1 || forceViews) {
+            tvHomeSourceBadge.text = snap.sourceLabel.uppercase(Locale.getDefault())
 
-            val coverUrl = tr.coverUrl(300)
-            if (coverUrl != lastHomeCoverUrl) {
-                lastHomeCoverUrl = coverUrl
-                if (coverUrl.isBlank()) {
-                    setHomeCoverArt(null)
-                } else {
-                    val api = StationAudioService.instance?.musicPlayer?.api
-                    if (api != null) {
-                        thread(isDaemon = true) {
-                            val bmp = api.loadCoverBitmap(coverUrl, 300)
-                            if (bmp != null && lastHomeCoverUrl == coverUrl) {
-                                handler.post {
-                                    if (lastHomeCoverUrl == coverUrl) {
-                                        setHomeCoverArt(bmp)
+            if (snap.codecLabel.isNotBlank()) {
+                tvHomeCodecBadge.text = snap.codecLabel
+                tvHomeCodecBadge.visibility = View.VISIBLE
+            } else {
+                tvHomeCodecBadge.visibility = View.GONE
+            }
+
+            val err = snap.lastError
+            val errClean = err.removePrefix("AUTH_REQUIRED:").trim()
+            when {
+                err.isNotBlank() -> {
+                    tvHomeAuthBadge.text = "⚠ $errClean"
+                    tvHomeAuthBadge.setTextColor(Color.parseColor("#FCA5A5"))
+                }
+                snap.buffering -> {
+                    tvHomeAuthBadge.text = "Загрузка потока..."
+                    tvHomeAuthBadge.setTextColor(Color.parseColor("#E8C686"))
+                }
+                snap.account.loggedIn -> {
+                    val nm = snap.account.login.ifBlank { snap.account.fullName.ifBlank { "OK" } }
+                    val plus = if (snap.account.hasPlus) " · Плюс" else ""
+                    tvHomeAuthBadge.text = "● $nm$plus"
+                    tvHomeAuthBadge.setTextColor(Color.parseColor("#6EE7B7"))
+                }
+                else -> {
+                    tvHomeAuthBadge.text = "Нужен вход · нажмите «Плеер»"
+                    tvHomeAuthBadge.setTextColor(Color.parseColor("#E8C686"))
+                }
+            }
+
+            if (tr != null) {
+                tvHomeTrackTitle.text = tr.title
+                tvHomeTrackArtist.text = if (tr.album.isNotBlank()) "${tr.artists}  ·  ${tr.album}" else tr.artists
+                val dur = maxOf(snap.durationMs, tr.durationMs)
+                val pos = snap.positionMs.coerceAtLeast(0L)
+                pbHomeTrack.progress = if (dur > 0L) ((pos * 1000L) / dur).toInt().coerceIn(0, 1000) else 0
+                tvHomeTrackTime.text = "${formatTimeMs(pos)} / ${formatTimeMs(dur)}"
+
+                if (forceViews || lastTrackLiked != tr.liked) {
+                    lastTrackLiked = tr.liked
+                    btnHomeLike.icon.setImageDrawable(
+                        getDrawable(if (tr.liked) R.drawable.ic_heart_filled else R.drawable.ic_heart_outline)
+                    )
+                }
+
+                val coverUrl = tr.coverUrl(300)
+                if (coverUrl != lastHomeCoverUrl) {
+                    lastHomeCoverUrl = coverUrl
+                    if (coverUrl.isBlank()) {
+                        setHomeCoverArt(null)
+                    } else {
+                        val api = StationAudioService.instance?.musicPlayer?.api
+                        if (api != null) {
+                            thread(isDaemon = true) {
+                                val bmp = api.loadCoverBitmap(coverUrl, 300)
+                                if (bmp != null && lastHomeCoverUrl == coverUrl) {
+                                    handler.post {
+                                        if (lastHomeCoverUrl == coverUrl) {
+                                            setHomeCoverArt(bmp)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+            } else {
+                tvHomeTrackTitle.text = "Моя волна — поток музыки"
+                tvHomeTrackArtist.text = "Скажите «Алиса, включи музыку» или жмите «Моя волна»"
+                pbHomeTrack.progress = 0
+                tvHomeTrackTime.text = "00:00 / 00:00"
+                if (forceViews || lastTrackLiked != false) {
+                    lastTrackLiked = false
+                    btnHomeLike.icon.setImageDrawable(getDrawable(R.drawable.ic_heart_outline))
+                }
+                if (lastHomeCoverUrl.isNotEmpty()) {
+                    lastHomeCoverUrl = ""
+                    setHomeCoverArt(null)
+                }
             }
-        } else {
-            tvHomeTrackTitle.text = "Моя волна — поток музыки"
-            tvHomeTrackArtist.text = "Скажите «Алиса, включи музыку» или жмите «Моя волна»"
-            pbHomeTrack.progress = 0
-            tvHomeTrackTime.text = "00:00 / 00:00"
-            tvHeroMusicChip.text = "Яндекс Музыка · Моя волна"
-            tvDockMusic.text = ""
-            tvDockMusic.visibility = View.GONE
-            btnHomeLike.icon.setImageDrawable(getDrawable(R.drawable.ic_heart_outline))
-            if (lastHomeCoverUrl.isNotEmpty()) {
-                lastHomeCoverUrl = ""
-                setHomeCoverArt(null)
-            }
-        }
 
-        val ppIcon = getDrawable(
-            when {
-                snap.buffering -> R.drawable.ic_refresh
-                snap.playing -> R.drawable.ic_pause
-                else -> R.drawable.ic_play
+            val ppKey = "${snap.buffering}|${snap.playing}"
+            if (forceViews || ppKey != lastPlayPauseIconKey) {
+                lastPlayPauseIconKey = ppKey
+                val ppIcon = getDrawable(
+                    when {
+                        snap.buffering -> R.drawable.ic_refresh
+                        snap.playing -> R.drawable.ic_pause
+                        else -> R.drawable.ic_play
+                    }
+                )?.mutate()?.apply {
+                    setTint(Color.parseColor("#E8C686"))
+                }
+                btnHomePlayPause.icon.setImageDrawable(ppIcon)
             }
-        )?.mutate()?.apply {
-            setTint(Color.parseColor("#E8C686"))
         }
-        btnHomePlayPause.icon.setImageDrawable(ppIcon)
         updateAnimationsState()
     }
 

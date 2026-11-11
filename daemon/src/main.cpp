@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <malloc.h>
 #include <mutex>
 #include <netinet/in.h>
 #include <poll.h>
@@ -69,15 +70,19 @@ bool is_udp_port_bound(int port) {
 }
 
 bool send_udp_json(int port, const std::string& payload) {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return false;
+    static std::mutex s_mu;
+    static int s_fd = -1;
+    std::lock_guard<std::mutex> lk(s_mu);
+    if (s_fd < 0) {
+        s_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (s_fd < 0) return false;
+    }
     struct sockaddr_in addr {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(port));
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ssize_t n = sendto(fd, payload.data(), payload.size(), 0,
+    ssize_t n = sendto(s_fd, payload.data(), payload.size(), 0,
                        reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
-    ::close(fd);
     return n == static_cast<ssize_t>(payload.size());
 }
 
@@ -496,6 +501,10 @@ ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, 
 } // namespace
 
 int main(int argc, char** argv) {
+    // Enable jemalloc 10s dirty-page decay on Android Bionic so periodic ONNX Runtime inference
+    // reuses heap pages instead of churning madvise/minor page faults on every audio chunk.
+    mallopt(M_DECAY_TIME, 1);
+
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--probe-audio") == 0) {
             openstation::AudioEngine::run_cli_probe();
@@ -1856,6 +1865,10 @@ int main(int argc, char** argv) {
             }
         });
 
+    audio.set_spectrum_needed_cb([&]() {
+        return leds.needs_spectrum();
+    });
+
     audio.start(
         cfg.audio,
         [&](const int16_t* pcm, size_t count, float rms) {
@@ -2320,13 +2333,71 @@ int main(int argc, char** argv) {
             }
         });
 
-    // Main telemetry & MQTT periodic sync loop (50 ms tick for live voice RMS + 100 ms WS telemetry)
-    int tick = 0;
-    int ws_div = 0;
+    // Non-blocking loopback UDP 8087 receiver for low-overhead visualizer spectrum updates (96-byte float[24] or JSON)
+    int spec_udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (spec_udp_fd >= 0) {
+        int opt = 1;
+        setsockopt(spec_udp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        int fl = fcntl(spec_udp_fd, F_GETFL, 0);
+        if (fl >= 0) fcntl(spec_udp_fd, F_SETFL, fl | O_NONBLOCK);
+        struct sockaddr_in saddr {};
+        saddr.sin_family = AF_INET;
+        saddr.sin_port = htons(8087);
+        saddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (bind(spec_udp_fd, reinterpret_cast<struct sockaddr*>(&saddr), sizeof(saddr)) < 0) {
+            LOGW("Main", "UDP 8087 spectrum bind failed: %s", strerror(errno));
+            ::close(spec_udp_fd);
+            spec_udp_fd = -1;
+        }
+    }
+
+    // Main telemetry, spectrum & MQTT periodic sync loop (adaptive cadence: 50ms voice / 100ms WS / 250ms idle)
     bool prev_voice_active = false;
+    auto last_voice_udp_tp = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    auto last_ws_tp = std::chrono::steady_clock::now();
+    auto last_mqtt_tp = std::chrono::steady_clock::now();
+
     while (!g_stop.load()) {
+        // Drain any incoming UDP 8087 spectrum datagrams and push only the latest frame
+        if (spec_udp_fd >= 0) {
+            std::array<float, 24> latest_bands{};
+            bool has_latest = false;
+            char ubuf[512];
+            for (int iter = 0; iter < 32; ++iter) {
+                ssize_t n = recvfrom(spec_udp_fd, ubuf, sizeof(ubuf) - 1, 0, nullptr, nullptr);
+                if (n <= 0) break;
+                if (n == static_cast<ssize_t>(24 * sizeof(float))) {
+                    for (size_t b = 0; b < 24; ++b) {
+                        float fv = 0.0f;
+                        std::memcpy(&fv, ubuf + b * sizeof(float), sizeof(float));
+                        latest_bands[b] = std::isfinite(fv) ? std::clamp(fv, 0.0f, 1.0f) : 0.0f;
+                    }
+                    has_latest = true;
+                } else if (ubuf[0] == '{') {
+                    ubuf[n] = '\0';
+                    json::Value v;
+                    if (json::Parser::parse(std::string(ubuf, static_cast<size_t>(n)), v)) {
+                        const json::Value* arr = v.get("bands");
+                        if (arr && arr->is_arr()) {
+                            latest_bands.fill(0.0f);
+                            for (size_t i = 0; i < std::min<size_t>(24, arr->arr_val.size()); ++i) {
+                                double dv = arr->arr_val[i].as_double(0.0);
+                                latest_bands[i] = std::isfinite(dv) ? std::clamp(static_cast<float>(dv), 0.0f, 1.0f) : 0.0f;
+                            }
+                            has_latest = true;
+                        }
+                    }
+                }
+            }
+            if (has_latest) {
+                audio.push_external_spectrum(latest_bands);
+            }
+        }
+
+        auto now = std::chrono::steady_clock::now();
         bool v_act = assistant.is_active() || audio.is_playback_or_tail_active(250);
-        if (v_act || prev_voice_active) {
+        if ((v_act && (now - last_voice_udp_tp) >= std::chrono::milliseconds(45)) ||
+            (!v_act && prev_voice_active)) {
             float tts = audio.playback_level();
             float mic = std::clamp(assistant.last_mic_rms() / 4200.0f, 0.0f, 1.0f);
             json::Value vmsg = json::Value::make_obj();
@@ -2335,27 +2406,27 @@ int main(int argc, char** argv) {
             vmsg["ttsRms"] = json::Value::make_num(v_act ? tts : 0.0f);
             vmsg["micRms"] = json::Value::make_num(v_act ? mic : 0.0f);
             send_udp_json(8086, vmsg.dump(-1));
-        }
-        prev_voice_active = v_act;
-
-        if (++ws_div >= 2) {
-            ws_div = 0;
-            if (http.ws_client_count() > 0) {
-                json::Value msg = json::Value::make_obj();
-                msg["type"] = json::Value::make_str("telemetry");
-                msg["data"] = build_status_json();
-                http.broadcast_ws_text(msg.dump(-1));
-            }
+            last_voice_udp_tp = now;
+            prev_voice_active = v_act;
         }
 
-        if (++tick >= 100) { // every ~5 seconds
-            tick = 0;
-            DaemonConfig c;
-            {
-                std::lock_guard<std::mutex> lk(cfg_mu);
-                c = cfg;
-            }
+        size_t ws_cnt = http.ws_client_count();
+        if (ws_cnt > 0 && (now - last_ws_tp) >= std::chrono::milliseconds(200)) {
+            last_ws_tp = now;
+            json::Value msg = json::Value::make_obj();
+            msg["type"] = json::Value::make_str("telemetry");
+            msg["data"] = build_status_json();
+            http.broadcast_ws_text(msg.dump(-1));
+        }
+
+        if ((now - last_mqtt_tp) >= std::chrono::seconds(5)) {
+            last_mqtt_tp = now;
             if (mqtt.is_connected()) {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
                 json::Value hw_st = leds.get_status_json();
                 double mc_temp = 0.0;
                 if (const auto* t = hw_st.get("socTempC")) mc_temp = t->as_double(0.0);
@@ -2372,10 +2443,20 @@ int main(int argc, char** argv) {
                     inputs.headphone_plugged());
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        int sleep_ms = v_act ? 50 : (ws_cnt > 0 ? 100 : 250);
+        if (spec_udp_fd >= 0) {
+            struct pollfd pfd {};
+            pfd.fd = spec_udp_fd;
+            pfd.events = POLLIN;
+            poll(&pfd, 1, sleep_ms);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+        }
     }
 
     LOGI("Main", "Shutting down...");
+    if (spec_udp_fd >= 0) ::close(spec_udp_fd);
     Logger::instance().set_sink(nullptr);
     timers.stop();
     http.stop();

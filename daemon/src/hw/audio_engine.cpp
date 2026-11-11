@@ -117,20 +117,40 @@ AAudioStream* open_aaudio_input(int req_ch, int req_rate, int32_t preset) {
 
 // Compute 24 log-spaced Goertzel magnitude bands (60 Hz .. 7500 Hz on 16k PCM)
 std::array<float, 24> compute_spectrum_16k(const int16_t* samples, size_t count) {
-    static const float freqs[24] = {
-        65, 85, 110, 140, 180, 230, 290, 370,
-        470, 600, 760, 960, 1200, 1500, 1900, 2400,
-        3000, 3600, 4200, 4900, 5600, 6300, 7000, 7600
+    static const float coeffs[24] = {
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 65.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 85.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 110.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 140.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 180.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 230.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 290.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 370.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 470.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 600.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 760.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 960.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 1200.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 1500.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 1900.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 2400.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 3000.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 3600.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 4200.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 4900.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 5600.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 6300.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 7000.0 / 16000.0)),
+        2.0f * std::cos(static_cast<float>(2.0 * kPi * 7600.0 / 16000.0)),
     };
     std::array<float, 24> bands{};
     if (!samples || count < 64) return bands;
 
     for (size_t b = 0; b < 24; ++b) {
-        float w = static_cast<float>(2.0 * kPi * freqs[b] / 16000.0);
-        float coeff = 2.0f * std::cos(w);
+        const float coeff = coeffs[b];
         float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f;
         for (size_t i = 0; i < count; ++i) {
-            float x = samples[i] / 32768.0f;
+            float x = samples[i] * (1.0f / 32768.0f);
             s0 = x + coeff * s1 - s2;
             s2 = s1;
             s1 = s0;
@@ -172,6 +192,14 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
     wav_ring_.assign(kWavRingMax, 0);
     aec_w_.assign(kAecTaps, 0.0f);
     aec_x_.assign(kAecTaps, 0.0f);
+    aec_x_clean_ = true;
+    aec_hangover_ = 0;
+    clean_buf_.reserve(1024 * 16);
+    mono_buf_.reserve(1024);
+    combined_buf_.reserve(1040);
+    out_batch_buf_.reserve(400);
+    out16k_acc_.reserve(1024);
+    out16k_head_ = 0;
 
     bool ok = g_aa.load();
     aaudio_loaded_.store(ok);
@@ -224,13 +252,23 @@ void AudioEngine::set_ws_audio_sink(WsAudioCallback cb) {
     ws_audio_cb_ = std::move(cb);
 }
 
+void AudioEngine::set_spectrum_needed_cb(SpectrumNeededCallback cb) {
+    std::lock_guard<std::mutex> lk(spec_needed_mu_);
+    spec_needed_cb_ = std::move(cb);
+}
+
 void AudioEngine::push_external_spectrum(const std::array<float, 24>& bands) {
     {
         std::lock_guard<std::mutex> lk(stat_mu_);
         ext_spectrum_ = bands;
         ext_spec_tp_ = std::chrono::steady_clock::now();
     }
-    if (spec_cb_) spec_cb_(bands);
+    bool need = static_cast<bool>(spec_cb_);
+    if (need) {
+        std::lock_guard<std::mutex> lk(spec_needed_mu_);
+        if (spec_needed_cb_) need = spec_needed_cb_();
+    }
+    if (need) spec_cb_(bands);
 }
 
 void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate) {
@@ -240,17 +278,20 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         cfg_copy = cfg_;
     }
 
-    // 1. DC-block & per-channel RMS telemetry
+    // 1. DC-block & per-channel RMS telemetry (reuse persistent clean_buf_ to prevent 64KB mmap churn)
     double ch_sq[16] = {0};
     int tracked_ch = std::min(ch_count, 16);
-    std::vector<float> clean(frames * std::max(1, tracked_ch));
+    clean_buf_.resize(frames * static_cast<size_t>(std::max(1, tracked_ch)));
+    float* clean = clean_buf_.data();
     for (size_t f = 0; f < frames; ++f) {
+        const int16_t* in_row = interleaved + f * static_cast<size_t>(ch_count);
+        float* out_row = clean + f * static_cast<size_t>(tracked_ch);
         for (int c = 0; c < tracked_ch; ++c) {
-            float x = static_cast<float>(interleaved[f * ch_count + c]);
+            float x = static_cast<float>(in_row[c]);
             float y = x - dc_prev_x_[c] + 0.995f * dc_prev_y_[c];
             dc_prev_x_[c] = x;
             dc_prev_y_[c] = y;
-            clean[f * tracked_ch + c] = y;
+            out_row[c] = y;
             ch_sq[c] += static_cast<double>(y) * y;
         }
     }
@@ -266,13 +307,36 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         }
     }
 
-    // 2. Mix/select mono channel + optional NLMS AEC
-    std::vector<int16_t> mono(frames);
+    // Check if speaker loopback channel has active signal before running 64-tap NLMS
+    bool use_aec = cfg_copy.aec_enable && tracked_ch >= 10 &&
+                   cfg_copy.loopback_channel >= 0 && cfg_copy.loopback_channel < tracked_ch;
+    if (use_aec && frames > 0) {
+        double lb_sq = ch_sq[cfg_copy.loopback_channel];
+        if (lb_sq > static_cast<double>(frames) * 25.0) {
+            aec_hangover_ = 25; // ~500 ms hangover after playback stops
+            aec_x_clean_ = false;
+        } else if (aec_hangover_ > 0) {
+            --aec_hangover_;
+        } else {
+            if (!aec_x_clean_) {
+                std::fill(aec_x_.begin(), aec_x_.end(), 0.0f);
+                aec_pos_ = 0;
+                aec_x_clean_ = true;
+            }
+            use_aec = false;
+        }
+    }
+
+    // 2. Mix/select mono channel + optional NLMS AEC + raw PDM digital gain compensation
+    mono_buf_.resize(frames);
+    int16_t* mono = mono_buf_.data();
+    const float raw_gain = (tracked_ch >= 8) ? 3.5f : 1.0f;
     if (cfg_copy.mic_muted) {
-        std::fill(mono.begin(), mono.end(), 0);
+        std::fill(mono_buf_.begin(), mono_buf_.end(), 0);
     } else {
+        constexpr size_t kAecMask = kAecTaps - 1;
         for (size_t f = 0; f < frames; ++f) {
-            const float* samp = clean.data() + f * tracked_ch;
+            const float* samp = clean + f * static_cast<size_t>(tracked_ch);
             float mic_f = 0.0f;
             if (tracked_ch == 1) {
                 mic_f = samp[0];
@@ -291,14 +355,13 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             }
 
             // NLMS Acoustic Echo Cancellation using hardware loopback reference
-            if (cfg_copy.aec_enable && tracked_ch >= 10 &&
-                cfg_copy.loopback_channel >= 0 && cfg_copy.loopback_channel < tracked_ch) {
+            if (use_aec) {
                 float ref_f = samp[cfg_copy.loopback_channel];
                 aec_x_[aec_pos_] = ref_f;
                 float y_hat = 0.0f;
                 float power = 1e-3f;
                 for (size_t k = 0; k < kAecTaps; ++k) {
-                    size_t idx = (aec_pos_ + kAecTaps - k) % kAecTaps;
+                    size_t idx = (aec_pos_ + kAecTaps - k) & kAecMask;
                     float xk = aec_x_[idx];
                     y_hat += aec_w_[k] * xk;
                     power += xk * xk;
@@ -306,74 +369,83 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
                 float err = mic_f - y_hat;
                 float step = (0.18f * err) / (power + 5000.0f);
                 for (size_t k = 0; k < kAecTaps; ++k) {
-                    size_t idx = (aec_pos_ + kAecTaps - k) % kAecTaps;
+                    size_t idx = (aec_pos_ + kAecTaps - k) & kAecMask;
                     aec_w_[k] += step * aec_x_[idx];
                 }
-                aec_pos_ = (aec_pos_ + 1) % kAecTaps;
+                aec_pos_ = (aec_pos_ + 1) & kAecMask;
                 mic_f = err;
             }
 
+            mic_f *= raw_gain;
             mono[f] = static_cast<int16_t>(std::clamp(std::lround(mic_f), -32768L, 32767L));
         }
     }
 
-    // 3. Downsample (e.g. 48000 Hz -> 16000 Hz)
-    std::vector<int16_t> out_batch;
+    // 3. Downsample (e.g. 48000 Hz -> 16000 Hz) reusing persistent scratch buffers
+    out_batch_buf_.clear();
     if (sample_rate == 16000) {
         mono48k_rem_.clear();
-        out_batch = std::move(mono);
+        out_batch_buf_.assign(mono_buf_.begin(), mono_buf_.end());
     } else if (sample_rate == 48000) {
         // 3-sample FIR box decimation (anti-aliasing lowpass before /3), preserving trailing remainder across callbacks
-        std::vector<int16_t> combined;
-        combined.reserve(mono48k_rem_.size() + mono.size());
-        combined.insert(combined.end(), mono48k_rem_.begin(), mono48k_rem_.end());
-        combined.insert(combined.end(), mono.begin(), mono.end());
+        combined_buf_.clear();
+        combined_buf_.insert(combined_buf_.end(), mono48k_rem_.begin(), mono48k_rem_.end());
+        combined_buf_.insert(combined_buf_.end(), mono_buf_.begin(), mono_buf_.end());
         mono48k_rem_.clear();
 
-        size_t usable = (combined.size() / 3) * 3;
-        out_batch.reserve(usable / 3);
-        for (size_t i = 0; i < usable; i += 3) {
-            int32_t avg = (static_cast<int32_t>(combined[i]) + combined[i + 1] + combined[i + 2]) / 3;
-            out_batch.push_back(static_cast<int16_t>(avg));
+        size_t total = combined_buf_.size();
+        size_t usable = (total / 3) * 3;
+        out_batch_buf_.resize(usable / 3);
+        const int16_t* comb = combined_buf_.data();
+        for (size_t i = 0, o = 0; i < usable; i += 3, ++o) {
+            int32_t avg = (static_cast<int32_t>(comb[i]) + comb[i + 1] + comb[i + 2]) / 3;
+            out_batch_buf_[o] = static_cast<int16_t>(avg);
         }
-        if (usable < combined.size()) {
-            mono48k_rem_.assign(combined.begin() + static_cast<ptrdiff_t>(usable), combined.end());
+        if (usable < total) {
+            mono48k_rem_.assign(comb + usable, comb + total);
         }
     } else if (sample_rate > 0) {
         mono48k_rem_.clear();
         double ratio = static_cast<double>(sample_rate) / 16000.0;
         while (resamp_phase_ < static_cast<double>(frames)) {
             size_t idx = static_cast<size_t>(resamp_phase_);
-            out_batch.push_back(mono[idx]);
+            out_batch_buf_.push_back(mono[idx]);
             resamp_phase_ += ratio;
         }
         resamp_phase_ -= static_cast<double>(frames);
     }
 
-    // 4. Adaptive noise suppression (soft expander on stationary floor)
-    if (cfg_copy.ns_enable && !cfg_copy.mic_muted && !out_batch.empty()) {
+    // 4. Adaptive noise suppression (gentle soft expander protecting soft wake-word onsets)
+    if (cfg_copy.ns_enable && !cfg_copy.mic_muted && !out_batch_buf_.empty()) {
         double sum_abs = 0.0;
-        for (int16_t s : out_batch) sum_abs += std::abs(static_cast<int>(s));
-        float mean_abs = static_cast<float>(sum_abs / out_batch.size());
+        for (int16_t s : out_batch_buf_) sum_abs += std::abs(static_cast<int>(s));
+        float mean_abs = static_cast<float>(sum_abs / out_batch_buf_.size());
         if (mean_abs < ns_noise_floor_ * 1.6f) {
             ns_noise_floor_ = ns_noise_floor_ * 0.96f + mean_abs * 0.04f;
         }
-        float thr = std::max(60.0f, ns_noise_floor_ * 1.45f);
+        float thr = std::max(45.0f, ns_noise_floor_ * 1.25f);
         if (mean_abs < thr) {
-            float gain = std::clamp((mean_abs / thr) * 0.45f, 0.08f, 1.0f);
-            for (int16_t& s : out_batch) {
+            float gain = std::clamp((mean_abs / thr) * 0.70f, 0.25f, 1.0f);
+            for (int16_t& s : out_batch_buf_) {
                 s = static_cast<int16_t>(s * gain);
             }
         }
     }
 
-    out16k_acc_.insert(out16k_acc_.end(), out_batch.begin(), out_batch.end());
+    out16k_acc_.insert(out16k_acc_.end(), out_batch_buf_.begin(), out_batch_buf_.end());
 
     // Emit fixed 320-sample (20 ms @ 16 kHz) frames downstream
-    while (out16k_acc_.size() >= 320) {
+    bool need_spec = static_cast<bool>(spec_cb_);
+    if (need_spec) {
+        std::lock_guard<std::mutex> lk(spec_needed_mu_);
+        if (spec_needed_cb_) need_spec = spec_needed_cb_();
+    }
+
+    while (out16k_acc_.size() - out16k_head_ >= 320) {
+        const int16_t* frame16 = out16k_acc_.data() + out16k_head_;
         double sq = 0.0;
         for (size_t i = 0; i < 320; ++i) {
-            double v = out16k_acc_[i];
+            double v = frame16[i];
             sq += v * v;
         }
         float rms = static_cast<float>(std::sqrt(sq / 320.0));
@@ -386,39 +458,53 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         {
             std::lock_guard<std::mutex> lk(wav_mu_);
             for (size_t i = 0; i < 320; ++i) {
-                wav_ring_[wav_head_] = out16k_acc_[i];
+                wav_ring_[wav_head_] = frame16[i];
                 wav_head_ = (wav_head_ + 1) % kWavRingMax;
                 if (wav_filled_ < kWavRingMax) ++wav_filled_;
             }
         }
 
         if (pcm_cb_) {
-            pcm_cb_(out16k_acc_.data(), 320, rms);
+            pcm_cb_(frame16, 320, rms);
         }
         {
             std::lock_guard<std::mutex> lk(ws_cb_mu_);
-            if (ws_audio_cb_) ws_audio_cb_(out16k_acc_.data(), 320);
+            if (ws_audio_cb_) ws_audio_cb_(frame16, 320);
         }
 
-        // Fallback LED spectrum if Android Visualizer didn't push within last 350 ms
-        // (skip while playback loop is driving the spectrum directly)
-        bool use_mic_spec = false;
-        if (!playing_active_.load()) {
-            std::lock_guard<std::mutex> lk(stat_mu_);
-            auto age = std::chrono::steady_clock::now() - ext_spec_tp_;
-            use_mic_spec = age > std::chrono::milliseconds(350);
-        }
-        if (use_mic_spec && spec_cb_) {
-            if (!cfg_copy.mic_muted) {
-                spec_cb_(compute_spectrum_16k(out16k_acc_.data(), 320));
-            } else {
-                std::array<float, 24> zero{};
-                spec_cb_(zero);
+        // Fallback LED spectrum ONLY if LEDs actually use spectrum AND Visualizer didn't push recently
+        if (need_spec && !playing_active_.load()) {
+            bool use_mic_spec = false;
+            {
+                std::lock_guard<std::mutex> lk(stat_mu_);
+                auto age = std::chrono::steady_clock::now() - ext_spec_tp_;
+                use_mic_spec = age > std::chrono::milliseconds(350);
+            }
+            if (use_mic_spec) {
+                if (cfg_copy.mic_muted || rms < 25.0f) {
+                    if (!mic_spec_zero_sent_) {
+                        std::array<float, 24> zero{};
+                        spec_cb_(zero);
+                        mic_spec_zero_sent_ = true;
+                    }
+                } else {
+                    mic_spec_zero_sent_ = false;
+                    spec_cb_(compute_spectrum_16k(frame16, 320));
+                }
             }
         }
 
-        out16k_acc_.erase(out16k_acc_.begin(), out16k_acc_.begin() + 320);
+        out16k_head_ += 320;
     }
+
+    size_t rem16 = out16k_acc_.size() - out16k_head_;
+    if (rem16 == 0) {
+        out16k_acc_.clear();
+    } else if (out16k_head_ > 0) {
+        std::memmove(out16k_acc_.data(), out16k_acc_.data() + out16k_head_, rem16 * sizeof(int16_t));
+        out16k_acc_.resize(rem16);
+    }
+    out16k_head_ = 0;
 }
 
 static int open_alsa_pcm_capture(const char* dev, unsigned int rate, unsigned int channels,
@@ -549,11 +635,15 @@ void AudioEngine::run_alsa_capture_session() {
 
     mono48k_rem_.clear();
     out16k_acc_.clear();
+    out16k_head_ = 0;
     resamp_phase_ = 0.0;
     dc_prev_x_.fill(0.0f);
     dc_prev_y_.fill(0.0f);
     std::fill(aec_x_.begin(), aec_x_.end(), 0.0f);
     aec_pos_ = 0;
+    aec_hangover_ = 0;
+    aec_x_clean_ = true;
+    mic_spec_zero_sent_ = false;
 
     {
         std::lock_guard<std::mutex> lk(stat_mu_);
@@ -642,11 +732,15 @@ void AudioEngine::capture_loop() {
 
         mono48k_rem_.clear();
         out16k_acc_.clear();
+        out16k_head_ = 0;
         resamp_phase_ = 0.0;
         dc_prev_x_.fill(0.0f);
         dc_prev_y_.fill(0.0f);
         std::fill(aec_x_.begin(), aec_x_.end(), 0.0f);
         aec_pos_ = 0;
+        aec_hangover_ = 0;
+        aec_x_clean_ = true;
+        mic_spec_zero_sent_ = false;
 
         int32_t rate = g_aa.stream_getSampleRate(stream);
         int32_t ch = g_aa.stream_getChannelCount(stream);
@@ -870,25 +964,30 @@ void AudioEngine::playback_loop() {
         }
 
         playing_active_.store(true);
+        std::vector<int16_t> mono16k;
+        mono16k.reserve(512);
         auto write_chunk = [&](const std::vector<int16_t>& buf, uint64_t ep) -> bool {
             size_t total_frames = buf.size() / 2;
             size_t off = 0;
-            std::vector<int16_t> mono16k;
+            bool need_spec = static_cast<bool>(spec_cb_);
+            if (need_spec) {
+                std::lock_guard<std::mutex> lk(spec_needed_mu_);
+                if (spec_needed_cb_) need_spec = spec_needed_cb_();
+            }
             while (off < total_frames && running_.load() && playback_epoch_.load() == ep) {
                 int32_t to_write = static_cast<int32_t>(std::min<size_t>(1024, total_frames - off));
                 double sq = 0.0;
                 mono16k.clear();
-                mono16k.reserve(static_cast<size_t>(to_write / 3) + 1);
                 for (int32_t k = 0; k < to_write; ++k) {
                     int32_t m = (static_cast<int32_t>(buf[(off + k) * 2]) + buf[(off + k) * 2 + 1]) / 2;
                     sq += static_cast<double>(m) * m;
-                    if ((k % 3) == 0) {
+                    if (need_spec && (k % 3) == 0) {
                         mono16k.push_back(static_cast<int16_t>(m));
                     }
                 }
                 float rms = static_cast<float>(std::sqrt(sq / std::max(1, to_write)));
                 playback_rms_.store(std::clamp(rms / 9000.0f, 0.0f, 1.0f));
-                if (spec_cb_ && mono16k.size() >= 64) {
+                if (need_spec && mono16k.size() >= 64) {
                     bool ext_fresh = false;
                     {
                         std::lock_guard<std::mutex> lk(stat_mu_);

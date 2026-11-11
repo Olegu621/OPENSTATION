@@ -168,6 +168,7 @@ void HttpWsServer::stop() {
             if (c->fd >= 0) shutdown(c->fd, SHUT_RDWR);
         }
         ws_clients_.clear();
+        ws_client_count_.store(0, std::memory_order_relaxed);
     }
     std::vector<std::shared_ptr<ConnSlot>> all_conns;
     {
@@ -227,6 +228,7 @@ void HttpWsServer::remove_ws_client(int cfd) {
         if ((*it)->fd == cfd) {
             (*it)->dead = true;
             ws_clients_.erase(it);
+            ws_client_count_.store(ws_clients_.size(), std::memory_order_relaxed);
             break;
         }
     }
@@ -292,6 +294,7 @@ void HttpWsServer::broadcast_ws_frame(uint8_t opcode, const uint8_t* data, size_
             if (rem) it = ws_clients_.erase(it);
             else ++it;
         }
+        ws_client_count_.store(ws_clients_.size(), std::memory_order_relaxed);
     }
 }
 
@@ -304,9 +307,8 @@ void HttpWsServer::broadcast_ws_audio(const int16_t* pcm, size_t samples) {
     broadcast_ws_frame(0x02, reinterpret_cast<const uint8_t*>(pcm), samples * sizeof(int16_t), true);
 }
 
-size_t HttpWsServer::ws_client_count() {
-    std::lock_guard<std::mutex> lk(ws_mu_);
-    return ws_clients_.size();
+size_t HttpWsServer::ws_client_count() const {
+    return ws_client_count_.load(std::memory_order_relaxed);
 }
 
 void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
@@ -412,6 +414,7 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
         {
             std::lock_guard<std::mutex> lk(ws_mu_);
             ws_clients_.push_back(ws_client);
+            ws_client_count_.store(ws_clients_.size(), std::memory_order_relaxed);
         }
 
         // Read client WS frames

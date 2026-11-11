@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -50,6 +51,7 @@ public:
     double current_lux() const { return last_lux_.load(); }
     int effective_brightness() const { return eff_brightness_.load(); }
     bool screen_present() const { return fb5_present_.load(); }
+    bool needs_spectrum() const { return needs_spectrum_.load(std::memory_order_relaxed); }
 
     json::Value get_status_json();
 
@@ -67,7 +69,9 @@ private:
         uint32_t blue_off = 16;
         uint32_t grayscale = 0;
         bool pan_supported = false;
+        bool has_prev = false;
         std::vector<uint8_t> buf;
+        std::vector<uint8_t> prev_buf;
     };
 
     void worker_loop();
@@ -76,6 +80,7 @@ private:
     void flush_fb(FbDevice& dev);
     void write_backlight(const std::string& bl_path, int value, int max_val);
     void poll_sensors();
+    void update_needs_spectrum_locked();
 
     void render_ring(double t_sec, const LedRingConfig& cfg);
     void render_screen(double t_sec, const LedScreenConfig& cfg);
@@ -85,6 +90,9 @@ private:
     std::thread worker_;
 
     mutable std::mutex mu_;
+    std::condition_variable cv_;
+    uint64_t wake_seq_ = 0;
+    std::atomic<bool> needs_spectrum_{false};
     LedRingConfig ring_cfg_;
     LedScreenConfig screen_cfg_;
     std::array<float, 24> spectrum_{};

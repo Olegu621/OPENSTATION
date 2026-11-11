@@ -71,6 +71,8 @@ class YandexMusicPlayer(private val context: Context) {
     private val snapshotSeq = AtomicLong(1L)
     private var lastDaemonPushMs = 0L
     private var lastTickerTrackId = ""
+    private var savedPausedPosMs = 0L
+    private var savedPausedTrackId = ""
     private var released = false
 
     private val progressTicker = object : Runnable {
@@ -82,6 +84,45 @@ class YandexMusicPlayer(private val context: Context) {
                 mainHandler.postDelayed(this, 1000L)
             }
         }
+    }
+
+    private val pauseReleaseRunnable = Runnable {
+        if (released) return@Runnable
+        worker.submit {
+            val releasedIdle = synchronized(lock) {
+                val mp = mediaPlayer
+                if (mp != null && isPaused && !isPlaying && !isBuffering) {
+                    val curPos = try {
+                        mp.currentPosition.toLong().coerceAtLeast(0L)
+                    } catch (_: Throwable) {
+                        savedPausedPosMs
+                    }
+                    savedPausedPosMs = curPos
+                    savedPausedTrackId = currentTrack?.id ?: ""
+                    releaseMediaPlayerLocked()
+                    abandonFocusLocked()
+                    updateMediaSessionLocked()
+                    true
+                } else {
+                    false
+                }
+            }
+            if (releasedIdle) {
+                Log.i(TAG, "Released idle paused MediaPlayer to cool audio HAL (savedPos=${savedPausedPosMs}ms)")
+                emitSnapshot(forceDaemon = true)
+            }
+        }
+    }
+
+    private fun schedulePauseRelease() {
+        mainHandler.removeCallbacks(pauseReleaseRunnable)
+        if (!released) {
+            mainHandler.postDelayed(pauseReleaseRunnable, 25_000L)
+        }
+    }
+
+    private fun cancelPauseRelease() {
+        mainHandler.removeCallbacks(pauseReleaseRunnable)
     }
 
     init {
@@ -102,7 +143,10 @@ class YandexMusicPlayer(private val context: Context) {
     fun release() {
         released = true
         mainHandler.removeCallbacks(progressTicker)
+        mainHandler.removeCallbacks(pauseReleaseRunnable)
         synchronized(lock) {
+            savedPausedPosMs = 0L
+            savedPausedTrackId = ""
             releaseMediaPlayerLocked()
             abandonFocusLocked()
         }
@@ -119,8 +163,16 @@ class YandexMusicPlayer(private val context: Context) {
         synchronized(lock) {
             val pos = try {
                 val mp = mediaPlayer
-                if (mp != null && (isPlaying || isPaused) && !isBuffering) mp.currentPosition.toLong() else 0L
-            } catch (_: Throwable) { 0L }
+                if (mp != null && (isPlaying || isPaused) && !isBuffering) {
+                    mp.currentPosition.toLong()
+                } else if (isPaused && currentTrack?.id == savedPausedTrackId) {
+                    savedPausedPosMs
+                } else {
+                    0L
+                }
+            } catch (_: Throwable) {
+                if (isPaused && currentTrack?.id == savedPausedTrackId) savedPausedPosMs else 0L
+            }
             val dur = try {
                 val mp = mediaPlayer
                 val d = if (mp != null && (isPlaying || isPaused) && !isBuffering) mp.duration.toLong() else 0L
@@ -183,7 +235,12 @@ class YandexMusicPlayer(private val context: Context) {
                 isPaused -> PlaybackState.STATE_PAUSED
                 else -> PlaybackState.STATE_STOPPED
             }
-            val pos = try { mediaPlayer?.currentPosition?.toLong() ?: 0L } catch (_: Throwable) { 0L }
+            val pos = try {
+                mediaPlayer?.currentPosition?.toLong()
+                    ?: if (isPaused && currentTrack?.id == savedPausedTrackId) savedPausedPosMs else 0L
+            } catch (_: Throwable) {
+                if (isPaused && currentTrack?.id == savedPausedTrackId) savedPausedPosMs else 0L
+            }
             val pb = PlaybackState.Builder()
                 .setActions(
                     PlaybackState.ACTION_PLAY or
@@ -532,7 +589,10 @@ class YandexMusicPlayer(private val context: Context) {
     }
 
     fun play() {
+        cancelPauseRelease()
         worker.submit {
+            var resumeIdx = -1
+            var resumePosMs = 0L
             val action = synchronized(lock) {
                 val mp = mediaPlayer
                 if (mp != null && isPaused) {
@@ -541,6 +601,8 @@ class YandexMusicPlayer(private val context: Context) {
                         mp.start()
                         isPlaying = true
                         isPaused = false
+                        savedPausedPosMs = 0L
+                        savedPausedTrackId = ""
                         applyPlayerVolumeLocked()
                         updateMediaSessionLocked()
                         1
@@ -548,6 +610,12 @@ class YandexMusicPlayer(private val context: Context) {
                         0
                     }
                 } else if (currentTrack != null && currentIndex in queue.indices && mp == null) {
+                    resumeIdx = currentIndex
+                    resumePosMs = if (isPaused && currentTrack?.id == savedPausedTrackId && savedPausedPosMs > 1500L) {
+                        savedPausedPosMs
+                    } else {
+                        0L
+                    }
                     2
                 } else if (queue.isEmpty()) {
                     3
@@ -560,7 +628,7 @@ class YandexMusicPlayer(private val context: Context) {
                     startProgressTicker()
                     emitSnapshot(forceDaemon = true)
                 }
-                2 -> startTrackAtLocked(synchronized(lock) { currentIndex })
+                2 -> startTrackAtLocked(resumeIdx, resumeSeekMs = resumePosMs)
                 3 -> playMyWave("any", "", openUiOnAuthNeeded = true)
             }
         }
@@ -571,6 +639,13 @@ class YandexMusicPlayer(private val context: Context) {
             val changed = synchronized(lock) {
                 val mp = mediaPlayer
                 if (mp != null && isPlaying && !isPaused) {
+                    val curPos = try {
+                        mp.currentPosition.toLong().coerceAtLeast(0L)
+                    } catch (_: Throwable) {
+                        savedPausedPosMs
+                    }
+                    savedPausedPosMs = curPos
+                    savedPausedTrackId = currentTrack?.id ?: ""
                     try {
                         mp.pause()
                     } catch (_: Throwable) {}
@@ -584,6 +659,7 @@ class YandexMusicPlayer(private val context: Context) {
             }
             if (changed) {
                 stopProgressTicker()
+                schedulePauseRelease()
                 emitSnapshot(forceDaemon = true)
             }
         }
@@ -595,6 +671,7 @@ class YandexMusicPlayer(private val context: Context) {
     }
 
     fun stop() {
+        cancelPauseRelease()
         worker.submit {
             stopInternalLocked()
             emitSnapshot(forceDaemon = true)
@@ -602,6 +679,7 @@ class YandexMusicPlayer(private val context: Context) {
     }
 
     private fun stopInternalLocked() {
+        cancelPauseRelease()
         playTokenGen.incrementAndGet()
         stopProgressTicker()
         synchronized(lock) {
@@ -610,12 +688,15 @@ class YandexMusicPlayer(private val context: Context) {
             isPlaying = false
             isPaused = false
             isBuffering = false
+            savedPausedPosMs = 0L
+            savedPausedTrackId = ""
             lastReportedDurMs = 0L
             updateMediaSessionLocked()
         }
     }
 
     fun next() {
+        cancelPauseRelease()
         worker.submit {
             val prevTrack: YmTrack?
             val sid: String
@@ -648,9 +729,13 @@ class YandexMusicPlayer(private val context: Context) {
     }
 
     fun prev() {
+        cancelPauseRelease()
         worker.submit {
             val curPos = synchronized(lock) {
-                try { mediaPlayer?.currentPosition ?: 0 } catch (_: Throwable) { 0 }
+                try {
+                    mediaPlayer?.currentPosition
+                        ?: if (isPaused && currentTrack?.id == savedPausedTrackId) savedPausedPosMs.toInt() else 0
+                } catch (_: Throwable) { 0 }
             }
             if (curPos > 4500) {
                 seekTo(0L)
@@ -669,16 +754,28 @@ class YandexMusicPlayer(private val context: Context) {
 
     fun seekTo(posMs: Long) {
         worker.submit {
+            var updated = false
             synchronized(lock) {
-                val mp = mediaPlayer ?: return@submit
-                try {
-                    val dur = mp.duration.toLong()
-                    val tgt = if (dur > 0L) posMs.coerceIn(0L, dur) else posMs.coerceAtLeast(0L)
-                    mp.seekTo(tgt.toInt())
+                val mp = mediaPlayer
+                if (mp != null) {
+                    try {
+                        val dur = mp.duration.toLong()
+                        val tgt = if (dur > 0L) posMs.coerceIn(0L, dur) else posMs.coerceAtLeast(0L)
+                        mp.seekTo(tgt.toInt())
+                        updateMediaSessionLocked()
+                        updated = true
+                    } catch (_: Throwable) {}
+                } else if (isPaused && currentTrack != null) {
+                    val dur = lastReportedDurMs.coerceAtLeast(currentTrack?.durationMs ?: 0L)
+                    savedPausedPosMs = if (dur > 0L) posMs.coerceIn(0L, dur) else posMs.coerceAtLeast(0L)
+                    savedPausedTrackId = currentTrack?.id ?: ""
                     updateMediaSessionLocked()
-                } catch (_: Throwable) {}
+                    updated = true
+                }
             }
-            emitSnapshot(forceDaemon = false)
+            if (updated) {
+                emitSnapshot(forceDaemon = false)
+            }
         }
     }
 
@@ -755,7 +852,12 @@ class YandexMusicPlayer(private val context: Context) {
         }
     }
 
-    private fun startTrackAtLocked(index: Int, forceNormalQuality: Boolean = false) {
+    private fun startTrackAtLocked(
+        index: Int,
+        forceNormalQuality: Boolean = false,
+        resumeSeekMs: Long = 0L
+    ) {
+        cancelPauseRelease()
         val tok = playTokenGen.incrementAndGet()
         val track: YmTrack
         val sid: String
@@ -767,6 +869,8 @@ class YandexMusicPlayer(private val context: Context) {
                 isPlaying = false
                 isPaused = false
                 isBuffering = false
+                savedPausedPosMs = 0L
+                savedPausedTrackId = ""
                 return
             }
             track = queue[index]
@@ -775,6 +879,8 @@ class YandexMusicPlayer(private val context: Context) {
             currentTrackRetriedNormal = forceNormalQuality
             currentTrackStartElapsed = SystemClock.elapsedRealtime()
             lastReportedDurMs = track.durationMs
+            savedPausedPosMs = 0L
+            savedPausedTrackId = ""
             currentCodecLabel = ""
             lastError = ""
             isBuffering = true
@@ -828,7 +934,14 @@ class YandexMusicPlayer(private val context: Context) {
                             isPlaying = true
                             isPaused = false
                             currentTrackStartElapsed = SystemClock.elapsedRealtime()
-                            lastReportedDurMs = readyMp.duration.toLong().coerceAtLeast(track.durationMs)
+                            val durMs = readyMp.duration.toLong().coerceAtLeast(track.durationMs)
+                            lastReportedDurMs = durMs
+                            if (resumeSeekMs > 0L) {
+                                try {
+                                    val tgt = if (durMs > 1200L) resumeSeekMs.coerceIn(0L, durMs - 1000L) else resumeSeekMs
+                                    readyMp.seekTo(tgt.toInt())
+                                } catch (_: Throwable) {}
+                            }
                             applyPlayerVolumeLocked()
                             readyMp.start()
                             updateMediaSessionLocked()

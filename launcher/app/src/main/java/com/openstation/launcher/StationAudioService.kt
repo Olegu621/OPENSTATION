@@ -17,19 +17,21 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.concurrent.thread
-import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class StationAudioService : Service() {
 
@@ -88,6 +90,7 @@ class StationAudioService : Service() {
     lateinit var musicPlayer: YandexMusicPlayer
         private set
     private var udpSocket: DatagramSocket? = null
+    private var specUdpSocket: DatagramSocket? = null
     private var dynProc: DynamicsProcessing? = null
     private var legacyEq: Equalizer? = null
     private var legacyBass: BassBoost? = null
@@ -170,6 +173,8 @@ class StationAudioService : Service() {
         overlayManager = null
         try { unregisterReceiver(volumeReceiver) } catch (_: Throwable) {}
         try { udpSocket?.close() } catch (_: Throwable) {}
+        try { specUdpSocket?.close() } catch (_: Throwable) {}
+        specUdpSocket = null
         try { musicPlayer.release() } catch (_: Throwable) {}
         releaseEffects()
         try { visualizer?.release() } catch (_: Throwable) {}
@@ -546,108 +551,166 @@ class StationAudioService : Service() {
     private fun startVisualizerLoop() {
         thread(name = "VisualizerSpectrum", isDaemon = true) {
             val smooth = FloatArray(24)
+            val bands = FloatArray(24)
+            val zeroBands = FloatArray(24)
+            val binStarts = IntArray(24)
+            val binEnds = IntArray(24)
+            val specBytes = ByteArray(24 * 4)
+            val specBuf = ByteBuffer.wrap(specBytes).order(ByteOrder.LITTLE_ENDIAN)
+            val specAddr = InetAddress.getByName("127.0.0.1")
+            val specPkt = DatagramPacket(specBytes, specBytes.size, specAddr, 8087)
+
             var silentTicks = 100
+            var visEnabled = false
             var fftBuf: ByteArray? = null
 
-            while (running) {
-                if (visualizer == null) {
-                    try {
-                        val v = Visualizer(0)
-                        val cap = min(1024, Visualizer.getCaptureSizeRange()[1])
-                        v.captureSize = cap
-                        v.scalingMode = Visualizer.SCALING_MODE_NORMALIZED
-                        v.enabled = true
-                        visualizer = v
-                        fftBuf = ByteArray(cap)
-                        visualizerActive = true
-                        Log.i(TAG, "Audio Visualizer attached to session 0 (cap=$cap)")
-                    } catch (t: Throwable) {
-                        visualizerActive = false
-                        Thread.sleep(3000)
-                        continue
+            fun sendUdpBands(arr: FloatArray) {
+                try {
+                    var s = specUdpSocket
+                    if (s == null || s.isClosed) {
+                        s = DatagramSocket()
+                        specUdpSocket = s
                     }
+                    specBuf.clear()
+                    for (b in 0 until 24) specBuf.putFloat(arr[b])
+                    specPkt.length = specBytes.size
+                    s.send(specPkt)
+                } catch (_: Throwable) {
+                    // openstationd or loopback socket not ready yet
                 }
+            }
 
-                val v = visualizer
-                val fft = fftBuf
-                if (v != null && fft != null) {
-                    try {
-                        val rc = v.getFft(fft)
-                        if (rc == Visualizer.SUCCESS) {
-                            val halfBins = fft.size / 2
-                            var peak = 0f
-                            val bands = FloatArray(24)
+            try {
+                while (running) {
+                    if (visualizer == null) {
+                        try {
+                            val v = Visualizer(0)
+                            val cap = min(1024, Visualizer.getCaptureSizeRange()[1])
+                            v.captureSize = cap
+                            v.scalingMode = Visualizer.SCALING_MODE_NORMALIZED
+                            val startActive = musicPlayer.getSnapshot().playing ||
+                                audioManager.isMusicActive ||
+                                LiveOrbState.assistantState != "idle"
+                            v.enabled = startActive
+                            visEnabled = startActive
+
+                            val halfBins = cap / 2
                             for (b in 0 until 24) {
-                                // Logarithmic bin mapping across bins 1 .. halfBins-1
                                 val t0 = b / 24.0
                                 val t1 = (b + 1) / 24.0
-                                val b0 = max(1, (Math.pow(halfBins.toDouble(), t0)).toInt())
-                                val b1 = max(b0 + 1, min(halfBins - 1, (Math.pow(halfBins.toDouble(), t1)).toInt()))
-                                var sum = 0f
-                                for (k in b0..b1) {
-                                    val re = fft[2 * k].toFloat()
-                                    val im = fft[2 * k + 1].toFloat()
-                                    sum += hypot(re, im)
-                                }
-                                val mag = sum / max(1, b1 - b0 + 1)
-                                // Log-scaled 0..1
-                                val norm = (ln(1f + mag * 0.45f) / 3.4f).coerceIn(0f, 1f)
-                                smooth[b] = if (norm > smooth[b]) {
-                                    smooth[b] * 0.35f + norm * 0.65f
-                                } else {
-                                    smooth[b] * 0.72f + norm * 0.28f
-                                }
-                                bands[b] = smooth[b]
-                                if (smooth[b] > peak) peak = smooth[b]
+                                val b0 = max(1, Math.pow(halfBins.toDouble(), t0).toInt())
+                                val b1 = max(b0 + 1, min(halfBins - 1, Math.pow(halfBins.toDouble(), t1).toInt()))
+                                binStarts[b] = b0
+                                binEnds[b] = b1
                             }
 
-                            val isPlaying = musicPlayer.getSnapshot().playing
-                            if (peak > 0.025f) {
-                                silentTicks = 0
-                                zeroSpectrumSent = false
-                                LiveOrbState.updateMusicSpectrum(bands, isPlaying)
-                                postSpectrumToDaemon(bands)
-                            } else if (silentTicks < 6) {
-                                silentTicks++
-                                LiveOrbState.updateMusicSpectrum(bands, isPlaying)
-                                postSpectrumToDaemon(bands)
-                            } else if (!zeroSpectrumSent) {
-                                zeroSpectrumSent = true
-                                LiveOrbState.updateMusicSpectrum(FloatArray(24), isPlaying)
-                            } else if (isPlaying != LiveOrbState.musicPlaying) {
-                                LiveOrbState.musicPlaying = isPlaying
+                            visualizer = v
+                            fftBuf = ByteArray(cap)
+                            visualizerActive = true
+                            Log.i(TAG, "Audio Visualizer attached to session 0 (cap=$cap, enabled=$startActive)")
+                        } catch (t: Throwable) {
+                            visualizerActive = false
+                            try { Thread.sleep(3000) } catch (_: InterruptedException) {}
+                            continue
+                        }
+                    }
+
+                    val v = visualizer
+                    val fft = fftBuf
+                    if (v != null && fft != null) {
+                        val audioLikelyActive = musicPlayer.getSnapshot().playing ||
+                            audioManager.isMusicActive ||
+                            LiveOrbState.assistantState != "idle"
+
+                        if (!visEnabled) {
+                            if (audioLikelyActive) {
+                                try {
+                                    v.enabled = true
+                                    visEnabled = true
+                                    silentTicks = 0
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "Visualizer resume error: ${t.message}")
+                                    try { v.release() } catch (_: Throwable) {}
+                                    visualizer = null
+                                    visualizerActive = false
+                                    visEnabled = false
+                                }
+                            } else {
+                                try { Thread.sleep(250) } catch (_: InterruptedException) {}
+                                continue
                             }
                         }
-                    } catch (t: Throwable) {
-                        Log.w(TAG, "Visualizer capture error: ${t.message}")
-                        try { visualizer?.release() } catch (_: Throwable) {}
-                        visualizer = null
-                        visualizerActive = false
-                    }
-                }
-                Thread.sleep(45)
-            }
-        }
-    }
 
-    private fun postSpectrumToDaemon(bands: FloatArray) {
-        try {
-            val arr = JSONArray()
-            for (v in bands) arr.put((v * 1000f).toInt() / 1000.0)
-            val payload = JSONObject().put("bands", arr).toString().toByteArray(Charsets.UTF_8)
-            val url = URL("http://127.0.0.1:8080/api/audio/spectrum")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                connectTimeout = 250
-                readTimeout = 250
-                setRequestProperty("Content-Type", "application/json")
+                        try {
+                            val rc = v.getFft(fft)
+                            if (rc == Visualizer.SUCCESS) {
+                                var peak = 0f
+                                for (b in 0 until 24) {
+                                    val b0 = binStarts[b]
+                                    val b1 = binEnds[b]
+                                    var sum = 0f
+                                    for (k in b0..b1) {
+                                        val re = fft[2 * k].toFloat()
+                                        val im = fft[2 * k + 1].toFloat()
+                                        sum += sqrt(re * re + im * im)
+                                    }
+                                    val mag = sum / max(1, b1 - b0 + 1)
+                                    val norm = (ln(1f + mag * 0.45f) / 3.4f).coerceIn(0f, 1f)
+                                    val prev = smooth[b]
+                                    val sm = if (norm > prev) {
+                                        prev * 0.35f + norm * 0.65f
+                                    } else {
+                                        prev * 0.72f + norm * 0.28f
+                                    }
+                                    smooth[b] = sm
+                                    bands[b] = sm
+                                    if (sm > peak) peak = sm
+                                }
+
+                                val isPlaying = musicPlayer.getSnapshot().playing
+                                if (peak > 0.025f) {
+                                    silentTicks = 0
+                                    zeroSpectrumSent = false
+                                    LiveOrbState.updateMusicSpectrum(bands, isPlaying)
+                                    sendUdpBands(bands)
+                                } else if (silentTicks < 6) {
+                                    silentTicks++
+                                    LiveOrbState.updateMusicSpectrum(bands, isPlaying)
+                                    sendUdpBands(bands)
+                                } else {
+                                    silentTicks++
+                                    if (!zeroSpectrumSent) {
+                                        zeroSpectrumSent = true
+                                        smooth.fill(0f)
+                                        LiveOrbState.updateMusicSpectrum(zeroBands, isPlaying)
+                                        sendUdpBands(zeroBands)
+                                    } else if (isPlaying != LiveOrbState.musicPlaying) {
+                                        LiveOrbState.musicPlaying = isPlaying
+                                    }
+                                    if (silentTicks >= 45 && !audioLikelyActive && visEnabled) {
+                                        try {
+                                            v.enabled = false
+                                            visEnabled = false
+                                        } catch (_: Throwable) {}
+                                        try { Thread.sleep(250) } catch (_: InterruptedException) {}
+                                        continue
+                                    }
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Visualizer capture error: ${t.message}")
+                            try { v.release() } catch (_: Throwable) {}
+                            visualizer = null
+                            visualizerActive = false
+                            visEnabled = false
+                        }
+                    }
+                    try { Thread.sleep(45) } catch (_: InterruptedException) {}
+                }
+            } finally {
+                try { specUdpSocket?.close() } catch (_: Throwable) {}
+                specUdpSocket = null
             }
-            conn.outputStream.use { it.write(payload) }
-            conn.responseCode
-            conn.disconnect()
-        } catch (_: Throwable) {
-            // openstationd not ready yet
         }
     }
 }
