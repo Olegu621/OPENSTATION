@@ -324,6 +324,7 @@ json::Value DaemonConfig::to_json() const {
 
     Value ot = Value::make_obj();
     ot["autoCheck"] = Value::make_bool(ota.auto_check);
+    ot["syncBootanimation"] = Value::make_bool(ota.sync_bootanimation);
     ot["repo"] = Value::make_str(ota.repo);
     ot["branch"] = Value::make_str(ota.branch);
     root["ota"] = std::move(ot);
@@ -434,6 +435,7 @@ void DaemonConfig::from_json(const json::Value& v) {
 
     if (auto* ot = v.get("ota"); ot && ot->is_obj()) {
         if (auto* x = ot->get("autoCheck"); x && x->is_bool()) ota.auto_check = x->as_bool();
+        if (auto* x = ot->get("syncBootanimation"); x && x->is_bool()) ota.sync_bootanimation = x->as_bool();
         if (auto* x = ot->get("repo"); x && x->is_str()) ota.repo = x->as_str();
         if (auto* x = ot->get("branch"); x && x->is_str()) ota.branch = x->as_str();
     }

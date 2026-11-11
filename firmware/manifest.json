@@ -1,25 +1,30 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.2.1",
+    "version":  "1.2.2",
     "autonomous":  true,
-    "changelog":  "Исправлено отображение часов (крупный шрифт 4x10 на LED-матрице 25x16 и актуальный часовой пояс на ТВ), включён passthrough audio HAL и переработана кривая громкости SY6045S/ES8156: по-настоящему тихая громкость 1% (−71.5 дБ) и плавный рост без перехвата регистров при воспроизведении.",
-    "buildTimeUtc":  "2026-11-11T19:37:11Z",
+    "changelog":  "Добавлена фирменная анимация загрузки OpenStation Max с сохранением оригинала и загрузкой своей заставки (.zip) в веб-пульте, обновлены и упрощены ТВ-экран и веб-пульт для удобного повседневного использования.",
+    "buildTimeUtc":  "2026-11-11T20:22:41Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  1998896,
-                                 "sha256":  "31c169bed1643d072d3d672e3b2c3a7c285d7bf81807a1b7fdbf7b440ad52563"
+                                 "size":  2032080,
+                                 "sha256":  "75faefa3e2e7e63a90c2eaf140dd566a836a41c0d0b32ebec297ce488ce5bad5"
                              },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4658420,
-                                   "sha256":  "06c8b84b704b11310582f4cde8a7b63fbe1ddd7ec6fa9636269b62ad9b099011"
+                                   "size":  4386644,
+                                   "sha256":  "42fb1e5623e5d6b13cc4ddad1287a37ce7e48af1aa94712fad2f99aa8404d938"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",
                               "size":  808866,
-                              "sha256":  "1ce185e6f5883f252741d3f7b1a2fe996b7112e43f1b664b3c484442496843da"
-                          }
+                              "sha256":  "41e71952b5cf1efb5015ee87d9a3a809cbfee5ab3c23e96d0c05ab99ba5b90cc"
+                          },
+                  "bootanimation":  {
+                                        "fileName":  "bootanimation.zip",
+                                        "size":  6200752,
+                                        "sha256":  "78ca568599b4dfd549665812c50d0f12091fff0ebbe83fc50b7932d161328154"
+                                    }
               }
 }

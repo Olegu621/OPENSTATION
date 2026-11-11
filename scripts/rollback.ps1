@@ -261,6 +261,19 @@ if [ -f /data/local/openstation/backup/hardvol_sy.xml ]; then
     restorecon /vendor/etc/hardvol_sy.xml 2>/dev/null || true
 fi
 
+if [ -f /data/local/openstation/backup/bootanimation.zip.stock ]; then
+    mkdir -p /system/media
+    cp -f /data/local/openstation/backup/bootanimation.zip.stock /system/media/bootanimation.zip.tmp
+    chown 0:0 /system/media/bootanimation.zip.tmp 2>/dev/null || true
+    chmod 644 /system/media/bootanimation.zip.tmp
+    chcon u:object_r:system_file:s0 /system/media/bootanimation.zip.tmp 2>/dev/null || true
+    mv -f /system/media/bootanimation.zip.tmp /system/media/bootanimation.zip
+    chown 0:0 /system/media/bootanimation.zip 2>/dev/null || true
+    chmod 644 /system/media/bootanimation.zip
+    chcon u:object_r:system_file:s0 /system/media/bootanimation.zip 2>/dev/null || true
+    restorecon /system/media/bootanimation.zip 2>/dev/null || true
+fi
+
 sync
 mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
 mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true

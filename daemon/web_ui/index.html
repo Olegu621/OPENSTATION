@@ -18,492 +18,76 @@
       </div>
 
       <div class="badges">
-        <span class="badge" id="badgeTemp">-- °C</span>
-        <span class="badge" id="badgeLux">-- lx</span>
-        <span class="badge" id="badgeVol">Громк: --%</span>
-        <span class="badge" id="badgeJack">Джек: --</span>
-        <span class="badge" id="badgeScreen">Экран fb5: --</span>
-        <span class="badge" id="badgeWs">WS: --</span>
+        <span class="badge" id="badgeVol">Громкость: --%</span>
         <button class="btn btn-sm btn-danger" id="btnQuickMute">Микрофон: ВКЛ</button>
         <button class="btn btn-sm btn-accent" id="btnQuickAlice">Алиса: Спит</button>
         <button class="btn btn-sm" id="btnQuickMusic">🌊 Моя волна</button>
-        <button class="btn btn-sm" id="btnQuickVoice">Wyoming</button>
         <button class="btn btn-sm btn-ota" id="badgeOtaUpdate" style="display:none;">⬇ Обновление</button>
         <button class="btn btn-sm btn-accent" id="btnOpenWizard">✨ Мастер</button>
       </div>
     </header>
 
     <nav class="tabs" id="tabNav">
-      <button class="tab active" data-tab="leds">Подсветка &amp; Экран</button>
-      <button class="tab" data-tab="alice">Алиса (Gemini Live)</button>
-      <button class="tab" data-tab="audio">Аудио &amp; Усилители</button>
-      <button class="tab" data-tab="mics">Микрофоны (16ch)</button>
-      <button class="tab" data-tab="remote">Пульт, Музыка &amp; ТВ</button>
-      <button class="tab" data-tab="smart">Умный дом &amp; Система</button>
+      <button class="tab active" data-tab="remote">Музыка и Пульт</button>
+      <button class="tab" data-tab="alice">Алиса</button>
+      <button class="tab" data-tab="sound">Звук и Подсветка</button>
+      <button class="tab" data-tab="system">Система</button>
     </nav>
 
     <main class="content">
-      <!-- TAB 1: LED RING & MATRIX SCREEN -->
-      <section class="panel active" id="tab-leds">
+      <!-- TAB 1: MUSIC, TV REMOTE & APPS -->
+      <section class="panel active" id="tab-remote">
         <div class="grid-2">
-          <div class="card">
-            <h2>Светодиодное кольцо (24 LED)</h2>
-            <div class="ring-preview-wrap">
-              <svg viewBox="0 0 220 220" class="ring-svg" id="ringSvg"></svg>
-              <div class="ring-center-info">
-                <div class="big-val" id="ringBrightnessVal">160</div>
-                <div class="small-lbl">яркость / 255</div>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Режим анимации</label>
-              <div class="seg-group" id="ringModes">
-                <button class="seg" data-mode="rainbow">Радуга</button>
-                <button class="seg" data-mode="breathe">Дыхание</button>
-                <button class="seg" data-mode="solid">Сплошной</button>
-                <button class="seg" data-mode="spinner">Спиннер</button>
-                <button class="seg" data-mode="music">Музыка</button>
-                <button class="seg" data-mode="off">Выкл</button>
-              </div>
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Основной цвет</label>
-                <input type="color" id="ringColor" value="#00d4ff" />
-              </div>
-              <div class="form-row">
-                <label>Доп. цвет</label>
-                <input type="color" id="ringSecColor" value="#7c3aed" />
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Яркость вручную <span id="lblBrightness">160</span></label>
-              <input type="range" id="ringBrightness" min="0" max="255" value="160" />
-            </div>
-
-            <div class="form-row toggle-row">
-              <label>Автояркость по датчику (ltr308als01)</label>
-              <input type="checkbox" id="ringAutoBrightness" checked />
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Мин. авто <span id="lblMinAuto">18</span></label>
-                <input type="range" id="ringMinAuto" min="0" max="255" value="18" />
-              </div>
-              <div class="form-row">
-                <label>Макс. авто <span id="lblMaxAuto">255</span></label>
-                <input type="range" id="ringMaxAuto" min="10" max="255" value="255" />
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Скорость эффекта <span id="lblSpeed">55</span></label>
-              <input type="range" id="ringSpeed" min="1" max="100" value="55" />
-            </div>
-          </div>
-
           <div class="stack">
             <div class="card">
-              <h2>Калибровка кольца (/dev/graphics/fb4)</h2>
-              <p class="hint">Проверьте порядок каналов RGB/BGR и ориентацию первого светодиода на физическом кольце.</p>
-              <div class="grid-2-tight">
-                <div class="form-row">
-                  <label>Смещение индекса (0..23) <span id="lblOffset">0</span></label>
-                  <input type="range" id="ringOffset" min="0" max="23" value="0" />
-                </div>
-                <div class="form-row">
-                  <label>Направление</label>
-                  <select id="ringClockwise">
-                    <option value="true">По часовой</option>
-                    <option value="false">Против часовой</option>
-                  </select>
-                </div>
+              <div class="row-between">
+                <h2>Яндекс Музыка · Моя волна</h2>
+                <button class="btn btn-sm" id="btnLaunchMusic">Открыть на ТВ</button>
               </div>
-              <div class="form-row toggle-row">
-                <label>Инверсия RGB ↔ BGR (override)</label>
-                <input type="checkbox" id="ringBgrOverride" />
+              <div class="status-banner" id="musicStatusBanner">Ожидание состояния плеера...</div>
+              <div class="btn-row" style="margin-bottom: 10px;">
+                <button class="btn btn-sm btn-accent" id="btnMusicWave">🌊 Моя волна</button>
+                <button class="btn btn-sm" id="btnMusicPrev">⏮</button>
+                <button class="btn btn-sm" id="btnMusicPlayPause">▶</button>
+                <button class="btn btn-sm" id="btnMusicNext">⏭</button>
+                <button class="btn btn-sm" id="btnMusicLike">♡</button>
+                <button class="btn btn-sm" id="btnMusicLikedList">♥ Лайки</button>
               </div>
-              <div class="btn-row">
-                <button class="btn btn-sm" id="btnCalLed0">Зажечь LED #0</button>
-                <button class="btn btn-sm" id="btnCalRgb">Тест R / G / B</button>
+              <div class="input-send-row">
+                <input type="text" id="musicSearchInput" placeholder="Включить трек или исполнителя..." />
+                <button class="btn btn-sm btn-accent" id="btnMusicSearch">Играть</button>
+              </div>
+              <details class="adv-details">
+                <summary>Вход по OAuth-токену</summary>
+                <div class="adv-details-body">
+                  <div class="input-send-row">
+                    <input type="password" id="musicOAuthInput" placeholder="Вставьте OAuth-токен (y0_...) или ссылку" autocomplete="off" />
+                    <button class="btn btn-sm" id="btnPushMusicOAuth">Войти</button>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="card">
+              <h2>Ввод текста на ТВ</h2>
+              <p class="hint">Отправляет текст напрямую в активное поле поиска или ввода на экране телевизора.</p>
+              <div class="input-send-row">
+                <input type="text" id="remoteTextInput" placeholder="Введите текст (напр. Фильмы 4K)..." />
+                <button class="btn btn-accent" id="btnSendRemoteText">Отправить</button>
               </div>
             </div>
 
             <div class="card">
-              <h2>Матричный экранчик (/dev/graphics/fb5)</h2>
-              <div class="status-banner" id="fb5StatusBanner">Поиск дисплея...</div>
-
-              <div class="form-row">
-                <label>Режим дисплея</label>
-                <select id="scrMode">
-                  <option value="clock">Часы (ЧЧ:ММ)</option>
-                  <option value="text">Бегущая строка (RU/EN)</option>
-                  <option value="spectrum">Аудио-спектр</option>
-                  <option value="snake">Змейка</option>
-                  <option value="off">Выкл</option>
-                </select>
+              <div class="row-between">
+                <h2>Приложения на станции</h2>
+                <button class="btn btn-sm" id="btnRefreshApps">Обновить</button>
               </div>
-
-              <div class="form-row">
-                <label>Текст для вывода (UTF-8 Кириллица / Латиница)</label>
-                <input type="text" id="scrText" maxlength="80" value="OPEN STATION MAX" />
-              </div>
-
-              <div class="grid-2-tight">
-                <div class="form-row">
-                  <label>Цвет</label>
-                  <input type="color" id="scrColor" value="#ffffff" />
-                </div>
-                <div class="form-row">
-                  <label>Яркость (%) <span id="lblScrBri">100</span></label>
-                  <input type="range" id="scrBri" min="0" max="100" value="100" />
-                </div>
-              </div>
-
-              <div class="form-row toggle-row">
-                <label>Автояркость экрана по датчику света</label>
-                <input type="checkbox" id="scrAutoBri" checked />
-              </div>
-              <div class="form-row">
-                <label>Скорость прокрутки <span id="lblScrSpeed">45</span></label>
-                <input type="range" id="scrSpeed" min="1" max="100" value="45" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB: ALICE (GEMINI 3.8 LIVE + OFFLINE KWS) -->
-      <section class="panel" id="tab-alice">
-        <div class="grid-2">
-          <div class="card">
-            <div class="row-between">
-              <h2>Голосовой ассистент «Алиса» (Gemini Live)</h2>
-              <span class="badge" id="badgeWakeWord">KWS: --</span>
-            </div>
-            <div class="status-banner" id="aliceStatusBanner">Инициализация...</div>
-
-            <div class="btn-row">
-              <button class="btn btn-accent" id="btnAliceTrigger">Разбудить Алису</button>
-              <button class="btn btn-danger" id="btnAliceStop">Остановить диалог</button>
-            </div>
-
-            <div class="input-send-row" style="margin-top: 12px;">
-              <input type="text" id="aliceTextPrompt" placeholder="Написать Алисе текстом (ответит голосом)..." />
-              <button class="btn btn-accent" id="btnAliceSendText">Отправить</button>
-            </div>
-
-            <h3>Живой диалог и расшифровка</h3>
-            <div class="alice-live-box" id="aliceLiveBox" style="display:none;">
-              <div class="live-line user" id="aliceLiveUser"></div>
-              <div class="live-line model" id="aliceLiveModel"></div>
-            </div>
-            <div class="dialog-box" id="aliceHistory">
-              <div class="hint">Скажите «Алиса...» или нажмите «Разбудить Алису».</div>
+              <div class="apps-grid" id="appsGrid">Загрузка...</div>
             </div>
           </div>
 
           <div class="card">
-            <h2>Настройки Gemini 3.8 Live &amp; Wake Word</h2>
-            <div class="form-row toggle-row">
-              <label>Включить локального ассистента</label>
-              <input type="checkbox" id="astEnabled" checked />
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Режим голоса</label>
-                <select id="astMode">
-                  <option value="gemini">Gemini Live (Алиса)</option>
-                  <option value="wyoming">Home Assistant (Wyoming)</option>
-                  <option value="off">Выкл</option>
-                </select>
-              </div>
-              <div class="form-row">
-                <label>Голос ответа (Gemini TTS)</label>
-                <select id="astVoice">
-                  <option value="Aoede">Aoede (женский, мягкий)</option>
-                  <option value="Kore">Kore (женский, яркий)</option>
-                  <option value="Leda">Leda (женский, живой)</option>
-                  <option value="Zephyr">Zephyr (лёгкий)</option>
-                  <option value="Puck">Puck (мужской, бодрый)</option>
-                  <option value="Charon">Charon (мужской, глубокий)</option>
-                  <option value="Fenrir">Fenrir (мужской, энергичный)</option>
-                  <option value="Orus">Orus (мужской, ровный)</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Gemini API Key</label>
-              <div class="input-send-row">
-                <input type="password" id="astApiKey" placeholder="AQ.Ab8... или AIza..." autocomplete="off" />
-                <button class="btn btn-sm" id="btnToggleKeyVis" type="button">Показать</button>
-              </div>
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Модель Gemini Live</label>
-                <input type="text" id="astModel" list="astModelList" value="gemini-3.8-live" />
-                <datalist id="astModelList">
-                  <option value="gemini-3.8-live"></option>
-                </datalist>
-              </div>
-              <div class="form-row">
-                <label>SNI-прокси fallback (обход 1007)</label>
-                <input type="text" id="astProxyHost" placeholder="ai-pool.comss.one (пусто = выкл)" value="ai-pool.comss.one" />
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Системный промпт (характер и инструкции)</label>
-              <textarea id="astPrompt" rows="3"></textarea>
-            </div>
-
-            <div class="form-row toggle-row">
-              <label>Офлайн активация словом «Алиса» (Silero VAD + Sherpa)</label>
-              <input type="checkbox" id="astWakeEn" checked />
-            </div>
-
-            <div class="form-row">
-              <label>BPE ключевая фраза KWS</label>
-              <input type="text" id="astKeywords" value="▁а ли са @алиса" />
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Порог KWS <span id="lblKwsThr">0.20</span></label>
-                <input type="range" id="astKwsThr" min="0.05" max="0.90" step="0.05" value="0.20" />
-              </div>
-              <div class="form-row">
-                <label>Бонус KWS score <span id="lblKwsScore">1.5</span></label>
-                <input type="range" id="astKwsScore" min="0.5" max="3.5" step="0.1" value="1.5" />
-              </div>
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row toggle-row">
-                <label>Звуковой отклик (chime)</label>
-                <input type="checkbox" id="astChime" checked />
-              </div>
-              <div class="form-row toggle-row">
-                <label>Google Search (нужен платный биллинг)</label>
-                <input type="checkbox" id="astSearch" />
-              </div>
-              <div class="form-row toggle-row">
-                <label>Echo Guard (анти-эхо)</label>
-                <input type="checkbox" id="astEchoGuard" checked />
-              </div>
-              <div class="form-row">
-                <label>Потоки KWS (1..4)</label>
-                <input type="number" id="astKwsThreads" min="1" max="4" value="1" />
-              </div>
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Pre-roll буфер (мс)</label>
-                <input type="number" id="astPreRoll" min="0" max="1500" step="50" value="450" />
-              </div>
-              <div class="form-row">
-                <label>Follow-up диалог (сек)</label>
-                <input type="number" id="astFollowUp" min="0" max="60" value="8" />
-              </div>
-              <div class="form-row">
-                <label>VAD пауза (мс)</label>
-                <input type="number" id="astVadSilence" min="300" max="3000" step="50" value="900" />
-              </div>
-              <div class="form-row">
-                <label>Макс. сессия (сек)</label>
-                <input type="number" id="astMaxSess" min="15" max="600" value="120" />
-              </div>
-            </div>
-
-            <div class="btn-row">
-              <button class="btn btn-accent" id="btnSaveAlice">Применить и сохранить Алису</button>
-              <button class="btn" id="btnTestAlice" type="button">Проверить Gemini Live</button>
-            </div>
-            <div class="hint" id="aliceTestResult" style="margin-top:6px;"></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 2: AUDIO, SY6045S AMPS, EQ -->
-      <section class="panel" id="tab-audio">
-        <div class="grid-2">
-          <div class="card">
-            <h2>Громкость, Маршрутизация и Усилители (SY6045S + ES8156)</h2>
-            <div class="form-row">
-              <label>Системная громкость (Кольцо + ТВ) <span id="lblSysVol">50%</span></label>
-              <div class="input-send-row">
-                <button class="btn btn-sm" id="btnVolDown" type="button">−5%</button>
-                <input type="range" id="sysVol" min="0" max="100" value="50" style="flex:1;" />
-                <button class="btn btn-sm" id="btnVolUp" type="button">+5%</button>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Выход звука</label>
-              <div class="seg-group" id="audioRoutes">
-                <button class="seg" data-route="auto">Авто (Джек)</button>
-                <button class="seg" data-route="speakers">Динамики</button>
-                <button class="seg" data-route="headphones">Наушники / AUX</button>
-                <button class="seg" data-route="both">Вместе</button>
-                <button class="seg" data-route="hdmi">Только HDMI</button>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Баланс Woofer (НЧ, SY6045S 2-002b) <span id="lblWooferVol">+0.0 дБ · рег. 112</span></label>
-              <input type="range" id="wooferVol" min="-40" max="40" step="1" value="0" />
-            </div>
-
-            <div class="form-row">
-              <label>Баланс Tweeters (ВЧ/СЧ, SY6045S 2-002a) <span id="lblTweetersVol">+0.0 дБ · рег. 112</span></label>
-              <input type="range" id="tweetersVol" min="-40" max="40" step="1" value="0" />
-            </div>
-
-            <div class="form-row">
-              <label>Баланс Наушники / 3.5мм (ES8156) <span id="lblHpVol">+0.0 дБ · рег. 60</span></label>
-              <input type="range" id="hpVol" min="-40" max="40" step="1" value="0" />
-            </div>
-            <p class="hint">Динамическая кривая задаёт тихий старт на 1% (−71.5 дБ / рег. 112 на динамиках, рег. 60 на наушниках) и плавно нарастает до 100% (рег. 255 / 193); ползунки смещают баланс канала от −20 до +20 дБ (шаг 0.5 дБ).</p>
-
-            <div class="grid-2-tight">
-              <div class="form-row toggle-row">
-                <label>Woofer EQ (Кроссовер)</label>
-                <input type="checkbox" id="wooferEq" checked />
-              </div>
-              <div class="form-row toggle-row">
-                <label>Woofer DRC</label>
-                <input type="checkbox" id="wooferDrc" checked />
-              </div>
-              <div class="form-row toggle-row">
-                <label>Tweeters EQ (Кроссовер)</label>
-                <input type="checkbox" id="tweetersEq" checked />
-              </div>
-              <div class="form-row toggle-row">
-                <label>Tweeters DRC</label>
-                <input type="checkbox" id="tweetersDrc" checked />
-              </div>
-            </div>
-
-            <div class="btn-row">
-              <button class="btn btn-sm" id="btnResetAudioTrim" type="button">Сбросить баланс (0 дБ)</button>
-              <button class="btn btn-sm" id="btnReloadAmpEq" type="button">Восстановить заводской кроссовер SY6045S</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Системный Эквалайзер (Android DSP) &amp; Проверка тракта</h2>
-            <div class="form-row">
-              <label>Профиль эквалайзера (Launcher DynamicsProcessing)</label>
-              <select id="eqPreset">
-                <option value="balanced">Сбалансированный (Hi-Fi)</option>
-                <option value="flat">Без коррекции (Flat)</option>
-                <option value="bass_boost">Глубокий бас (Bass Boost)</option>
-                <option value="vocal">Чистый голос / Кино</option>
-                <option value="night">Ночной режим (тихий НЧ)</option>
-              </select>
-            </div>
-
-            <p class="hint">Акустическая проверка после сборки: прогоните тестовые сигналы, чтобы проверить полярность и отсутствие дребезга динамиков.</p>
-            <div class="btn-row">
-              <button class="btn btn-sm btn-accent" id="btnTone440">Тон 440 Гц</button>
-              <button class="btn btn-sm btn-accent" id="btnToneSweep">Свип 90–4500 Гц</button>
-            </div>
-
-            <h3>Текущее состояние ALSA Mixer (Live)</h3>
-            <pre class="mono-box" id="alsaDump">Загрузка...</pre>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 3: 16-CHANNEL MICS -->
-      <section class="panel" id="tab-mics">
-        <div class="grid-2">
-          <div class="card">
-            <h2>Массив микрофонов (PDM + Loopback ES7210)</h2>
-            <div class="mic-bars" id="micBars"></div>
-
-            <div class="btn-row" style="margin-top: 14px;">
-              <button class="btn btn-sm btn-accent" id="btnListenLive">Слушать микрофон в браузере (ВЫКЛ)</button>
-              <a class="btn btn-sm" href="/api/audio/wav?sec=5" download="station-mic.wav">Скачать WAV (5 сек)</a>
-              <button class="btn btn-sm" id="btnCaptureToggle">Пауза захвата (для ТВ-приложений)</button>
-            </div>
-            <p class="hint" id="micBackendInfo">Backend: --</p>
-          </div>
-
-          <div class="card">
-            <h2>Настройки DSP &amp; Эхоподавления (AEC / NS)</h2>
-            <div class="form-row">
-              <label>Режим захвата микрофонов</label>
-              <select id="captureMode">
-                <option value="alsa_16ch">ALSA 16-ch Raw (Все 16 каналов DSP + NLMS AEC)</option>
-                <option value="aaudio">AAudio (16 кГц, совместим с ТВ-приложениями + VQE)</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>Усиление PDM (~6 дБ * N) <span id="lblPdmGain">3</span></label>
-              <input type="range" id="pdmGain" min="0" max="8" value="3" />
-            </div>
-
-            <div class="form-row">
-              <label>Режим PDM фильтра (0..4)</label>
-              <input type="range" id="pdmFilter" min="0" max="4" value="1" />
-            </div>
-
-            <div class="grid-2-tight">
-              <div class="form-row">
-                <label>Основной канал микрофона</label>
-                <select id="primaryMicCh">
-                  <option value="-1">Авто (Сумма 7 микрофонов)</option>
-                  <option value="0">ch0</option><option value="1">ch1</option>
-                  <option value="2">ch2</option><option value="3">ch3</option>
-                  <option value="4">ch4</option><option value="5">ch5</option>
-                  <option value="6">ch6</option><option value="7">ch7</option>
-                  <option value="8">ch8</option><option value="9">ch9</option>
-                  <option value="10">ch10</option><option value="11">ch11</option>
-                  <option value="12">ch12</option><option value="13">ch13</option>
-                  <option value="14">ch14</option><option value="15">ch15</option>
-                </select>
-              </div>
-              <div class="form-row">
-                <label>Опорный канал Loopback</label>
-                <select id="loopbackCh">
-                  <option value="7">ch7</option><option value="8">ch8</option>
-                  <option value="9">ch9</option><option value="10">ch10</option>
-                  <option value="14">ch14</option><option value="15">ch15</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="form-row toggle-row">
-              <label>Аппаратный Loopback Enable</label>
-              <input type="checkbox" id="loopbackEn" checked />
-            </div>
-            <div class="form-row toggle-row">
-              <label>Эхоподавление (NLMS AEC)</label>
-              <input type="checkbox" id="aecEn" checked />
-            </div>
-            <div class="form-row toggle-row">
-              <label>Шумоподавление (Noise Suppression)</label>
-              <input type="checkbox" id="nsEn" checked />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 4: TV REMOTE, TEXT & APPS -->
-      <section class="panel" id="tab-remote">
-        <div class="grid-2">
-          <div class="card">
-            <h2>Пульт Android TV (через /dev/uinput)</h2>
+            <h2>Пульт и телевизор</h2>
             <div class="dpad">
               <div></div>
               <button class="btn dpad-btn" data-key="up">▲</button>
@@ -534,7 +118,7 @@
               <button class="btn btn-sm btn-danger" data-key="power">Питание</button>
             </div>
 
-            <h3>Управление телевизором по HDMI-CEC</h3>
+            <h3>Управление телевизором (HDMI)</h3>
             <div class="btn-row">
               <button class="btn btn-sm" data-cec="wakeup">Включить ТВ</button>
               <button class="btn btn-sm" data-cec="standby">Выключить ТВ</button>
@@ -542,176 +126,338 @@
               <button class="btn btn-sm" data-cec="volume_down">ТВ Громк −</button>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: ALICE -->
+      <section class="panel" id="tab-alice">
+        <div class="grid-2">
+          <div class="card">
+            <div class="row-between">
+              <h2>Голосовой ассистент «Алиса»</h2>
+              <span class="badge" id="badgeWakeWord">Голос: --</span>
+            </div>
+            <div class="status-banner" id="aliceStatusBanner">Инициализация...</div>
+
+            <div class="btn-row">
+              <button class="btn btn-accent" id="btnAliceTrigger">Разбудить Алису</button>
+              <button class="btn btn-danger" id="btnAliceStop">Остановить диалог</button>
+            </div>
+
+            <div class="input-send-row" style="margin-top: 12px;">
+              <input type="text" id="aliceTextPrompt" placeholder="Написать Алисе текстом (ответит голосом)..." />
+              <button class="btn btn-accent" id="btnAliceSendText">Отправить</button>
+            </div>
+
+            <h3>История общения</h3>
+            <div class="alice-live-box" id="aliceLiveBox" style="display:none;">
+              <div class="live-line user" id="aliceLiveUser"></div>
+              <div class="live-line model" id="aliceLiveModel"></div>
+            </div>
+            <div class="dialog-box" id="aliceHistory">
+              <div class="hint">Скажите «Алиса...» или нажмите «Разбудить Алису».</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Настройки Алисы</h2>
+            <div class="form-row toggle-row">
+              <label>Включить Алису</label>
+              <input type="checkbox" id="astEnabled" checked />
+            </div>
+
+            <div class="form-row">
+              <label>Голос ответа</label>
+              <select id="astVoice">
+                <option value="Aoede">Aoede (женский, мягкий)</option>
+                <option value="Kore">Kore (женский, яркий)</option>
+                <option value="Leda">Leda (женский, живой)</option>
+                <option value="Zephyr">Zephyr (лёгкий)</option>
+                <option value="Puck">Puck (мужской, бодрый)</option>
+                <option value="Charon">Charon (мужской, глубокий)</option>
+                <option value="Fenrir">Fenrir (мужской, энергичный)</option>
+                <option value="Orus">Orus (мужской, ровный)</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <label>Gemini API Key</label>
+              <div class="input-send-row">
+                <input type="password" id="astApiKey" placeholder="AIza... или AQ.Ab8..." autocomplete="off" />
+                <button class="btn btn-sm" id="btnToggleKeyVis" type="button">Показать</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label>Характер и инструкции</label>
+              <textarea id="astPrompt" rows="3"></textarea>
+            </div>
+
+            <div class="grid-2-tight">
+              <div class="form-row toggle-row">
+                <label>Откликаться на «Алиса»</label>
+                <input type="checkbox" id="astWakeEn" checked />
+              </div>
+              <div class="form-row toggle-row">
+                <label>Звуковой отклик</label>
+                <input type="checkbox" id="astChime" checked />
+              </div>
+            </div>
+
+            <div class="btn-row">
+              <button class="btn btn-accent" id="btnSaveAlice">Применить и сохранить</button>
+              <button class="btn" id="btnTestAlice" type="button">Проверить связь</button>
+            </div>
+            <div class="hint" id="aliceTestResult" style="margin-top:6px;"></div>
+
+            <details class="adv-details">
+              <summary>Дополнительные настройки</summary>
+              <div class="adv-details-body">
+                <div class="grid-2-tight">
+                  <div class="form-row">
+                    <label>Режим ассистента</label>
+                    <select id="astMode">
+                      <option value="gemini">Алиса (Gemini Live)</option>
+                      <option value="wyoming">Home Assistant (Wyoming)</option>
+                      <option value="off">Выкл</option>
+                    </select>
+                  </div>
+                  <div class="form-row">
+                    <label>Модель Gemini Live</label>
+                    <input type="text" id="astModel" list="astModelList" value="gemini-3.8-live" />
+                    <datalist id="astModelList">
+                      <option value="gemini-3.8-live"></option>
+                    </datalist>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label>Сервер обхода (SNI-прокси)</label>
+                  <input type="text" id="astProxyHost" placeholder="ai-pool.comss.one (пусто = выкл)" value="ai-pool.comss.one" />
+                </div>
+                <div class="grid-2-tight">
+                  <div class="form-row">
+                    <label>Продолжение диалога (сек)</label>
+                    <input type="number" id="astFollowUp" min="0" max="60" value="8" />
+                  </div>
+                  <div class="form-row">
+                    <label>Макс. длина диалога (сек)</label>
+                    <input type="number" id="astMaxSess" min="15" max="600" value="120" />
+                  </div>
+                </div>
+                <div class="grid-2-tight">
+                  <div class="form-row toggle-row">
+                    <label>Защита от эха (Echo Guard)</label>
+                    <input type="checkbox" id="astEchoGuard" checked />
+                  </div>
+                  <div class="form-row toggle-row">
+                    <label>Поиск Google (платный тариф)</label>
+                    <input type="checkbox" id="astSearch" />
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: SOUND & LIGHTING -->
+      <section class="panel" id="tab-sound">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Звук</h2>
+            <div class="form-row">
+              <label>Громкость <span id="lblSysVol">50%</span></label>
+              <div class="input-send-row">
+                <button class="btn btn-sm" id="btnVolDown" type="button">−5%</button>
+                <input type="range" id="sysVol" min="0" max="100" value="50" style="flex:1;" />
+                <button class="btn btn-sm" id="btnVolUp" type="button">+5%</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label>Выход звука</label>
+              <div class="seg-group" id="audioRoutes">
+                <button class="seg" data-route="auto">Авто</button>
+                <button class="seg" data-route="speakers">Динамики</button>
+                <button class="seg" data-route="headphones">Наушники</button>
+                <button class="seg" data-route="both">Вместе</button>
+                <button class="seg" data-route="hdmi">HDMI ТВ</button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label>Профиль эквалайзера</label>
+              <select id="eqPreset">
+                <option value="balanced">Сбалансированный</option>
+                <option value="flat">Без коррекции</option>
+                <option value="bass_boost">Глубокий бас</option>
+                <option value="vocal">Чистый голос / Кино</option>
+                <option value="night">Ночной режим</option>
+              </select>
+            </div>
+
+            <details class="adv-details">
+              <summary>Тонкий баланс громкости</summary>
+              <div class="adv-details-body">
+                <div class="form-row">
+                  <label>Бас (НЧ) <span id="lblWooferVol">+0.0 дБ</span></label>
+                  <input type="range" id="wooferVol" min="-40" max="40" step="1" value="0" />
+                </div>
+                <div class="form-row">
+                  <label>Высокие и средние (СЧ/ВЧ) <span id="lblTweetersVol">+0.0 дБ</span></label>
+                  <input type="range" id="tweetersVol" min="-40" max="40" step="1" value="0" />
+                </div>
+                <div class="form-row">
+                  <label>Наушники (3.5 мм) <span id="lblHpVol">+0.0 дБ</span></label>
+                  <input type="range" id="hpVol" min="-40" max="40" step="1" value="0" />
+                </div>
+                <div class="btn-row">
+                  <button class="btn btn-sm" id="btnResetAudioTrim" type="button">Сбросить баланс (0 дБ)</button>
+                </div>
+              </div>
+            </details>
+          </div>
 
           <div class="stack">
             <div class="card">
-              <div class="row-between">
-                <h2>Яндекс Музыка · Моя волна</h2>
-                <button class="btn btn-sm" id="btnLaunchMusic">Открыть на ТВ</button>
+              <h2>Подсветка кольца</h2>
+              <div class="ring-preview-wrap">
+                <svg viewBox="0 0 220 220" class="ring-svg" id="ringSvg"></svg>
+                <div class="ring-center-info">
+                  <div class="big-val" id="ringBrightnessVal">--%</div>
+                  <div class="small-lbl">яркость</div>
+                </div>
               </div>
-              <div class="status-banner" id="musicStatusBanner">Ожидание состояния плеера...</div>
-              <div class="btn-row" style="margin-bottom: 10px;">
-                <button class="btn btn-sm btn-accent" id="btnMusicWave">🌊 Моя волна</button>
-                <button class="btn btn-sm" id="btnMusicPrev">⏮</button>
-                <button class="btn btn-sm" id="btnMusicPlayPause">▶</button>
-                <button class="btn btn-sm" id="btnMusicNext">⏭</button>
-                <button class="btn btn-sm" id="btnMusicLike">♡</button>
-                <button class="btn btn-sm" id="btnMusicLikedList">♥ Лайки</button>
+
+              <div class="form-row">
+                <label>Режим подсветки</label>
+                <div class="seg-group" id="ringModes">
+                  <button class="seg" data-mode="rainbow">Радуга</button>
+                  <button class="seg" data-mode="breathe">Дыхание</button>
+                  <button class="seg" data-mode="solid">Сплошной</button>
+                  <button class="seg" data-mode="spinner">Спиннер</button>
+                  <button class="seg" data-mode="music">Музыка</button>
+                  <button class="seg" data-mode="off">Выкл</button>
+                </div>
               </div>
-              <div class="input-send-row" style="margin-bottom: 10px;">
-                <input type="text" id="musicSearchInput" placeholder="Включить трек или исполнителя (напр. Кино Группа крови)..." />
-                <button class="btn btn-sm btn-accent" id="btnMusicSearch">Играть</button>
+
+              <div class="grid-2-tight">
+                <div class="form-row">
+                  <label>Основной цвет</label>
+                  <input type="color" id="ringColor" value="#00d4ff" />
+                </div>
+                <div class="form-row">
+                  <label>Дополнительный цвет</label>
+                  <input type="color" id="ringSecColor" value="#7c3aed" />
+                </div>
               </div>
-              <div class="input-send-row">
-                <input type="password" id="musicOAuthInput" placeholder="Вставить OAuth-токен (y0_... или redirect URL)..." autocomplete="off" />
-                <button class="btn btn-sm" id="btnPushMusicOAuth">Войти по токену</button>
+
+              <div class="form-row">
+                <label>Яркость вручную <span id="lblBrightness">160</span></label>
+                <input type="range" id="ringBrightness" min="0" max="255" value="160" />
               </div>
+
+              <div class="form-row toggle-row">
+                <label>Автояркость по освещению</label>
+                <input type="checkbox" id="ringAutoBrightness" checked />
+              </div>
+
+              <details class="adv-details">
+                <summary>Дополнительные параметры подсветки</summary>
+                <div class="adv-details-body">
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                      <label>Мин. авто <span id="lblMinAuto">18</span></label>
+                      <input type="range" id="ringMinAuto" min="0" max="255" value="18" />
+                    </div>
+                    <div class="form-row">
+                      <label>Макс. авто <span id="lblMaxAuto">255</span></label>
+                      <input type="range" id="ringMaxAuto" min="10" max="255" value="255" />
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <label>Скорость анимации <span id="lblSpeed">55</span></label>
+                    <input type="range" id="ringSpeed" min="1" max="100" value="55" />
+                  </div>
+                </div>
+              </details>
             </div>
 
             <div class="card">
-              <h2>Ввод текста на ТВ (RU / EN UTF-8)</h2>
-              <p class="hint">Отправляет любой русский или английский текст напрямую в активное поле ввода на телевизоре через OpenStation IME.</p>
-              <div class="input-send-row">
-                <input type="text" id="remoteTextInput" placeholder="Введите запрос для поиска (напр. Фильмы 4K)..." />
-                <button class="btn btn-accent" id="btnSendRemoteText">Отправить</button>
-              </div>
-            </div>
+              <h2>Передний экранчик</h2>
+              <div class="status-banner" id="fb5StatusBanner">Проверка экранчика...</div>
 
-            <div class="card">
-              <div class="row-between">
-                <h2>Приложения на колонке</h2>
-                <button class="btn btn-sm" id="btnRefreshApps">Обновить</button>
+              <div class="form-row">
+                <label>Что показывать</label>
+                <select id="scrMode">
+                  <option value="clock">Часы (ЧЧ:ММ)</option>
+                  <option value="text">Бегущая строка</option>
+                  <option value="spectrum">Аудио-спектр</option>
+                  <option value="snake">Змейка</option>
+                  <option value="off">Выкл</option>
+                </select>
               </div>
-              <div class="apps-grid" id="appsGrid">Загрузка...</div>
+
+              <div class="form-row">
+                <label>Текст для бегущей строки</label>
+                <input type="text" id="scrText" maxlength="80" value="OPEN STATION MAX" />
+              </div>
+
+              <div class="grid-2-tight">
+                <div class="form-row">
+                  <label>Цвет</label>
+                  <input type="color" id="scrColor" value="#ffffff" />
+                </div>
+                <div class="form-row">
+                  <label>Яркость (%) <span id="lblScrBri">100</span></label>
+                  <input type="range" id="scrBri" min="0" max="100" value="100" />
+                </div>
+              </div>
+
+              <details class="adv-details">
+                <summary>Дополнительные параметры экранчика</summary>
+                <div class="adv-details-body">
+                  <div class="form-row toggle-row">
+                    <label>Автояркость по освещению</label>
+                    <input type="checkbox" id="scrAutoBri" checked />
+                  </div>
+                  <div class="form-row">
+                    <label>Скорость прокрутки <span id="lblScrSpeed">45</span></label>
+                    <input type="range" id="scrSpeed" min="1" max="100" value="45" />
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- TAB 5: SMART HOME (WYOMING, MQTT, INPUTS, LOGS) -->
-      <section class="panel" id="tab-smart">
+      <!-- TAB 4: SYSTEM, BOOTANIMATION, OTA & SMART HOME -->
+      <section class="panel" id="tab-system">
         <div class="grid-2">
           <div class="stack">
-            <div class="card">
-              <h2>Home Assistant — Голосовой сателлит (Wyoming)</h2>
-              <div class="status-banner" id="wyoStatusBanner">Ожидание подключения Home Assistant...</div>
-              <div class="form-row toggle-row">
-                <label>Включить Wyoming сервер (порт 10700)</label>
-                <input type="checkbox" id="wyoEn" checked />
+            <div class="card" id="bootanimCard">
+              <div class="row-between">
+                <h2>Заставка при включении</h2>
+                <span class="badge" id="bootanimModeBadge">--</span>
               </div>
-              <div class="grid-2-tight">
-                <div class="form-row">
-                  <label>Имя сателлита</label>
-                  <input type="text" id="wyoName" value="Station Max" />
-                </div>
-                <div class="form-row">
-                  <label>Порог VAD (RMS)</label>
-                  <input type="number" id="wyoVad" min="50" max="15000" value="450" />
-                </div>
-              </div>
-              <div class="form-row toggle-row">
-                <label>Непрерывный поток для openWakeWord в HA</label>
-                <input type="checkbox" id="wyoAlways" />
-              </div>
-            </div>
-
-            <div class="card">
-              <h2>MQTT + Auto-Discovery (Home Assistant)</h2>
-              <div class="status-banner" id="mqttStatusBanner">Отключено</div>
-              <div class="form-row toggle-row">
-                <label>Включить MQTT клиент</label>
-                <input type="checkbox" id="mqttEn" />
-              </div>
-              <div class="grid-2-tight">
-                <div class="form-row">
-                  <label>Брокер (IP / Host)</label>
-                  <input type="text" id="mqttHost" value="192.168.1.10" />
-                </div>
-                <div class="form-row">
-                  <label>Порт</label>
-                  <input type="number" id="mqttPort" value="1883" />
-                </div>
-                <div class="form-row">
-                  <label>Логин</label>
-                  <input type="text" id="mqttUser" />
-                </div>
-                <div class="form-row">
-                  <label>Пароль</label>
-                  <input type="password" id="mqttPass" />
-                </div>
-              </div>
-              <div class="form-row">
-                <label>Базовый топик</label>
-                <input type="text" id="mqttTopic" value="openstation/station_max" />
-              </div>
-            </div>
-          </div>
-
-          <div class="stack">
-            <div class="card">
-              <h2>Кольцо громкости и кнопка «Алиса» (Action)</h2>
-              <div class="grid-2-tight">
-                <div class="form-row">
-                  <label>Короткое нажатие Action</label>
-                  <select id="actShort">
-                    <option value="assistant">Запустить Алису (Gemini Live)</option>
-                    <option value="wyoming">Запустить голос (Wyoming)</option>
-                    <option value="play_pause">Пауза / Воспроизведение</option>
-                    <option value="led_cycle">Сменить режим подсветки</option>
-                    <option value="launcher">Домой (Лаунчер)</option>
-                    <option value="none">Ничего</option>
-                  </select>
-                </div>
-                <div class="form-row">
-                  <label>Длинное нажатие Action</label>
-                  <select id="actLong">
-                    <option value="led_cycle">Сменить режим подсветки</option>
-                    <option value="assistant">Запустить Алису (Gemini Live)</option>
-                    <option value="wyoming">Запустить голос (Wyoming)</option>
-                    <option value="play_pause">Пауза / Воспроизведение</option>
-                    <option value="launcher">Домой (Лаунчер)</option>
-                    <option value="none">Ничего</option>
-                  </select>
-                </div>
-              </div>
-              <div class="grid-2-tight">
-                <div class="form-row toggle-row">
-                  <label>Инвертировать поворотное кольцо громкости</label>
-                  <input type="checkbox" id="rotaryInvert" />
-                </div>
-                <div class="form-row">
-                  <label>Шаг громкости (1..5)</label>
-                  <input type="number" id="rotaryStep" min="1" max="5" value="1" />
-                </div>
-              </div>
-              <div class="form-row">
-                <label>mDNS Имя (.local)</label>
-                <input type="text" id="devHost" value="station-max" />
-              </div>
-              <button class="btn btn-accent" id="btnSaveAll">Применить и сохранить конфиг</button>
-            </div>
-
-            <div class="card">
-              <h2>Автономный сервер на станции (без ПК)</h2>
-              <p class="hint" id="sysAutoInfo">Все службы (Алиса, Мастер настройки, Веб-пульт :8080, Музыка, Wyoming) работают внутри самой колонки.</p>
-              <div class="form-row">
-                <label>Private DNS (для доступа к Gemini)</label>
-                <div class="input-send-row">
-                  <input type="text" id="sysDnsHost" placeholder="dns.comss.one" value="dns.comss.one" />
-                  <button class="btn btn-sm" id="btnApplyDns" type="button">Применить</button>
-                </div>
-              </div>
+              <div class="status-banner" id="bootanimStatusBanner">Проверка текущей заставки...</div>
+              <input type="file" id="bootanimFileInput" accept=".zip" style="display:none;" />
               <div class="btn-row">
-                <button class="btn btn-sm btn-accent" id="btnSmartOpenWizard" type="button">✨ Мастер настройки</button>
-                <button class="btn btn-sm" id="btnRestartDaemon" type="button">↻ Перезапустить openstationd</button>
-                <button class="btn btn-sm btn-danger" id="btnRebootStation" type="button">⏻ Перезагрузить станцию</button>
+                <button class="btn btn-sm btn-accent" id="btnBootanimOta" type="button">⬇ Поставить OpenStation</button>
+                <button class="btn btn-sm" id="btnBootanimUpload" type="button">📁 Загрузить свою (.zip)</button>
+                <button class="btn btn-sm" id="btnBootanimRestore" type="button">↩ Вернуть оригинал</button>
+                <button class="btn btn-sm" id="btnBootanimPreview" type="button">▶ Предпросмотр (5 сек)</button>
               </div>
+              <p class="hint" style="margin-top:10px; margin-bottom:0;">
+                Можно поставить фирменную заставку OpenStation Max, вернуть оригинальную Яндекс или загрузить свой bootanimation.zip (метод Store без сжатия, до 24 МБ).
+              </p>
             </div>
 
             <div class="card" id="otaCard">
               <div class="row-between">
-                <h2>Обновления прошивки (GitHub OTA)</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.2.1</span>
+                <h2>Обновления прошивки</h2>
+                <span class="badge ok" id="otaVersionBadge">v1.2.2</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -721,33 +467,159 @@
                 <div class="hint" id="otaProgressLabel" style="margin-top:4px;">0%</div>
               </div>
               <div class="hint" id="otaChangelogBox" style="display:none; margin-bottom:10px;"></div>
-              <div class="grid-2-tight">
-                <div class="form-row">
-                  <label>GitHub репозиторий (owner/repo)</label>
-                  <input type="text" id="otaRepo" value="Olegu621/OPENSTATION" />
-                </div>
-                <div class="form-row">
-                  <label>Ветка</label>
-                  <input type="text" id="otaBranch" value="main" />
-                </div>
-              </div>
               <div class="form-row toggle-row">
-                <label>Автоматически проверять обновления при запуске</label>
+                <label>Автоматически проверять обновления</label>
                 <input type="checkbox" id="otaAutoCheck" checked />
               </div>
               <div class="btn-row">
-                <button class="btn btn-sm" id="btnOtaCheck" type="button">↻ Проверить GitHub</button>
+                <button class="btn btn-sm" id="btnOtaCheck" type="button">↻ Проверить обновления</button>
                 <button class="btn btn-sm btn-accent" id="btnOtaInstall" type="button" style="display:none;">⬇ Установить обновление</button>
-                <button class="btn btn-sm" id="btnOtaReinstall" type="button">Переустановить с GitHub</button>
+                <button class="btn btn-sm" id="btnOtaReinstall" type="button">Переустановить</button>
               </div>
+              <details class="adv-details">
+                <summary>Дополнительные настройки обновлений</summary>
+                <div class="adv-details-body">
+                  <div class="form-row toggle-row">
+                    <label>Обновлять заставку OpenStation при OTA</label>
+                    <input type="checkbox" id="otaSyncBootanim" checked />
+                  </div>
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                      <label>GitHub репозиторий</label>
+                      <input type="text" id="otaRepo" value="Olegu621/OPENSTATION" />
+                    </div>
+                    <div class="form-row">
+                      <label>Ветка</label>
+                      <input type="text" id="otaBranch" value="main" />
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="card">
+              <h2>Устройство и сеть</h2>
+              <p class="hint" id="sysAutoInfo">Станция работает автономно без подключения к компьютеру.</p>
+              <div class="form-row">
+                <label>Имя в локальной сети (.local)</label>
+                <input type="text" id="devHost" value="station-max" />
+              </div>
+              <div class="form-row">
+                <label>Private DNS</label>
+                <div class="input-send-row">
+                  <input type="text" id="sysDnsHost" placeholder="dns.comss.one" value="dns.comss.one" />
+                  <button class="btn btn-sm" id="btnApplyDns" type="button">Применить</button>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-accent" id="btnSaveAll">Применить и сохранить</button>
+                <button class="btn btn-sm" id="btnSmartOpenWizard" type="button">✨ Мастер настройки</button>
+                <button class="btn btn-sm btn-danger" id="btnRebootStation" type="button">⏻ Перезагрузить</button>
+              </div>
+              <details class="adv-details">
+                <summary>Управление кнопкой, кольцом и сервисом</summary>
+                <div class="adv-details-body">
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                      <label>Короткое нажатие кнопки</label>
+                      <select id="actShort">
+                        <option value="assistant">Запустить Алису</option>
+                        <option value="wyoming">Home Assistant (Wyoming)</option>
+                        <option value="play_pause">Пауза / Воспроизведение</option>
+                        <option value="led_cycle">Сменить подсветку</option>
+                        <option value="launcher">Домой (ТВ-экран)</option>
+                        <option value="none">Ничего</option>
+                      </select>
+                    </div>
+                    <div class="form-row">
+                      <label>Длинное нажатие кнопки</label>
+                      <select id="actLong">
+                        <option value="led_cycle">Сменить подсветку</option>
+                        <option value="assistant">Запустить Алису</option>
+                        <option value="wyoming">Home Assistant (Wyoming)</option>
+                        <option value="play_pause">Пауза / Воспроизведение</option>
+                        <option value="launcher">Домой (ТВ-экран)</option>
+                        <option value="none">Ничего</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="grid-2-tight">
+                    <div class="form-row toggle-row">
+                      <label>Инвертировать кольцо громкости</label>
+                      <input type="checkbox" id="rotaryInvert" />
+                    </div>
+                    <div class="form-row">
+                      <label>Шаг громкости (1..5)</label>
+                      <input type="number" id="rotaryStep" min="1" max="5" value="1" />
+                    </div>
+                  </div>
+                  <div class="btn-row">
+                    <button class="btn btn-sm" id="btnRestartDaemon" type="button">↻ Перезапустить сервис</button>
+                  </div>
+                </div>
+              </details>
             </div>
 
             <div class="card">
-              <div class="row-between">
-                <h2>Логи демона (openstationd)</h2>
-                <button class="btn btn-sm" id="btnClearLog">Очистить</button>
-              </div>
-              <pre class="log-box" id="logBox"></pre>
+              <details class="adv-details" style="margin-top:0; border:none; background:transparent;">
+                <summary style="padding:0; font-size:1.05rem; color:#fff;">Умный дом: Home Assistant (Wyoming и MQTT)</summary>
+                <div class="adv-details-body" style="padding:14px 0 0 0;">
+                  <div class="status-banner" id="wyoStatusBanner">Ожидание подключения Home Assistant...</div>
+                  <div class="form-row toggle-row">
+                    <label>Включить голосовой сателлит (Wyoming)</label>
+                    <input type="checkbox" id="wyoEn" checked />
+                  </div>
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                      <label>Имя сателлита</label>
+                      <input type="text" id="wyoName" value="Station Max" />
+                    </div>
+                    <div class="form-row">
+                      <label>Порог речи</label>
+                      <input type="number" id="wyoVad" min="50" max="15000" value="450" />
+                    </div>
+                  </div>
+                  <div class="form-row toggle-row">
+                    <label>Непрерывный поток для Wake Word в HA</label>
+                    <input type="checkbox" id="wyoAlways" />
+                  </div>
+
+                  <hr class="adv-divider" />
+
+                  <div class="status-banner" id="mqttStatusBanner">MQTT отключён</div>
+                  <div class="form-row toggle-row">
+                    <label>Включить MQTT клиент</label>
+                    <input type="checkbox" id="mqttEn" />
+                  </div>
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                      <label>Брокер (IP / Host)</label>
+                      <input type="text" id="mqttHost" value="192.168.1.10" />
+                    </div>
+                    <div class="form-row">
+                      <label>Порт</label>
+                      <input type="number" id="mqttPort" value="1883" />
+                    </div>
+                    <div class="form-row">
+                      <label>Логин</label>
+                      <input type="text" id="mqttUser" />
+                    </div>
+                    <div class="form-row">
+                      <label>Пароль</label>
+                      <input type="password" id="mqttPass" />
+                    </div>
+                  </div>
+                  <div class="form-row">
+                    <label>Базовый топик</label>
+                    <input type="text" id="mqttTopic" value="openstation/station_max" />
+                  </div>
+                  <div class="btn-row">
+                    <button class="btn btn-sm btn-accent" id="btnSaveSmartHome" type="button">Сохранить настройки Умного дома</button>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
         </div>
@@ -761,17 +633,17 @@
       <div class="wizard-header">
         <div>
           <h2 id="wizTitle">✨ Мастер настройки OpenStation Max</h2>
-          <div class="sub" id="wizSubtitle">Автономный сервер на станции · Изменения сразу синхронизируются с ТВ</div>
+          <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.2.1</span>
+          <span class="badge ok" id="wizFwBadge">v1.2.2</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>
 
       <div class="wizard-steps" id="wizStepsNav">
         <button class="wiz-step-pill active" data-step="1" type="button">1. Станция и сеть</button>
-        <button class="wiz-step-pill" data-step="2" type="button">2. Алиса (Gemini)</button>
+        <button class="wiz-step-pill" data-step="2" type="button">2. Алиса</button>
         <button class="wiz-step-pill" data-step="3" type="button">3. Музыка и Звук</button>
         <button class="wiz-step-pill" data-step="4" type="button">4. Подсветка и Финиш</button>
       </div>
@@ -786,26 +658,27 @@
               <div class="v" id="wizDiagIp">--</div>
             </div>
             <div class="wiz-diag-card">
-              <div class="k">mDNS (в локальной сети)</div>
+              <div class="k">Адрес в сети</div>
               <div class="v" id="wizDiagMdns">station-max.local</div>
             </div>
             <div class="wiz-diag-card">
-              <div class="k">Температура и OLED fb5</div>
+              <div class="k">Передний экранчик</div>
               <div class="v" id="wizDiagHw">--</div>
             </div>
             <div class="wiz-diag-card">
-              <div class="k">Микрофоны (Wake Word)</div>
+              <div class="k">Голосовой запуск</div>
               <div class="v" id="wizDiagMic">--</div>
             </div>
           </div>
+
           <div class="form-row" style="margin-top:12px;">
-            <label>Private DNS Android (обход блокировок Gemini API)</label>
+            <label>Private DNS (для стабильной работы Алисы)</label>
             <div class="input-send-row">
               <input type="text" id="wizDnsHost" placeholder="dns.comss.one (пусто = стандартный)" value="dns.comss.one" />
               <button class="btn btn-sm" id="btnWizApplyDns" type="button">Сохранить DNS</button>
             </div>
           </div>
-          <p class="hint">Совет: если вы открыли эту страницу по QR-коду с телевизора, можете спокойно вводить ключи и пароли прямо с телефона — ТВ обновится автоматически.</p>
+          <p class="hint">Совет: если вы открыли эту страницу по QR-коду с телевизора, удобно вставить ключи и пароли прямо с телефона.</p>
         </div>
 
         <!-- STEP 2 -->
@@ -820,7 +693,7 @@
           </div>
           <div class="grid-2-tight">
             <div class="form-row">
-              <label>SNI-прокси (fallback)</label>
+              <label>Сервер обхода (SNI-прокси)</label>
               <input type="text" id="wizProxyHost" placeholder="ai-pool.comss.one" value="ai-pool.comss.one" />
             </div>
             <div class="form-row">
@@ -838,11 +711,11 @@
             </div>
           </div>
           <div class="form-row toggle-row">
-            <label>Офлайн активация словом «Алиса»</label>
+            <label>Откликаться на слово «Алиса»</label>
             <input type="checkbox" id="wizWakeEn" checked />
           </div>
           <div class="btn-row">
-            <button class="btn btn-accent" id="btnWizTestGemini" type="button">⚡ Сохранить и проверить Gemini Live</button>
+            <button class="btn btn-accent" id="btnWizTestGemini" type="button">⚡ Сохранить и проверить связь</button>
             <button class="btn" id="btnWizTestSay" type="button">🎤 Разбудить Алису</button>
           </div>
         </div>
@@ -851,40 +724,37 @@
         <div class="wiz-pane" id="wizStep3">
           <div class="status-banner" id="wizMusicBanner">Яндекс Музыка: проверка статуса...</div>
           <div class="form-row">
-            <label>Быстрый вход в Яндекс Музыку (вставьте OAuth-токен y0_... или ссылку)</label>
+            <label>Вход в Яндекс Музыку по токену (опционально)</label>
             <div class="input-send-row">
               <input type="password" id="wizYmToken" placeholder="y0_..." autocomplete="off" />
-              <button class="btn btn-sm btn-accent" id="btnWizYmOAuth" type="button">Войти по токену</button>
+              <button class="btn btn-sm btn-accent" id="btnWizYmOAuth" type="button">Войти</button>
             </div>
           </div>
           <div class="btn-row" style="margin-bottom:12px;">
-            <button class="btn btn-sm" id="btnWizYmTv" type="button">Открыть экран входа на ТВ</button>
-            <button class="btn btn-sm btn-accent" id="btnWizYmWave" type="button">🌊 Тест «Моя волна»</button>
+            <button class="btn btn-sm" id="btnWizYmTv" type="button">Открыть вход на ТВ</button>
+            <button class="btn btn-sm btn-accent" id="btnWizYmWave" type="button">🌊 Включить «Мою волну»</button>
           </div>
           <div class="grid-2-tight">
             <div class="form-row">
               <label>Выход звука</label>
               <select id="wizAudioRoute">
-                <option value="auto">Авто (Джек 3.5мм)</option>
+                <option value="auto">Авто</option>
                 <option value="speakers">Динамики станции</option>
-                <option value="headphones">Наушники / AUX 3.5мм</option>
+                <option value="headphones">Наушники (3.5 мм)</option>
                 <option value="both">Вместе</option>
                 <option value="hdmi">Только HDMI (ТВ)</option>
               </select>
             </div>
             <div class="form-row">
-              <label>Эквалайзер (Hi-Fi DSP)</label>
+              <label>Эквалайзер</label>
               <select id="wizEqPreset">
-                <option value="balanced">Сбалансированный (Hi-Fi)</option>
-                <option value="bass_boost">Глубокий бас (Bass Boost)</option>
+                <option value="balanced">Сбалансированный</option>
+                <option value="bass_boost">Глубокий бас</option>
                 <option value="vocal">Чистый голос / Кино</option>
                 <option value="night">Ночной режим</option>
-                <option value="flat">Flat (без коррекции)</option>
+                <option value="flat">Без коррекции</option>
               </select>
             </div>
-          </div>
-          <div class="btn-row">
-            <button class="btn btn-sm" id="btnWizTone440" type="button">🔔 Проверить звук (440 Гц)</button>
           </div>
         </div>
 
@@ -892,7 +762,7 @@
         <div class="wiz-pane" id="wizStep4">
           <div class="grid-2-tight">
             <div class="form-row">
-              <label>Эффект LED-кольца</label>
+              <label>Подсветка кольца</label>
               <select id="wizRingMode">
                 <option value="music">Светомузыка (спектр)</option>
                 <option value="rainbow">Радуга</option>
@@ -909,23 +779,23 @@
           </div>
           <div class="grid-2-tight">
             <div class="form-row">
-              <label>Верхняя кнопка Action</label>
+              <label>Верхняя кнопка на корпусе</label>
               <select id="wizActShort">
                 <option value="assistant">Запустить Алису</option>
-                <option value="wyoming">Home Assistant (Wyoming)</option>
+                <option value="wyoming">Home Assistant</option>
                 <option value="play_pause">Пауза / Музыка</option>
                 <option value="led_cycle">Сменить подсветку</option>
               </select>
             </div>
             <div class="form-row toggle-row" style="align-self:end; padding-bottom:10px;">
-              <label>Автояркость по датчику света</label>
+              <label>Автояркость по освещению</label>
               <input type="checkbox" id="wizAutoBri" checked />
             </div>
           </div>
           <div class="btn-row" style="margin-bottom:12px;">
-            <button class="btn btn-sm" id="btnWizCecWake" type="button">📺 Проверить HDMI-CEC (включить ТВ)</button>
+            <button class="btn btn-sm" id="btnWizCecWake" type="button">📺 Включить ТВ (HDMI)</button>
           </div>
-          <h3>Готовность прошивки OpenStation Max</h3>
+          <h3>Готовность OpenStation Max</h3>
           <div class="wiz-checklist" id="wizChecklist"></div>
         </div>
       </div>

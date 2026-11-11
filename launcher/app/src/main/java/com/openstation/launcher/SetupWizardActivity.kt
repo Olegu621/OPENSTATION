@@ -96,7 +96,7 @@ class SetupWizardActivity : Activity() {
     // Cached daemon config state
     private var curIp = "127.0.0.1"
     private var curHostname = "station-max"
-    private var curFwVersion = "1.2.1"
+    private var curFwVersion = "1.2.2"
     private var curTempC = 0.0
     private var curFb5 = false
     private var curDnsMode = ""
@@ -220,7 +220,7 @@ class SetupWizardActivity : Activity() {
             letterSpacing = 0.03f
         }
         val tvSub = TextView(this).apply {
-            text = "Автономная прошивка и сервер прямо на станции (работает без ПК)"
+            text = "Автономная работа прямо на колонке (без ПК)"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 11f
         }
@@ -324,7 +324,7 @@ class SetupWizardActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        tvChkDaemon = makeCheckRow("● Сервер станции (:8080)")
+        tvChkDaemon = makeCheckRow("● Службы станции")
         tvChkDns = makeCheckRow("● Private DNS (dns.comss.one)")
         tvChkGemini = makeCheckRow("● Ключ Gemini Live API")
         tvChkKws = makeCheckRow("● Офлайн фраза «Алиса»")
@@ -705,14 +705,10 @@ class SetupWizardActivity : Activity() {
         ymBtns.addView(makeActionPill("🌊 Тест «Моя волна»") {
             StationAudioService.instance?.musicPlayer?.playMyWave("any", "", openUiOnAuthNeeded = true)
             Toast.makeText(this, "Запускаем Мою волну...", Toast.LENGTH_SHORT).show()
-        }.apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8) })
-        ymBtns.addView(makeActionPill("🔔 Тест звука 440 Гц") {
-            postAsync("http://127.0.0.1:8080/api/audio/test_tone", """{"freq":440,"duration":700,"sweep":false}""")
-            Toast.makeText(this, "Тест динамиков 440 Гц", Toast.LENGTH_SHORT).show()
         })
         col.addView(ymBtns)
 
-        col.addView(makeSubLabel("Выход звука (SY6045S / ES8156 / HDMI)"))
+        col.addView(makeSubLabel("Выход звука"))
         val rRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -737,7 +733,7 @@ class SetupWizardActivity : Activity() {
         }
         col.addView(rRow)
 
-        col.addView(makeSubLabel("Профиль эквалайзера (Hi-Fi DSP)"))
+        col.addView(makeSubLabel("Профиль эквалайзера"))
         val eqRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf(
             "balanced" to "Баланс (Hi-Fi)",
@@ -771,7 +767,7 @@ class SetupWizardActivity : Activity() {
             "Настройте кольцо сверху корпуса и управление телевизором."
         ))
 
-        col.addView(makeSubLabel("Эффект LED-кольца (fb4)"))
+        col.addView(makeSubLabel("Эффект LED-кольца"))
         val ringRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -1093,7 +1089,7 @@ class SetupWizardActivity : Activity() {
                     val root = JSONObject(txt)
                     val ip = root.optString("ip", "").ifBlank { localIp }
                     val host = root.optString("hostname", "station-max")
-                    val fw = root.optString("firmwareVersion", "1.2.1")
+                    val fw = root.optString("firmwareVersion", "1.2.2")
                     val dnsMode = root.optString("privateDnsMode", "")
                     val dnsHost = root.optString("privateDnsHost", "")
                     val hw = root.optJSONObject("hardware")
@@ -1164,7 +1160,7 @@ class SetupWizardActivity : Activity() {
         }
 
         // Left Checklist
-        tvChkDaemon.text = String.format(Locale.US, "✓ Сервер v%s (%.0f°C)", curFwVersion, curTempC)
+        tvChkDaemon.text = "✓ Система v$curFwVersion готова"
         tvChkDaemon.setTextColor(Color.parseColor("#6EE7B7"))
 
         if (curDnsMode == "hostname" && curDnsHost.isNotBlank()) {
@@ -1200,19 +1196,14 @@ class SetupWizardActivity : Activity() {
         }
 
         // Step 1 Cards
-        tvDiagIp.text = "$curIp:8080\n$curHostname.local"
+        tvDiagIp.text = "http://$curIp:8080\n$curHostname.local"
         tvDiagDns.text = if (curDnsMode == "hostname" && curDnsHost.isNotBlank()) {
             "$curDnsHost (активен)"
         } else {
             "Авто (${curDnsMode.ifBlank { "нет" }})"
         }
-        tvDiagAudio.text = "16ch PDM + AEC\nSY6045S + ES8156"
-        tvDiagHw.text = String.format(
-            Locale.US,
-            "S905X2 · %.1f°C\n%s",
-            curTempC,
-            if (curFb5) "OLED fb5: подключён" else "OLED fb5: откл."
-        )
+        tvDiagAudio.text = "Станция Макс\nHi-Fi аудиосистема"
+        tvDiagHw.text = "Голос и экран\n" + if (curFb5) "Передний экран: активен" else "Передний экран: выкл"
 
         // Step 2 Gemini Banner (only overwrite default hint, preserve explicit test results until next click)
         if (!tvStep2GeminiStatus.text.startsWith("✓ Gemini") && !tvStep2GeminiStatus.text.startsWith("✗ Ошибка") && !tvStep2GeminiStatus.text.startsWith("⏳")) {
@@ -1242,7 +1233,7 @@ class SetupWizardActivity : Activity() {
             newDetect || (ast?.optString("state", "idle") == "listening") ->
                 "✓ Отлично! «Алиса» услышала вас (срабатываний: $curKwsDetections)"
             vadSpeech ->
-                "🎙 Речь слышна микрофонами 16ch (скажите чётко «Алиса»)"
+                "🎙 Речь слышна (скажите чётко «Алиса»)"
             curKwsReady ->
                 "Офлайн Wake Word активен — скажите вслух «Алиса» для проверки (срабатываний: $curKwsDetections)"
             else ->

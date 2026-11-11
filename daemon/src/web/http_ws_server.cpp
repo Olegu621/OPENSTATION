@@ -105,6 +105,7 @@ const char* status_text(int code) {
         case 204: return "No Content";
         case 400: return "Bad Request";
         case 404: return "Not Found";
+        case 413: return "Payload Too Large";
         case 500: return "Internal Server Error";
         default: return "OK";
     }
@@ -479,8 +480,33 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
     }
 
     // Read remaining HTTP POST body
-    if (content_length > 2097152) return;
+    const size_t max_body = (req.path == "/api/bootanim/upload") ? (24ULL * 1024ULL * 1024ULL) : 2097152ULL;
+    if (content_length > max_body) {
+        HttpResponse too_big = HttpResponse::json("{\"error\":\"file too large (max 24 MB)\"}", 413);
+        char hbuf[512];
+        int hlen = snprintf(hbuf, sizeof(hbuf),
+                            "HTTP/1.1 %d %s\r\n"
+                            "Content-Type: %s\r\n"
+                            "Content-Length: %zu\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                            "Access-Control-Allow-Headers: Content-Type\r\n"
+                            "Cache-Control: no-store\r\n"
+                            "Connection: close\r\n\r\n",
+                            too_big.status, status_text(too_big.status),
+                            too_big.content_type.c_str(), too_big.body.size());
+        send_all(cfd, hbuf, static_cast<size_t>(hlen));
+        send_all(cfd, too_big.body.data(), too_big.body.size());
+        return;
+    }
+    if (content_length > 262144) {
+        struct timeval long_tv {30, 0};
+        setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &long_tv, sizeof(long_tv));
+    }
     req.body = std::move(leftover);
+    if (content_length > req.body.size()) {
+        req.body.reserve(content_length);
+    }
     while (req.body.size() < content_length && running_.load()) {
         ssize_t n = recv(cfd, tmp, std::min(sizeof(tmp), content_length - req.body.size()), 0);
         if (n <= 0) break;

@@ -11,8 +11,8 @@ android {
         applicationId = "com.openstation.ime"
         minSdk = 26
         targetSdk = 28
-        versionCode = 3
-        versionName = "1.2.1"
+        versionCode = 4
+        versionName = "1.2.2"
     }
 
     buildTypes {

@@ -109,6 +109,7 @@ struct MqttConfig {
 
 struct OtaConfig {
     bool auto_check = true;
+    bool sync_bootanimation = true;
     std::string repo = "Olegu621/OPENSTATION";
     std::string branch = "main";
 };

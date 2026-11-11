@@ -44,7 +44,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.2.1";
+constexpr const char* kFirmwareVersion = "1.2.2";
 
 std::atomic<bool> g_stop{false};
 
@@ -2628,6 +2628,7 @@ int main(int argc, char** argv) {
         root["wyoming"] = wyoming.get_status_json();
         root["mqtt"] = mqtt.get_status_json();
         root["ota"] = ota.get_status_json();
+        root["bootanim"] = ota.get_bootanim_status_json();
         root["config"] = c.to_json();
         return root;
     };
@@ -2919,6 +2920,10 @@ int main(int argc, char** argv) {
                                 cfg.ota.auto_check = ac->as_bool(cfg.ota.auto_check);
                                 updated = true;
                             }
+                            if (const auto* sb = v.get("syncBootanimation"); sb && sb->is_bool()) {
+                                cfg.ota.sync_bootanimation = sb->as_bool(cfg.ota.sync_bootanimation);
+                                updated = true;
+                            }
                             if (updated) {
                                 cfg.sanitize_and_validate();
                                 c = cfg;
@@ -2951,6 +2956,70 @@ int main(int argc, char** argv) {
                 out["message"] = json::Value::make_str(r.message);
                 out["ota"] = ota.get_status_json();
                 return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/bootanim/status") {
+                return HttpResponse::json(ota.get_bootanim_status_json().dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/bootanim/upload") {
+                BootAnimOpResult r = ota.apply_uploaded_bootanimation(req.body.data(), req.body.size());
+                if (r.ok) {
+                    DaemonConfig c;
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
+                        cfg.ota.sync_bootanimation = false;
+                        c = cfg;
+                    }
+                    ota.update_config(c.ota);
+                    save_cfg(c);
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(r.ok);
+                out["message"] = json::Value::make_str(r.message);
+                out["bootanim"] = ota.get_bootanim_status_json();
+                return HttpResponse::json(out.dump(-1), r.ok ? 200 : 400);
+            }
+            if (req.method == "POST" && req.path == "/api/bootanim/restore") {
+                BootAnimOpResult r = ota.restore_stock_bootanimation();
+                if (r.ok) {
+                    DaemonConfig c;
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
+                        cfg.ota.sync_bootanimation = false;
+                        c = cfg;
+                    }
+                    ota.update_config(c.ota);
+                    save_cfg(c);
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(r.ok);
+                out["message"] = json::Value::make_str(r.message);
+                out["bootanim"] = ota.get_bootanim_status_json();
+                return HttpResponse::json(out.dump(-1), r.ok ? 200 : 400);
+            }
+            if (req.method == "POST" && req.path == "/api/bootanim/install_ota") {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.ota.sync_bootanimation = true;
+                    c = cfg;
+                }
+                ota.update_config(c.ota);
+                save_cfg(c);
+                BootAnimOpResult r = ota.install_openstation_bootanimation_sync();
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(r.ok);
+                out["message"] = json::Value::make_str(r.message);
+                out["bootanim"] = ota.get_bootanim_status_json();
+                out["ota"] = ota.get_status_json();
+                return HttpResponse::json(out.dump(-1), r.ok ? 200 : 400);
+            }
+            if (req.method == "POST" && req.path == "/api/bootanim/preview") {
+                spawn_detached({
+                    "/system/bin/sh", "-c",
+                    "setprop service.bootanim.exit 0; setprop ctl.start bootanim; sleep 5; "
+                    "setprop service.bootanim.exit 1; sleep 1; setprop ctl.stop bootanim"
+                });
+                return HttpResponse::json("{\"ok\":true,\"message\":\"Предпросмотр заставки запущен на экране ТВ (5 сек)\"}");
             }
             if (req.method == "POST" && req.path == "/api/audio/volume") {
                 json::Value v;

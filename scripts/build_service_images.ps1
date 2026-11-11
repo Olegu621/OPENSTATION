@@ -169,18 +169,27 @@ if (-not (Test-Path $manifestPath)) {
 }
 $fwManifest = Get-Content -Raw $manifestPath -Encoding UTF8 | ConvertFrom-Json
 if (-not $Version) { $Version = [string]$fwManifest.version }
-if (-not $Version) { $Version = "1.2.1" }
+if (-not $Version) { $Version = "1.2.2" }
 Write-Host "[1/6] Проверка firmware/ v$Version (SHA-256) и ассетов..." -ForegroundColor Yellow
 
 $DaemonBin = Join-Path $fwDir $fwManifest.files.daemon.fileName
 $LauncherApk = Join-Path $fwDir $fwManifest.files.launcher.fileName
 $ImeApk = Join-Path $fwDir $fwManifest.files.ime.fileName
+$BootAnimZip = if ($fwManifest.files.PSObject.Properties.Name -contains "bootanimation" -and $fwManifest.files.bootanimation) {
+    Join-Path $fwDir $fwManifest.files.bootanimation.fileName
+} else {
+    Join-Path $fwDir "bootanimation.zip"
+}
 
-foreach ($pair in @(
+$fwChecks = @(
     @{ Entry = $fwManifest.files.daemon; Path = $DaemonBin },
     @{ Entry = $fwManifest.files.launcher; Path = $LauncherApk },
     @{ Entry = $fwManifest.files.ime; Path = $ImeApk }
-)) {
+)
+if ($fwManifest.files.PSObject.Properties.Name -contains "bootanimation" -and $fwManifest.files.bootanimation) {
+    $fwChecks += @{ Entry = $fwManifest.files.bootanimation; Path = $BootAnimZip }
+}
+foreach ($pair in $fwChecks) {
     if (-not (Test-Path $pair.Path)) { throw "Отсутствует файл firmware: $($pair.Path)" }
     $actual = (Get-FileHash -Path $pair.Path -Algorithm SHA256).Hash.ToLowerInvariant()
     $expected = ([string]$pair.Entry.sha256).ToLowerInvariant()
@@ -280,9 +289,10 @@ try {
             geminiProxyHost = "ai-pool.comss.one"
         }
         ota = [ordered]@{
-            autoCheck = $true
-            repo      = "Olegu621/OPENSTATION"
-            branch    = "main"
+            autoCheck         = $true
+            syncBootanimation = $true
+            repo              = "Olegu621/OPENSTATION"
+            branch            = "main"
         }
     }
     $defaultCfgJson = (($defaultCfgObj | ConvertTo-Json -Depth 6) -replace "`r`n", "`n") + "`n"
@@ -340,7 +350,7 @@ try {
 
   if [ -d "$OS_SYS" ]; then
     ROM_VER=$(cat "$OS_SYS/VERSION" 2>/dev/null | tr -d ' \r\n')
-    [ -n "$ROM_VER" ] || ROM_VER="1.2.1"
+    [ -n "$ROM_VER" ] || ROM_VER="1.2.2"
 
     DATA_VER=""
     if [ -x "$OS_DATA/openstationd" ]; then
@@ -550,20 +560,24 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $StageDir "rc_block.sh"), ($rcBlock.TrimEnd() + "`n"), [System.Text.UTF8Encoding]::new($false))
 
     # Собираем payload.tar через Python tarfile с чёткими POSIX правами (0:0, LF)
+    $tarFilesList = @(
+        @{ src = (Join-Path $StageDir "rc_block.sh"); arc = "meta/rc_block.sh"; mode = 420 },
+        @{ src = (Join-Path $StageDir "default-permissions-openstation.xml"); arc = "meta/default-permissions-openstation.xml"; mode = 420 },
+        @{ src = $LauncherApk; arc = "app/OpenStationLauncher/OpenStationLauncher.apk"; mode = 420 },
+        @{ src = $ImeApk; arc = "app/OpenStationIME/OpenStationIME.apk"; mode = 420 },
+        @{ src = $DaemonBin; arc = "openstation/openstationd"; mode = 493 },
+        @{ src = $manifestPath; arc = "openstation/firmware_manifest.json"; mode = 420 },
+        @{ src = (Join-Path $StageDir "config.default.json"); arc = "openstation/config.default.json"; mode = 420 },
+        @{ src = (Join-Path $StageDir "VERSION"); arc = "openstation/VERSION"; mode = 420 }
+    ) + @($RequiredAssets | ForEach-Object {
+        @{ src = $_.Path; arc = ("openstation/" + $_.Name); mode = $_.Mode }
+    })
+    if ($BootAnimZip -and (Test-Path $BootAnimZip)) {
+        $tarFilesList += @{ src = $BootAnimZip; arc = "meta/bootanimation.zip"; mode = 420 }
+    }
     $tarSpecObj = [ordered]@{
         tarPath = $PayloadTar
-        files   = @(
-            @{ src = (Join-Path $StageDir "rc_block.sh"); arc = "meta/rc_block.sh"; mode = 420 },
-            @{ src = (Join-Path $StageDir "default-permissions-openstation.xml"); arc = "meta/default-permissions-openstation.xml"; mode = 420 },
-            @{ src = $LauncherApk; arc = "app/OpenStationLauncher/OpenStationLauncher.apk"; mode = 420 },
-            @{ src = $ImeApk; arc = "app/OpenStationIME/OpenStationIME.apk"; mode = 420 },
-            @{ src = $DaemonBin; arc = "openstation/openstationd"; mode = 493 },
-            @{ src = $manifestPath; arc = "openstation/firmware_manifest.json"; mode = 420 },
-            @{ src = (Join-Path $StageDir "config.default.json"); arc = "openstation/config.default.json"; mode = 420 },
-            @{ src = (Join-Path $StageDir "VERSION"); arc = "openstation/VERSION"; mode = 420 }
-        ) + @($RequiredAssets | ForEach-Object {
-            @{ src = $_.Path; arc = ("openstation/" + $_.Name); mode = $_.Mode }
-        })
+        files   = $tarFilesList
     }
     $tarSpecPath = Join-Path $StageDir "tar_spec.json"
     [System.IO.File]::WriteAllText($tarSpecPath, ($tarSpecObj | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
@@ -833,6 +847,21 @@ find "$MNT/system/openstation" -type d -exec chmod 755 {} +
 find "$MNT/system/openstation" -type f -exec chmod 644 {} +
 chmod 755 "$MNT/system/openstation/openstationd" "$MNT/system/openstation/lib/libonnxruntime.so" "$MNT/system/openstation/lib/libsherpa-onnx-c-api.so"
 chcon -R u:object_r:system_file:s0 "$MNT/system/openstation" 2>/dev/null || true
+
+# Фирменная анимация загрузки OpenStation Max + резервная копия стоковой внутри /system/openstation/
+if [ -f "$BUILD/payload/meta/bootanimation.zip" ]; then
+    if [ -f "$MNT/system/media/bootanimation.zip" ]; then
+        cp -f "$MNT/system/media/bootanimation.zip" "$MNT/system/openstation/bootanimation.zip.stock"
+        chown 0:0 "$MNT/system/openstation/bootanimation.zip.stock"
+        chmod 644 "$MNT/system/openstation/bootanimation.zip.stock"
+        chcon u:object_r:system_file:s0 "$MNT/system/openstation/bootanimation.zip.stock" 2>/dev/null || true
+    fi
+    mkdir -p "$MNT/system/media"
+    cp -f "$BUILD/payload/meta/bootanimation.zip" "$MNT/system/media/bootanimation.zip"
+    chown 0:0 "$MNT/system/media/bootanimation.zip"
+    chmod 644 "$MNT/system/media/bootanimation.zip"
+    chcon u:object_r:system_file:s0 "$MNT/system/media/bootanimation.zip" 2>/dev/null || true
+fi
 
 # Патч /system/etc/prop.default (раннее включение USB/TCP ADB и перехват кнопок на OpenStation)
 PD="$MNT/system/etc/prop.default"

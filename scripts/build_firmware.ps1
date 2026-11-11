@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.2.1",
-    [string]$Changelog = "Исправлено отображение часов (крупный шрифт 4x10 на LED-матрице 25x16 и актуальный часовой пояс на ТВ), включён passthrough audio HAL и переработана кривая громкости SY6045S/ES8156: по-настоящему тихая громкость 1% (−71.5 дБ) и плавный рост без перехвата регистров при воспроизведении.",
+    [string]$Version = "1.2.2",
+    [string]$Changelog = "Добавлена фирменная анимация загрузки OpenStation Max с сохранением оригинала и загрузкой своей заставки (.zip) в веб-пульте, обновлены и упрощены ТВ-экран и веб-пульт для удобного повседневного использования.",
     [switch]$Clean
 )
 
@@ -145,9 +145,10 @@ $fwDir = "$RootDir\firmware"
 New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
 
 $sources = @(
-    @{ Key = "daemon";   FileName = "openstationd";            Src = "$buildDir\openstationd" },
-    @{ Key = "launcher"; FileName = "OpenStationLauncher.apk"; Src = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk" },
-    @{ Key = "ime";      FileName = "OpenStationIME.apk";      Src = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk" }
+    @{ Key = "daemon";        FileName = "openstationd";            Src = "$buildDir\openstationd" },
+    @{ Key = "launcher";      FileName = "OpenStationLauncher.apk"; Src = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk" },
+    @{ Key = "ime";           FileName = "OpenStationIME.apk";      Src = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk" },
+    @{ Key = "bootanimation"; FileName = "bootanimation.zip";       Src = "$RootDir\firmware\bootanimation.zip" }
 )
 
 $filesManifest = [ordered]@{}
@@ -156,7 +157,9 @@ foreach ($s in $sources) {
         throw "Не найден собранный файл: $($s.Src)"
     }
     $dst = Join-Path $fwDir $s.FileName
-    Copy-Item -Force $s.Src $dst
+    if ([System.IO.Path]::GetFullPath($s.Src) -ne [System.IO.Path]::GetFullPath($dst)) {
+        Copy-Item -Force $s.Src $dst
+    }
     $item = Get-Item $dst
     $hash = (Get-FileHash -Path $dst -Algorithm SHA256).Hash.ToLowerInvariant()
     $filesManifest[$s.Key] = [ordered]@{

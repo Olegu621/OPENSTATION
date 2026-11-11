@@ -20,6 +20,7 @@ local.properties
 tools/
 platform-tools/
 *.zip
+!firmware/bootanimation.zip
 
 # Service port ROM images & release archives (distributed via GitHub Releases)
 rom/*.img

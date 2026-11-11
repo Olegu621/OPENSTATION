@@ -152,8 +152,6 @@ class MainActivity : Activity() {
     private lateinit var tileMute: HwTileViews
     private lateinit var tileRoute: HwTileViews
     private lateinit var tileEq: HwTileViews
-    private lateinit var tileCapMode: HwTileViews
-    private lateinit var tileMicPause: HwTileViews
     private lateinit var tileCecWake: HwTileViews
     private lateinit var tileCecOff: HwTileViews
 
@@ -180,12 +178,11 @@ class MainActivity : Activity() {
     private var latestMusicSnap = YmPlayerSnapshot()
 
     // Live daemon state
+    private var fwVer = "1.2.2"
     private var ringMode = "music"
     private var micMuted = false
     private var outputRoute = "auto"
     private var eqPreset = "balanced"
-    private var captureMode = "alsa_16ch"
-    private var capturePaused = false
     private var assistantState = "idle"
     private var assistantEnabled = true
     private var volumePct = 50
@@ -576,9 +573,9 @@ class MainActivity : Activity() {
         tabViews = tmpTabs.toTypedArray()
         tabBgShapes = tmpShapes.toTypedArray()
 
-        // Right: Compact Hardware Telemetry Pill
+        // Right: Compact Status Pill
         tvStatusLine = TextView(this).apply {
-            text = "○ openstationd..."
+            text = "○ Подключение..."
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 11f
             maxLines = 1
@@ -1097,7 +1094,7 @@ class MainActivity : Activity() {
             ctrlRow.addView(it.root)
         }
         val tvWaveTag = TextView(this).apply {
-            text = "Винил-режим · Hi-Fi Audio"
+            text = "Винил-режим"
             setTextColor(Color.parseColor("#8CA6C8"))
             textSize = 11f
             gravity = Gravity.END
@@ -1214,6 +1211,7 @@ class MainActivity : Activity() {
         val qrTxtCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(10), 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         val tvQrLbl = TextView(this).apply {
             text = "Веб-пульт"
@@ -1222,14 +1220,14 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         }
         tvIpLine = TextView(this).apply {
-            text = "station-max.local:8080"
+            text = "127.0.0.1:8080"
             setTextColor(Color.parseColor("#38BDF8"))
             textSize = 10.5f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
         val tvQrSub = TextView(this).apply {
-            text = "Сканируй с телефона"
+            text = "Откройте на телефоне"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 10f
         }
@@ -1283,7 +1281,7 @@ class MainActivity : Activity() {
             }
         }
         tvStationTelemetry = TextView(this).apply {
-            text = "OpenStation Max · Ожидание телеметрии..."
+            text = "Ожидание системы..."
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 11f
             maxLines = 1
@@ -1334,23 +1332,21 @@ class MainActivity : Activity() {
         stationCard.addView(telemetryRow)
         topSplit.addView(stationCard)
 
-        // Right Card: 8 Hardware Quick Controls (4 rows x 2 columns)
+        // Right Card: 6 Consumer Quick Controls (3 rows x 2 columns)
         val hwPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(14))
             setBackgroundResource(R.drawable.bg_card_bork_hero)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.56f)
         }
-        hwPanel.addView(makeSectionTitle("Аппаратное управление OpenStation", R.drawable.ic_hw_chip))
+        hwPanel.addView(makeSectionTitle("Быстрое управление", R.drawable.ic_hw_chip))
 
         tileRing = makeHwTile(R.drawable.ic_hw_ring, "Кольцо: Спектр") { cycleRingMode() }
-        tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Микрофоны: ВКЛ") { toggleMute() }
+        tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Мик: Вкл") { toggleMute() }
         tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
         tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
-        tileCapMode = makeHwTile(R.drawable.ic_hw_chip, "Захват: 16ch") { toggleCaptureMode() }
-        tileMicPause = makeHwTile(R.drawable.ic_hw_eq, "Поток: ВКЛ") { toggleCapturePause() }
-        tileCecWake = makeHwTile(R.drawable.ic_hw_tv, "ТВ Вкл (CEC)") { sendCec("wake") }
-        tileCecOff = makeHwTile(R.drawable.ic_hw_tv, "ТВ Выкл (CEC)") { sendCec("standby") }
+        tileCecWake = makeHwTile(R.drawable.ic_hw_tv, "Включить ТВ") { sendCec("wake") }
+        tileCecOff = makeHwTile(R.drawable.ic_hw_tv, "Выключить ТВ") { sendCec("standby") }
 
         val hwGrid = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1360,8 +1356,8 @@ class MainActivity : Activity() {
                 1f
             )
         }
-        val hwTiles = listOf(tileRing, tileMute, tileRoute, tileEq, tileCapMode, tileMicPause, tileCecWake, tileCecOff)
-        for (r in 0 until 4) {
+        val hwTiles = listOf(tileRing, tileMute, tileRoute, tileEq, tileCecWake, tileCecOff)
+        for (r in 0 until 3) {
             val rowLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 layoutParams = LinearLayout.LayoutParams(
@@ -1369,7 +1365,7 @@ class MainActivity : Activity() {
                     0,
                     1f
                 ).apply {
-                    if (r < 3) bottomMargin = dp(6)
+                    if (r < 2) bottomMargin = dp(8)
                 }
             }
             for (c in 0 until 2) {
@@ -1379,7 +1375,7 @@ class MainActivity : Activity() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     1f
                 ).apply {
-                    if (c == 0) marginEnd = dp(6)
+                    if (c == 0) marginEnd = dp(8)
                 }
                 rowLayout.addView(tile.root)
             }
@@ -1389,8 +1385,8 @@ class MainActivity : Activity() {
         topSplit.addView(hwPanel)
         col.addView(topSplit)
 
-        // System Settings Dock
-        col.addView(makeSectionTitle("Система и настройки Android TV", R.drawable.ic_settings))
+        // System Settings Dock (5 consumer categories)
+        col.addView(makeSectionTitle("Настройки Android TV", R.drawable.ic_settings))
         val sysRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -1408,17 +1404,8 @@ class MainActivity : Activity() {
             SysItem(R.drawable.sprite_sys_eq, true, "Звук и аудио") {
                 openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
             },
-            SysItem(R.drawable.ic_hw_display, false, "Экран HDMI") {
-                openSettingsActions("com.yandex.tv.settings.ACTION_DISPLAY", Settings.ACTION_DISPLAY_SETTINGS, Settings.ACTION_SETTINGS)
-            },
             SysItem(R.drawable.ic_hw_apps, false, "Приложения") {
                 openSettingsIntent(Settings.ACTION_APPLICATION_SETTINGS, "com.android.tv.settings")
-            },
-            SysItem(R.drawable.ic_hw_keyboard, false, "Клавиатура") {
-                openSettingsIntent(Settings.ACTION_INPUT_METHOD_SETTINGS, "com.android.tv.settings")
-            },
-            SysItem(R.drawable.ic_hw_info, false, "О системе") {
-                openSettingsIntent(Settings.ACTION_DEVICE_INFO_SETTINGS, "com.android.tv.settings")
             },
             SysItem(R.drawable.sprite_sys_display, true, "Настройки TV") {
                 launchPackageName("com.android.tv.settings")
@@ -2073,8 +2060,8 @@ class MainActivity : Activity() {
                 ellipsize = TextUtils.TruncateAt.END
             }
             val tvSub = TextView(this).apply {
-                text = if (app.leanback) "Android TV" else app.pkg
-                setTextColor(Color.parseColor(if (app.leanback) "#38BDF8" else "#64748B"))
+                text = if (app.leanback) "Android TV" else "Приложение"
+                setTextColor(Color.parseColor(if (app.leanback) "#38BDF8" else "#94A3B8"))
                 textSize = 10f
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
@@ -2261,11 +2248,11 @@ class MainActivity : Activity() {
             } catch (_: Throwable) { false }
         }
         val ipLine = if (onlineNet || ip != "127.0.0.1") {
-            "$ip:8080 · station-max.local"
+            "$ip:8080"
         } else {
             "Локально: 127.0.0.1:8080"
         }
-        if ((currentPage == 2 || force) && (force || ipLine != lastIpLineStr)) {
+        if (force || ipLine != lastIpLineStr) {
             lastIpLineStr = ipLine
             tvIpLine.text = ipLine
         }
@@ -2287,25 +2274,18 @@ class MainActivity : Activity() {
                 if (code == 200) {
                     val txt = conn.inputStream.bufferedReader().use { it.readText() }
                     val root = JSONObject(txt)
-                    val hw = root.optJSONObject("hardware")
                     val cfg = root.optJSONObject("config")
                     val audio = root.optJSONObject("audio")
-                    val engine = audio?.optJSONObject("engine")
                     val ringCfg = cfg?.optJSONObject("ledRing")
                     val audioCfg = cfg?.optJSONObject("audio")
                     val ast = root.optJSONObject("assistant")
                     val astCfg = cfg?.optJSONObject("assistant")
 
-                    val lux = hw?.optDouble("lux", 0.0) ?: 0.0
-                    val temp = hw?.optDouble("socTempC", 0.0) ?: 0.0
-                    val screenConn = hw?.optBoolean("fb5Present", false) ?: false
-
+                    fwVer = root.optString("firmwareVersion", fwVer).ifBlank { fwVer }
                     ringMode = ringCfg?.optString("mode", ringMode) ?: ringMode
                     micMuted = audioCfg?.optBoolean("micMuted", micMuted) ?: micMuted
                     outputRoute = audioCfg?.optString("outputRoute", outputRoute) ?: outputRoute
                     eqPreset = audioCfg?.optString("eqPreset", eqPreset) ?: eqPreset
-                    captureMode = audioCfg?.optString("captureMode", captureMode) ?: captureMode
-                    capturePaused = !(engine?.optBoolean("captureEnabled", true) ?: true)
                     volumePct = audio?.optInt("volumePercent", volumePct) ?: volumePct
                     assistantState = ast?.optString("state", "idle") ?: "idle"
                     assistantEnabled = astCfg?.optBoolean("enabled", true) ?: true
@@ -2336,21 +2316,13 @@ class MainActivity : Activity() {
                     }
 
                     val ip = detectLocalIp()
-                    val statusStr = String.format(
-                        Locale.US,
-                        "● Гр:%d%% · %.0f°C · %s",
-                        volumePct, temp, ip
-                    )
-                    val scrStr = if (screenConn) "OLED ОК" else "OLED выкл"
-                    val telStr = if (currentPage == 2) {
-                        String.format(
-                            Locale.US,
-                            "● %.0f°C · %.1flx · %s · %s · EQ: %s",
-                            temp, lux, scrStr,
-                            if (StationAudioService.visualizerActive) "Спектр ОК" else "Спектр —",
-                            StationAudioService.eqBackend
-                        )
-                    } else ""
+                    val statusStr = if (micMuted) {
+                        "● Громкость $volumePct% · Мик выкл"
+                    } else {
+                        "● Громкость $volumePct%"
+                    }
+                    val astTxt = if (assistantState != "idle") "Алиса активна" else "Алиса готова"
+                    val telStr = "● $astTxt · v$fwVer"
 
                     handler.post {
                         updateNetworkHeader(ip)
@@ -2358,7 +2330,7 @@ class MainActivity : Activity() {
                             lastStatusLineText = statusStr
                             tvStatusLine.text = statusStr
                         }
-                        if (currentPage == 2 && telStr != lastTelemetryText) {
+                        if (telStr != lastTelemetryText) {
                             lastTelemetryText = telStr
                             tvStationTelemetry.text = telStr
                         }
@@ -2405,17 +2377,15 @@ class MainActivity : Activity() {
     private fun markDaemonOffline() {
         daemonOnline = false
         handler.post {
-            val s = "○ openstationd:8080"
+            val s = "○ Подключение..."
             if (s != lastStatusLineText) {
                 lastStatusLineText = s
                 tvStatusLine.text = s
             }
-            if (currentPage == 2) {
-                val t = "○ Ожидание openstationd (порт 8080)"
-                if (t != lastTelemetryText) {
-                    lastTelemetryText = t
-                    tvStationTelemetry.text = t
-                }
+            val t = "○ Ожидание системы..."
+            if (t != lastTelemetryText) {
+                lastTelemetryText = t
+                tvStationTelemetry.text = t
             }
             syncPills()
         }
@@ -2423,20 +2393,20 @@ class MainActivity : Activity() {
 
     private fun syncPills(forceViews: Boolean = false) {
         if (currentPage == 2 || forceViews) {
-            val pillsKey = "$ringMode|$micMuted|$outputRoute|$eqPreset|$captureMode|$capturePaused"
+            val pillsKey = "$ringMode|$micMuted|$outputRoute|$eqPreset"
             if (forceViews || pillsKey != lastPillsKey) {
                 lastPillsKey = pillsKey
                 val ringLabel = when (ringMode) {
                     "rainbow" -> "Радуга"
-                    "solid" -> "Статика"
+                    "solid" -> "Свет"
                     "breathe" -> "Дыхание"
-                    "spinner" -> "Спиннер"
+                    "spinner" -> "Круг"
                     "spectrum", "music" -> "Спектр"
                     "off" -> "Выкл"
                     else -> ringMode
                 }
                 tileRing.label.text = "Кольцо: $ringLabel"
-                tileMute.label.text = if (micMuted) "Мик: MUTE" else "Мик: ВКЛ"
+                tileMute.label.text = if (micMuted) "Мик: Выкл" else "Мик: Вкл"
                 if (lastRenderedMicMuted != micMuted) {
                     lastRenderedMicMuted = micMuted
                     tileMute.icon.setImageResource(if (micMuted) R.drawable.ic_hw_mic_off else R.drawable.ic_hw_mic_on)
@@ -2444,22 +2414,19 @@ class MainActivity : Activity() {
                 tileMute.root.isSelected = micMuted
 
                 tileRoute.label.text = "Выход: " + when (outputRoute) {
-                    "speakers" -> "Динам."
-                    "headphones" -> "3.5мм"
+                    "speakers" -> "Колонка"
+                    "headphones" -> "Наушники"
                     "hdmi" -> "HDMI"
-                    "both" -> "Все"
+                    "both" -> "Вместе"
                     else -> "Авто"
                 }
                 tileEq.label.text = "EQ: " + when (eqPreset) {
                     "bass_boost" -> "Бас+"
                     "vocal" -> "Вокал"
                     "night" -> "Ночь"
-                    "flat" -> "Flat"
+                    "flat" -> "Обычный"
                     else -> "Баланс"
                 }
-                tileCapMode.label.text = if (captureMode == "alsa_16ch") "Захват: 16ch" else "Захват: AAudio"
-                tileMicPause.label.text = if (capturePaused) "Поток: ПАУЗА" else "Поток: ВКЛ"
-                tileMicPause.root.isSelected = capturePaused
             }
 
             val astBusy = assistantState != "idle"
@@ -2555,12 +2522,7 @@ class MainActivity : Activity() {
         if (currentPage == 1 || forceViews) {
             tvHomeSourceBadge.text = snap.sourceLabel.uppercase(Locale.getDefault())
 
-            if (snap.codecLabel.isNotBlank()) {
-                tvHomeCodecBadge.text = snap.codecLabel
-                tvHomeCodecBadge.visibility = View.VISIBLE
-            } else {
-                tvHomeCodecBadge.visibility = View.GONE
-            }
+            tvHomeCodecBadge.visibility = View.GONE
 
             val err = snap.lastError
             val errClean = err.removePrefix("AUTH_REQUIRED:").trim()
@@ -2766,15 +2728,14 @@ class MainActivity : Activity() {
         val clTv = otaDialogChangelogTv
         val instBtn = otaDialogInstallBtn
         if (o == null) {
-            tv?.text = "Загрузка статуса OTA с openstationd..."
+            tv?.text = "Проверка обновлений..."
             clTv?.visibility = View.GONE
             instBtn?.isEnabled = false
             return
         }
-        val instVer = o.optString("installedVersion", "1.2.1")
+        val instVer = o.optString("installedVersion", "1.2.2")
         val latVer = o.optString("latestVersion", "")
         val repo = o.optString("repo", "Olegu621/OPENSTATION")
-        val branch = o.optString("branch", "main")
         val st = o.optString("state", "idle")
         val busy = o.optBoolean("busy", false)
         val avail = o.optBoolean("updateAvailable", false)
@@ -2786,25 +2747,31 @@ class MainActivity : Activity() {
             if (chArr != null && chArr.length() > 0) {
                 for (i in 0 until chArr.length()) {
                     if (i > 0) append(", ")
-                    append(chArr.optString(i))
+                    val comp = when (val rawC = chArr.optString(i)) {
+                        "daemon" -> "система"
+                        "launcher" -> "ТВ-экран"
+                        "ime" -> "клавиатура"
+                        "bootanimation" -> "заставка"
+                        else -> rawC
+                    }
+                    append(comp)
                 }
             }
         }
         tv?.text = buildString {
-            append("Установлена: v").append(instVer).append('\n')
-            append("GitHub: ").append(repo).append(" (").append(branch).append(")\n")
+            append("Установлена версия: v").append(instVer).append('\n')
             if (latVer.isNotBlank()) {
-                append("Последняя на GitHub: v").append(latVer)
-                if (comps.isNotBlank()) append(" [").append(comps).append(']')
+                append("Доступно на GitHub (").append(repo).append("): v").append(latVer)
+                if (comps.isNotBlank()) append(" — ").append(comps)
                 append('\n')
             }
             append('\n')
             when {
                 st == "error" -> append("✗ Ошибка: ").append(err.ifBlank { ptxt })
                 busy -> append("⏳ ").append(pct).append("% — ").append(ptxt)
-                avail -> append("✨ Доступно обновление! Проверяется SHA-256; ключи Gemini и Музыки сохранятся.")
+                avail -> append("✨ Доступно обновление! Ваши настройки, ключи и аккаунт сохранятся.")
                 st == "up_to_date" -> append("✓ ").append(ptxt.ifBlank { "Установлена актуальная версия" })
-                else -> append("Нажмите «Проверить GitHub» для проверки обновлений.")
+                else -> append("Нажмите «Проверить обновления» для поиска новой версии.")
             }
         }
         val cl = o.optString("changelog", "")
@@ -2845,10 +2812,10 @@ class MainActivity : Activity() {
         otaDialogChangelogTv = changelogTv
 
         val dlg = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("☁ Обновление прошивки (GitHub OTA)")
+            .setTitle("☁ Обновление прошивки")
             .setView(body)
             .setPositiveButton("Установить обновление", null)
-            .setNeutralButton("Проверить GitHub", null)
+            .setNeutralButton("Проверить обновления", null)
             .setNegativeButton("Закрыть") { d, _ -> d.dismiss() }
             .create()
         dlg.setOnDismissListener {
@@ -2949,25 +2916,11 @@ class MainActivity : Activity() {
         postAsync("http://127.0.0.1:8080/api/config", body)
     }
 
-    private fun toggleCaptureMode() {
-        val next = if (captureMode == "aaudio") "alsa_16ch" else "aaudio"
-        captureMode = next
-        syncPills()
-        val body = JSONObject().put("audio", JSONObject().put("captureMode", next)).toString()
-        postAsync("http://127.0.0.1:8080/api/config", body)
-    }
-
-    private fun toggleCapturePause() {
-        capturePaused = !capturePaused
-        syncPills()
-        val body = JSONObject().put("enabled", !capturePaused).toString()
-        postAsync("http://127.0.0.1:8080/api/audio/capture_toggle", body)
-    }
-
     private fun sendCec(cmd: String) {
         val body = JSONObject().put("cmd", cmd).toString()
         postAsync("http://127.0.0.1:8080/api/remote/cec", body)
-        Toast.makeText(this, "HDMI-CEC: $cmd", Toast.LENGTH_SHORT).show()
+        val msg = if (cmd == "standby") "Выключение ТВ отправлено" else "Включение ТВ отправлено"
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
     private fun postAsync(url: String, jsonBody: String) {

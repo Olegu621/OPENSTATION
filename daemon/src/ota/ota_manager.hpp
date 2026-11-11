@@ -26,6 +26,11 @@ struct OtaInstallStartResult {
     std::string message;
 };
 
+struct BootAnimOpResult {
+    bool ok = false;
+    std::string message;
+};
+
 class OtaManager {
 public:
     using StatusBroadcastCb = std::function<void(const json::Value& status_json)>;
@@ -43,7 +48,12 @@ public:
     OtaInstallStartResult start_install(bool force = false);
 
     json::Value get_status_json() const;
+    json::Value get_bootanim_status_json() const;
     bool is_busy() const;
+
+    BootAnimOpResult apply_uploaded_bootanimation(const void* data, size_t len);
+    BootAnimOpResult restore_stock_bootanimation();
+    BootAnimOpResult install_openstation_bootanimation_sync();
 
     static std::string compute_file_sha256(const std::string& path, int64_t* out_size = nullptr);
     static std::string compute_bytes_sha256(const void* data, size_t len);
@@ -62,6 +72,7 @@ private:
                                                  const std::string& ver) const;
 
     mutable std::mutex mu_;
+    mutable std::mutex bootanim_mu_;
     OtaConfig cfg_;
     StatusBroadcastCb broadcast_cb_;
 
@@ -73,7 +84,7 @@ private:
     std::thread op_thread_;
 
     std::string state_ = "idle"; // idle, checking, up_to_date, available, downloading, verifying, installing, restarting, error
-    std::string installed_version_ = "1.2.1";
+    std::string installed_version_ = "1.2.2";
     std::string installed_build_time_;
     std::string latest_version_;
     std::string latest_build_time_;
@@ -89,10 +100,15 @@ private:
     std::string local_daemon_sha_;
     std::string local_launcher_sha_;
     std::string local_ime_sha_;
+    std::string local_bootanim_sha_;
+    int64_t local_bootanim_size_ = 0;
+    std::string bootanim_mode_ = "stock"; // openstation, stock, custom, missing
+    bool bootanim_has_stock_backup_ = false;
 
     OtaArtifactInfo remote_daemon_;
     OtaArtifactInfo remote_launcher_;
     OtaArtifactInfo remote_ime_;
+    OtaArtifactInfo remote_bootanim_;
     std::string remote_manifest_raw_;
 };
 

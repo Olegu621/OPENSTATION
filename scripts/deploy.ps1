@@ -222,7 +222,7 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
     throw "Таймаут ожидания готовности Android (sys.boot_completed=1, system_server, settings, pm) ($TimeoutSec сек)"
 }
 
-Write-Host "=== OpenStation Max v1.2.1 Deploy ===" -ForegroundColor Cyan
+Write-Host "=== OpenStation Max v1.2.2 Deploy ===" -ForegroundColor Cyan
 $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
 Write-Host "ADB: $AdbPath" -ForegroundColor Gray
 
@@ -268,6 +268,7 @@ if ($Interactive -and -not $DeviceSerial) {
 $DaemonBin = "$RootDir\daemon\build\openstationd"
 $ImeApk = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk"
 $LauncherApk = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk"
+$BootAnimZip = "$RootDir\firmware\bootanimation.zip"
 
 if (-not $UseFirmware -and -not $UsePrebuilt -and -not $SkipBuild) {
     if (-not (Test-HasBuildToolchain) -and (Test-HasFirmwarePackage)) {
@@ -286,9 +287,12 @@ if ($UseFirmware) {
     $manifest = Get-Content -Raw $manifestPath -Encoding UTF8 | ConvertFrom-Json
     Write-Host ("  Версия прошивки: {0} ({1}, autonomous={2})" -f $manifest.version, $manifest.device, $manifest.autonomous) -ForegroundColor Gray
 
-    foreach ($key in @("daemon", "launcher", "ime")) {
+    foreach ($key in @("daemon", "launcher", "ime", "bootanimation")) {
         $entry = $manifest.files.$key
-        if (-not $entry) { throw "В manifest.json отсутствует запись '$key'" }
+        if (-not $entry) {
+            if ($key -eq "bootanimation") { continue }
+            throw "В manifest.json отсутствует запись '$key'"
+        }
         $fpath = Join-Path $fwDir $entry.fileName
         if (-not (Test-Path $fpath)) { throw "Отсутствует файл прошивки: $fpath" }
         $actualHash = (Get-FileHash -Path $fpath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -301,6 +305,9 @@ if ($UseFirmware) {
     $DaemonBin = Join-Path $fwDir $manifest.files.daemon.fileName
     $LauncherApk = Join-Path $fwDir $manifest.files.launcher.fileName
     $ImeApk = Join-Path $fwDir $manifest.files.ime.fileName
+    if ($manifest.files.PSObject.Properties.Name -contains "bootanimation" -and $manifest.files.bootanimation) {
+        $BootAnimZip = Join-Path $fwDir $manifest.files.bootanimation.fileName
+    }
     $SkipBuild = $true
 }
 
@@ -310,6 +317,7 @@ if ($UsePrebuilt -and -not $UseFirmware) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DaemonBin) | Out-Null
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ImeApk) | Out-Null
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherApk) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BootAnimZip) | Out-Null
     $baseRelUrl = "https://github.com/$ReleaseRepo/releases/latest/download"
     $dlSpecs = @(
         @{ Url = "$baseRelUrl/openstationd"; Out = $DaemonBin },
@@ -319,6 +327,13 @@ if ($UsePrebuilt -and -not $UseFirmware) {
     foreach ($ds in $dlSpecs) {
         Write-Host "  -> $($ds.Url)" -ForegroundColor Gray
         Invoke-WebRequest -Uri $ds.Url -OutFile $ds.Out -UseBasicParsing
+    }
+    try {
+        $rawBaUrl = "https://raw.githubusercontent.com/$ReleaseRepo/main/firmware/bootanimation.zip"
+        Write-Host "  -> $rawBaUrl" -ForegroundColor Gray
+        Invoke-WebRequest -Uri $rawBaUrl -OutFile $BootAnimZip -UseBasicParsing
+    } catch {
+        Write-Host "  (заставка bootanimation.zip на сервере недоступна — шаг заставки пропущен)" -ForegroundColor DarkYellow
     }
     $SkipBuild = $true
 }
@@ -504,7 +519,7 @@ if [ ! -f /data/local/openstation/backup/hardvol_sy.xml ] && [ -f /vendor/etc/ha
     chmod 644 /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
 fi
 chmod 755 /data/local/openstation /data/local/openstation/backup
-for bf in rc_local.sh hardvol_sy.xml device_owner_2.xml device_owner.xml device_policies.xml users_0.xml orig_ime.txt orig_setup.txt; do
+for bf in rc_local.sh hardvol_sy.xml bootanimation.zip.stock device_owner_2.xml device_owner.xml device_policies.xml users_0.xml orig_ime.txt orig_setup.txt; do
     if [ -f "/data/local/openstation/backup/$bf" ]; then
         echo "$bf"
     fi
@@ -684,6 +699,81 @@ EOF
     mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
 fi
 '@
+
+if ($BootAnimZip -and (Test-Path $BootAnimZip)) {
+    $syncBootAnim = $true
+    if ($curCfgText) {
+        try {
+            $parsedCfg = $curCfgText | ConvertFrom-Json
+            if ($parsedCfg.ota -and ($parsedCfg.ota.PSObject.Properties.Name -contains "syncBootanimation") -and ($parsedCfg.ota.syncBootanimation -eq $false)) {
+                $syncBootAnim = $false
+            }
+        } catch {}
+    }
+    $bootAnimHash = (Get-FileHash -Path $BootAnimZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host "Установка фирменной заставки загрузки (bootanimation.zip)..." -ForegroundColor Gray
+    Invoke-Adb @("push", $BootAnimZip, "/data/local/tmp/openstation_bootanim.zip")
+    $baScript = (@'
+set -e
+NEW_SHA="__NEW_SHA__"
+SYNC_BA="__SYNC_BA__"
+PREV_OS_SHA=$(cat /data/local/openstation/bootanim_openstation.sha256 2>/dev/null | tr -d ' \r\n')
+PREV_CUSTOM_SHA=$(cat /data/local/openstation/bootanim_custom.sha256 2>/dev/null | tr -d ' \r\n')
+CUR_SYS_SHA=""
+if [ -f /system/media/bootanimation.zip ]; then
+    CUR_SYS_SHA=$(sha256sum /system/media/bootanimation.zip | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n')
+fi
+mkdir -p /data/local/openstation/backup
+if [ ! -s /data/local/openstation/backup/bootanimation.zip.stock ] && [ -f /system/media/bootanimation.zip ]; then
+    if [ "$CUR_SYS_SHA" != "$NEW_SHA" ] && [ "$CUR_SYS_SHA" != "$PREV_OS_SHA" ] && [ "$CUR_SYS_SHA" != "$PREV_CUSTOM_SHA" ]; then
+        cp -f /system/media/bootanimation.zip /data/local/openstation/backup/bootanimation.zip.stock
+        chmod 644 /data/local/openstation/backup/bootanimation.zip.stock
+        echo "BOOTANIM_STOCK_BACKED_UP=$CUR_SYS_SHA"
+    fi
+fi
+printf '%s\n' "$NEW_SHA" > /data/local/openstation/bootanim_openstation.sha256
+chmod 644 /data/local/openstation/bootanim_openstation.sha256
+
+if [ "$SYNC_BA" = "1" ]; then
+    if [ "$CUR_SYS_SHA" != "$NEW_SHA" ]; then
+        mount -o rw,remount / 2>/dev/null || mount -o remount,rw /
+        cleanup_ba() {
+            rm -f /system/media/bootanimation.zip.tmp
+            sync
+            mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
+        }
+        trap cleanup_ba EXIT
+        mkdir -p /system/media
+        cp -f /data/local/tmp/openstation_bootanim.zip /system/media/bootanimation.zip.tmp
+        chown 0:0 /system/media/bootanimation.zip.tmp 2>/dev/null || true
+        chmod 644 /system/media/bootanimation.zip.tmp
+        chcon u:object_r:system_file:s0 /system/media/bootanimation.zip.tmp 2>/dev/null || true
+        mv -f /system/media/bootanimation.zip.tmp /system/media/bootanimation.zip
+        chown 0:0 /system/media/bootanimation.zip 2>/dev/null || true
+        chmod 644 /system/media/bootanimation.zip
+        chcon u:object_r:system_file:s0 /system/media/bootanimation.zip 2>/dev/null || true
+        restorecon /system/media/bootanimation.zip 2>/dev/null || true
+        sync
+        mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
+        trap - EXIT
+        AFTER_SHA=$(sha256sum /system/media/bootanimation.zip | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n')
+        [ "$AFTER_SHA" = "$NEW_SHA" ] || { echo "BOOTANIM_SHA_MISMATCH $AFTER_SHA != $NEW_SHA" >&2; exit 1; }
+        echo "BOOTANIM_INSTALLED=$NEW_SHA"
+    else
+        echo "BOOTANIM_UP_TO_DATE=$NEW_SHA"
+    fi
+    rm -f /data/local/openstation/bootanim_custom.sha256
+else
+    echo "BOOTANIM_SKIPPED_USER_CHOICE"
+fi
+rm -f /data/local/tmp/openstation_bootanim.zip
+'@).Replace("__NEW_SHA__", $bootAnimHash).Replace("__SYNC_BA__", $(if ($syncBootAnim) { "1" } else { "0" }))
+    $baOut = (Invoke-AdbSh $baScript | Out-String).Trim()
+    if ($baOut) { Write-Host "  $baOut" -ForegroundColor Gray }
+    if (($baOut -match "BOOTANIM_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\bootanimation.zip.stock"))) {
+        Invoke-Adb @("pull", "/data/local/openstation/backup/bootanimation.zip.stock", "$BackupLocalDir\bootanimation.zip.stock")
+    }
+}
 
 Invoke-AdbSh @'
 set -e
@@ -1250,17 +1340,22 @@ if ($UseFirmware -and (Test-Path $localFwManifest)) {
     } catch {}
 }
 if (-not $manifestPushed) {
+    $genFiles = [ordered]@{
+        daemon   = [ordered]@{ fileName = "openstationd"; size = [int64](Get-Item $DaemonBin).Length; sha256 = $daemonHash }
+        launcher = [ordered]@{ fileName = "OpenStationLauncher.apk"; size = [int64](Get-Item $LauncherApk).Length; sha256 = $launcherHash }
+        ime      = [ordered]@{ fileName = "OpenStationIME.apk"; size = [int64](Get-Item $ImeApk).Length; sha256 = $imeHash }
+    }
+    if ($BootAnimZip -and (Test-Path $BootAnimZip)) {
+        $baHash = (Get-FileHash -Path $BootAnimZip -Algorithm SHA256).Hash.ToLowerInvariant()
+        $genFiles["bootanimation"] = [ordered]@{ fileName = "bootanimation.zip"; size = [int64](Get-Item $BootAnimZip).Length; sha256 = $baHash }
+    }
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.2.1"
+        version      = "1.2.2"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        files        = [ordered]@{
-            daemon   = [ordered]@{ fileName = "openstationd"; size = [int64](Get-Item $DaemonBin).Length; sha256 = $daemonHash }
-            launcher = [ordered]@{ fileName = "OpenStationLauncher.apk"; size = [int64](Get-Item $LauncherApk).Length; sha256 = $launcherHash }
-            ime      = [ordered]@{ fileName = "OpenStationIME.apk"; size = [int64](Get-Item $ImeApk).Length; sha256 = $imeHash }
-        }
+        files        = $genFiles
     } | ConvertTo-Json -Depth 6
     $b64Mf = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($genMf -replace "`r", "") + "`n"))
     Invoke-AdbSh "echo $b64Mf | base64 -d > /data/local/openstation/firmware_manifest.json && chmod 644 /data/local/openstation/firmware_manifest.json"
@@ -1328,7 +1423,7 @@ if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "  OpenStation Max v1.2.1 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.2.2 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
 Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
 Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
 Write-Host "  АВТОНОМНАЯ РАБОТА: Все серверы работают на самой станции — ПК больше не нужен!" -ForegroundColor Yellow
