@@ -138,6 +138,13 @@ class MainActivity : Activity() {
     private var stationRingGlowBg: GradientDrawable? = null
     private lateinit var ivDialRing: ImageView
     private var dialAnimator: ObjectAnimator? = null
+    private lateinit var btnOtaUpdate: TextView
+    @Volatile private var otaLatestJson: JSONObject? = null
+    private var otaDialog: AlertDialog? = null
+    private var otaDialogStatusTv: TextView? = null
+    private var otaDialogChangelogTv: TextView? = null
+    private var otaDialogInstallBtn: android.widget.Button? = null
+    private var lastOtaBtnKey = ""
 
     // Hardware quick-control tiles (Screen 2)
     private lateinit var tileRing: HwTileViews
@@ -184,6 +191,8 @@ class MainActivity : Activity() {
     @Volatile private var daemonOnline = false
     @Volatile private var cachedAppsJson = ""
     private var lastQrIp = ""
+    private var setupCompletedState: Boolean? = null
+    private var wizardAutoOpenedThisRun = false
 
     // Cached formatters & diff keys to eliminate redundant main-thread allocations/relayouts
     private val ruLocale = Locale("ru")
@@ -327,6 +336,9 @@ class MainActivity : Activity() {
         pageAnimator?.cancel()
         vinylAnimator?.cancel()
         dialAnimator?.cancel()
+        handler.removeCallbacks(otaDialogPollRunnable)
+        try { otaDialog?.dismiss() } catch (_: Throwable) {}
+        otaDialog = null
         try { unregisterReceiver(pkgReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(musicStateReceiver) } catch (_: Throwable) {}
         super.onDestroy()
@@ -1258,9 +1270,50 @@ class MainActivity : Activity() {
             textSize = 11f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
         }
+        val btnWizard = TextView(this).apply {
+            text = "✨ Мастер"
+            setTextColor(Color.parseColor("#0B0F17"))
+            textSize = 10.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            setBackgroundResource(R.drawable.bg_pill_gold)
+            isFocusable = true
+            isClickable = true
+            setOnFocusChangeListener { v, hasFocus ->
+                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(90).start()
+            }
+            setOnClickListener { openSetupWizard(manual = true) }
+        }
+        val telemetryRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        btnOtaUpdate = TextView(this).apply {
+            text = "⬇ OTA"
+            setTextColor(Color.parseColor("#E2E8F0"))
+            textSize = 10.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(9), dp(4), dp(9), dp(4))
+            setBackgroundResource(R.drawable.bg_pill)
+            isFocusable = true
+            isClickable = true
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(6)
+            }
+            setOnFocusChangeListener { v, hasFocus ->
+                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(90).start()
+            }
+            setOnClickListener { openOtaDialog() }
+        }
+        telemetryRow.addView(tvStationTelemetry)
+        telemetryRow.addView(btnOtaUpdate)
+        telemetryRow.addView(btnWizard)
         stationCard.addView(divider)
-        stationCard.addView(tvStationTelemetry)
+        stationCard.addView(telemetryRow)
         topSplit.addView(stationCard)
 
         // Right Card: 8 Hardware Quick Controls (4 rows x 2 columns)
@@ -2236,12 +2289,14 @@ class MainActivity : Activity() {
                     volumePct = audio?.optInt("volumePercent", volumePct) ?: volumePct
                     assistantState = ast?.optString("state", "idle") ?: "idle"
                     assistantEnabled = astCfg?.optBoolean("enabled", true) ?: true
+                    val setupDone = cfg?.optBoolean("setupCompleted", false) ?: false
                     val wasOffline = !daemonOnline
                     daemonOnline = true
                     if (wasOffline && cachedAppsJson.isNotEmpty()) {
                         httpPostJson("http://127.0.0.1:8080/api/apps/cache", cachedAppsJson)
                     }
                     val daemonMusic = root.optJSONObject("music")
+                    val daemonOta = root.optJSONObject("ota")
 
                     // Fallback reconciliation if UDP packet missed or first open after boot
                     if (ast != null) {
@@ -2295,7 +2350,26 @@ class MainActivity : Activity() {
                         } else if (daemonMusic != null && daemonMusic.optLong("seq", 0L) > 0L) {
                             renderMusicSnapshot(YmPlayerSnapshot.fromJson(daemonMusic))
                         }
+                        applyOtaUi(daemonOta)
                         syncPills()
+
+                        val prevSetupDone = setupCompletedState
+                        if (prevSetupDone == true && !setupDone) {
+                            getSharedPreferences(SetupWizardActivity.PREFS_NAME, MODE_PRIVATE)
+                                .edit()
+                                .remove(SetupWizardActivity.KEY_WIZARD_DISMISSED_VER)
+                                .apply()
+                            wizardAutoOpenedThisRun = false
+                        }
+                        setupCompletedState = setupDone
+                        if (!setupDone && !wizardAutoOpenedThisRun) {
+                            val prefs = getSharedPreferences(SetupWizardActivity.PREFS_NAME, MODE_PRIVATE)
+                            val dismissedVer = prefs.getInt(SetupWizardActivity.KEY_WIZARD_DISMISSED_VER, 0)
+                            if (dismissedVer < SetupWizardActivity.CURRENT_WIZARD_VER) {
+                                wizardAutoOpenedThisRun = true
+                                openSetupWizard(manual = false)
+                            }
+                        }
                     }
                 } else {
                     conn.disconnect()
@@ -2609,6 +2683,199 @@ class MainActivity : Activity() {
             startActivity(i)
         } catch (t: Throwable) {
             Toast.makeText(this, "Не удалось открыть Яндекс Музыку: ${t.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val otaDialogPollRunnable = object : Runnable {
+        override fun run() {
+            if (otaDialog?.isShowing != true) return
+            thread(isDaemon = true) {
+                try {
+                    val conn = (URL("http://127.0.0.1:8080/api/ota/status").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 900
+                        readTimeout = 1200
+                    }
+                    if (conn.responseCode == 200) {
+                        val txt = conn.inputStream.bufferedReader().use { it.readText() }
+                        val o = JSONObject(txt)
+                        handler.post { applyOtaUi(o) }
+                    }
+                    conn.disconnect()
+                } catch (_: Throwable) {}
+            }
+            handler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun applyOtaUi(ota: JSONObject?) {
+        if (ota != null) otaLatestJson = ota
+        val cur = ota ?: otaLatestJson ?: return
+        val avail = cur.optBoolean("updateAvailable", false)
+        val busy = cur.optBoolean("busy", false)
+        val latestVer = cur.optString("latestVersion", "")
+        val pct = cur.optInt("progressPct", 0)
+        val key = "$avail|$busy|$latestVer|${if (busy) pct else -1}"
+        if (key != lastOtaBtnKey && ::btnOtaUpdate.isInitialized) {
+            lastOtaBtnKey = key
+            when {
+                busy -> {
+                    btnOtaUpdate.text = "⏳ $pct%"
+                    btnOtaUpdate.setBackgroundResource(R.drawable.bg_pill)
+                    btnOtaUpdate.setTextColor(Color.parseColor("#38BDF8"))
+                }
+                avail -> {
+                    btnOtaUpdate.text = if (latestVer.isNotBlank()) "⬇ v$latestVer" else "⬇ Обновить"
+                    btnOtaUpdate.setBackgroundResource(R.drawable.bg_pill_gold)
+                    btnOtaUpdate.setTextColor(Color.parseColor("#0B0F17"))
+                }
+                else -> {
+                    btnOtaUpdate.text = "⬇ OTA"
+                    btnOtaUpdate.setBackgroundResource(R.drawable.bg_pill)
+                    btnOtaUpdate.setTextColor(Color.parseColor("#E2E8F0"))
+                }
+            }
+        }
+        refreshOtaDialogViews()
+    }
+
+    private fun refreshOtaDialogViews() {
+        val dlg = otaDialog ?: return
+        if (!dlg.isShowing) return
+        val o = otaLatestJson
+        val tv = otaDialogStatusTv
+        val clTv = otaDialogChangelogTv
+        val instBtn = otaDialogInstallBtn
+        if (o == null) {
+            tv?.text = "Загрузка статуса OTA с openstationd..."
+            clTv?.visibility = View.GONE
+            instBtn?.isEnabled = false
+            return
+        }
+        val instVer = o.optString("installedVersion", "1.2.0")
+        val latVer = o.optString("latestVersion", "")
+        val repo = o.optString("repo", "Olegu621/OPENSTATION")
+        val branch = o.optString("branch", "main")
+        val st = o.optString("state", "idle")
+        val busy = o.optBoolean("busy", false)
+        val avail = o.optBoolean("updateAvailable", false)
+        val pct = o.optInt("progressPct", 0)
+        val ptxt = o.optString("progressText", "")
+        val err = o.optString("error", "")
+        val chArr = o.optJSONArray("changedComponents")
+        val comps = buildString {
+            if (chArr != null && chArr.length() > 0) {
+                for (i in 0 until chArr.length()) {
+                    if (i > 0) append(", ")
+                    append(chArr.optString(i))
+                }
+            }
+        }
+        tv?.text = buildString {
+            append("Установлена: v").append(instVer).append('\n')
+            append("GitHub: ").append(repo).append(" (").append(branch).append(")\n")
+            if (latVer.isNotBlank()) {
+                append("Последняя на GitHub: v").append(latVer)
+                if (comps.isNotBlank()) append(" [").append(comps).append(']')
+                append('\n')
+            }
+            append('\n')
+            when {
+                st == "error" -> append("✗ Ошибка: ").append(err.ifBlank { ptxt })
+                busy -> append("⏳ ").append(pct).append("% — ").append(ptxt)
+                avail -> append("✨ Доступно обновление! Проверяется SHA-256; ключи Gemini и Музыки сохранятся.")
+                st == "up_to_date" -> append("✓ ").append(ptxt.ifBlank { "Установлена актуальная версия" })
+                else -> append("Нажмите «Проверить GitHub» для проверки обновлений.")
+            }
+        }
+        val cl = o.optString("changelog", "")
+        if (cl.isNotBlank()) {
+            clTv?.visibility = View.VISIBLE
+            clTv?.text = "Что нового:\n$cl"
+        } else {
+            clTv?.visibility = View.GONE
+        }
+        instBtn?.isEnabled = !busy && (avail || st == "up_to_date")
+        instBtn?.text = when {
+            busy -> "Обновление ($pct%)..."
+            avail && latVer.isNotBlank() -> "Установить v$latVer"
+            else -> "Переустановить с GitHub"
+        }
+    }
+
+    private fun openOtaDialog() {
+        try { otaDialog?.dismiss() } catch (_: Throwable) {}
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(16), dp(22), dp(8))
+        }
+        val statusTv = TextView(this).apply {
+            setTextColor(Color.parseColor("#E2E8F0"))
+            textSize = 13.5f
+            setLineSpacing(dp(3).toFloat(), 1.0f)
+        }
+        val changelogTv = TextView(this).apply {
+            setTextColor(Color.parseColor("#93C5FD"))
+            textSize = 12.5f
+            setPadding(0, dp(10), 0, 0)
+            visibility = View.GONE
+        }
+        body.addView(statusTv)
+        body.addView(changelogTv)
+        otaDialogStatusTv = statusTv
+        otaDialogChangelogTv = changelogTv
+
+        val dlg = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("☁ Обновление прошивки (GitHub OTA)")
+            .setView(body)
+            .setPositiveButton("Установить обновление", null)
+            .setNeutralButton("Проверить GitHub", null)
+            .setNegativeButton("Закрыть") { d, _ -> d.dismiss() }
+            .create()
+        dlg.setOnDismissListener {
+            handler.removeCallbacks(otaDialogPollRunnable)
+            if (otaDialog === dlg) {
+                otaDialog = null
+                otaDialogStatusTv = null
+                otaDialogChangelogTv = null
+                otaDialogInstallBtn = null
+            }
+        }
+        otaDialog = dlg
+        dlg.show()
+
+        val posBtn = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
+        val neuBtn = dlg.getButton(AlertDialog.BUTTON_NEUTRAL)
+        otaDialogInstallBtn = posBtn
+        posBtn?.setOnClickListener {
+            val cur = otaLatestJson
+            val force = !(cur?.optBoolean("updateAvailable", false) ?: false)
+            posBtn.isEnabled = false
+            postAsync("http://127.0.0.1:8080/api/ota/install", JSONObject().put("force", force).toString())
+            Toast.makeText(this, "Запуск OTA с GitHub...", Toast.LENGTH_SHORT).show()
+            handler.removeCallbacks(otaDialogPollRunnable)
+            handler.postDelayed(otaDialogPollRunnable, 350L)
+        }
+        neuBtn?.setOnClickListener {
+            postAsync("http://127.0.0.1:8080/api/ota/check", "{}")
+            Toast.makeText(this, "Проверка GitHub...", Toast.LENGTH_SHORT).show()
+            handler.removeCallbacks(otaDialogPollRunnable)
+            handler.postDelayed(otaDialogPollRunnable, 250L)
+        }
+
+        refreshOtaDialogViews()
+        handler.removeCallbacks(otaDialogPollRunnable)
+        handler.post(otaDialogPollRunnable)
+    }
+
+    private fun openSetupWizard(manual: Boolean) {
+        try {
+            val i = Intent(this, SetupWizardActivity::class.java).apply {
+                putExtra(SetupWizardActivity.EXTRA_MANUAL, manual)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            startActivity(i)
+        } catch (t: Throwable) {
+            Toast.makeText(this, "Не удалось открыть мастер: ${t.message}", Toast.LENGTH_SHORT).show()
         }
     }
 

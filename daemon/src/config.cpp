@@ -53,6 +53,63 @@ std::string sanitize_topic(const std::string& raw) {
     return out.empty() ? std::string("openstation/station_max") : out;
 }
 
+std::string sanitize_github_repo(const std::string& raw) {
+    std::string s;
+    s.reserve(raw.size());
+    for (unsigned char uc : raw) {
+        if (uc <= 0x20 || uc >= 0x7F) continue;
+        s.push_back(static_cast<char>(uc));
+    }
+    const std::string p1 = "https://github.com/";
+    const std::string p2 = "http://github.com/";
+    if (s.rfind(p1, 0) == 0) s = s.substr(p1.size());
+    else if (s.rfind(p2, 0) == 0) s = s.substr(p2.size());
+    while (!s.empty() && s.front() == '/') s.erase(s.begin());
+    while (!s.empty() && s.back() == '/') s.pop_back();
+    if (s.size() > 4 && s.substr(s.size() - 4) == ".git") s.resize(s.size() - 4);
+    size_t slash = s.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= s.size() ||
+        s.find('/', slash + 1) != std::string::npos || s.find("..") != std::string::npos ||
+        s.size() > 128) {
+        return "Olegu621/OPENSTATION";
+    }
+    std::string owner = s.substr(0, slash);
+    std::string repo = s.substr(slash + 1);
+    auto valid_part = [](const std::string& p) {
+        if (p.empty() || p == "." || p == "..") return false;
+        for (unsigned char c : p) {
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!valid_part(owner) || !valid_part(repo)) return "Olegu621/OPENSTATION";
+    return s;
+}
+
+std::string sanitize_git_branch(const std::string& raw) {
+    std::string s;
+    s.reserve(raw.size());
+    for (unsigned char uc : raw) {
+        if (uc <= 0x20 || uc >= 0x7F) continue;
+        char c = static_cast<char>(uc);
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' || c == '/') {
+            s.push_back(c);
+        }
+        if (s.size() >= 96) break;
+    }
+    while (!s.empty() && s.front() == '/') s.erase(s.begin());
+    while (!s.empty() && s.back() == '/') s.pop_back();
+    if (s.empty() || s == "." || s == ".." || s.find("..") != std::string::npos ||
+        s.find("//") != std::string::npos) {
+        return "main";
+    }
+    return s;
+}
+
 } // namespace
 
 void DaemonConfig::sanitize_and_validate() {
@@ -155,6 +212,9 @@ void DaemonConfig::sanitize_and_validate() {
 
     mqtt.port = (mqtt.port >= 1 && mqtt.port <= 65535) ? mqtt.port : 1883;
     mqtt.base_topic = sanitize_topic(mqtt.base_topic);
+
+    ota.repo = sanitize_github_repo(ota.repo);
+    ota.branch = sanitize_git_branch(ota.branch);
 }
 
 json::Value DaemonConfig::to_json() const {
@@ -162,6 +222,7 @@ json::Value DaemonConfig::to_json() const {
     Value root = Value::make_obj();
     root["webPort"] = Value::make_int(web_port);
     root["deviceHostname"] = Value::make_str(device_hostname);
+    root["setupCompleted"] = Value::make_bool(setup_completed);
 
     Value lr = Value::make_obj();
     lr["mode"] = Value::make_str(led_ring.mode);
@@ -255,6 +316,12 @@ json::Value DaemonConfig::to_json() const {
     mq["discovery"] = Value::make_bool(mqtt.discovery);
     root["mqtt"] = std::move(mq);
 
+    Value ot = Value::make_obj();
+    ot["autoCheck"] = Value::make_bool(ota.auto_check);
+    ot["repo"] = Value::make_str(ota.repo);
+    ot["branch"] = Value::make_str(ota.branch);
+    root["ota"] = std::move(ot);
+
     return root;
 }
 
@@ -262,6 +329,7 @@ void DaemonConfig::from_json(const json::Value& v) {
     if (!v.is_obj()) return;
     if (auto* x = v.get("webPort"); x && x->is_num()) web_port = x->as_int(web_port);
     if (auto* x = v.get("deviceHostname"); x && x->is_str()) device_hostname = x->as_str(device_hostname);
+    if (auto* x = v.get("setupCompleted"); x && x->is_bool()) setup_completed = x->as_bool(setup_completed);
 
     if (auto* lr = v.get("ledRing"); lr && lr->is_obj()) {
         if (auto* x = lr->get("mode"); x && x->is_str()) led_ring.mode = x->as_str();
@@ -353,6 +421,12 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = mq->get("password"); x && x->is_str()) mqtt.password = x->as_str();
         if (auto* x = mq->get("baseTopic"); x && x->is_str()) mqtt.base_topic = x->as_str();
         if (auto* x = mq->get("discovery"); x && x->is_bool()) mqtt.discovery = x->as_bool();
+    }
+
+    if (auto* ot = v.get("ota"); ot && ot->is_obj()) {
+        if (auto* x = ot->get("autoCheck"); x && x->is_bool()) ota.auto_check = x->as_bool();
+        if (auto* x = ot->get("repo"); x && x->is_str()) ota.repo = x->as_str();
+        if (auto* x = ot->get("branch"); x && x->is_str()) ota.branch = x->as_str();
     }
 
     sanitize_and_validate();

@@ -47,6 +47,7 @@ add_executable(openstationd
     src/net/mqtt_client.cpp
     src/net/http_client.cpp
     src/net/web_tools.cpp
+    src/ota/ota_manager.cpp
     src/web/http_ws_server.cpp
     "${WEB_ASSETS_HDR}"
 )

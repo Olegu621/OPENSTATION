@@ -1,0 +1,25 @@
+{
+    "name":  "OpenStation Max",
+    "device":  "yandexstation_2",
+    "version":  "1.2.0",
+    "autonomous":  true,
+    "changelog":  "Автономный сервер, мастер настройки ТВ↔Телефон и обновления OTA по воздуху через GitHub.",
+    "buildTimeUtc":  "2026-11-11T14:11:16Z",
+    "files":  {
+                  "daemon":  {
+                                 "fileName":  "openstationd",
+                                 "size":  1970600,
+                                 "sha256":  "1c6668271518e7061eb014f366e224313d478684c933a97b69761bd043c0cbd2"
+                             },
+                  "launcher":  {
+                                   "fileName":  "OpenStationLauncher.apk",
+                                   "size":  4651594,
+                                   "sha256":  "3aa1d67eaec1128845f4e9d6f2e4a35e64d4f6cf742b16257b1b15e80f731f0e"
+                               },
+                  "ime":  {
+                              "fileName":  "OpenStationIME.apk",
+                              "size":  808866,
+                              "sha256":  "8da709fc18ed6e3a77c99f0667955c8053a38b8db6add09372824abbc20fbc7d"
+                          }
+              }
+}

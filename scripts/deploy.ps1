@@ -14,9 +14,11 @@ param(
     [string]$GeminiApiKey = $env:GEMINI_API_KEY,
     [string]$PrivateDnsHost = "dns.comss.one",
     [string]$ReleaseRepo = "Olegu621/OPENSTATION",
+    [switch]$UseFirmware,
     [switch]$UsePrebuilt,
     [switch]$SkipBuild,
-    [switch]$NoReboot
+    [switch]$NoReboot,
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,18 +36,69 @@ function Resolve-AdbExecutable {
     if (-not $cmdPath) { $cmdPath = (Get-Command adb -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
     $candidates = @(
         $cmdPath,
+        (Join-Path $RootDir "tools\platform-tools\adb.exe"),
+        (Join-Path $RootDir "platform-tools\adb.exe"),
         $(if ($env:ANDROID_HOME) { Join-Path $env:ANDROID_HOME "platform-tools\adb.exe" }),
         $(if ($env:ANDROID_SDK_ROOT) { Join-Path $env:ANDROID_SDK_ROOT "platform-tools\adb.exe" }),
         $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" }),
         "C:\Android\platform-tools\adb.exe",
-        (Join-Path $RootDir "platform-tools\adb.exe"),
         (Join-Path $HOME "OneDrive\Desktop\platform-tools\adb.exe"),
         (Join-Path $HOME "Desktop\platform-tools\adb.exe")
     )
     foreach ($c in $candidates) {
         if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
     }
-    throw "adb.exe не найден. Установите Platform Tools (winget install Google.PlatformTools) или передайте -AdbPath `"путь\к\adb.exe`"."
+
+    Write-Host "adb.exe не найден в системе — скачиваю официальный Google Platform Tools в tools\platform-tools\..." -ForegroundColor Yellow
+    $toolsDir = Join-Path $RootDir "tools"
+    $zipPath = Join-Path $toolsDir "platform-tools-latest-windows.zip"
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $toolsDir -Force
+        Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+        $dlAdb = Join-Path $toolsDir "platform-tools\adb.exe"
+        if (Test-Path $dlAdb) {
+            return (Resolve-Path $dlAdb).Path
+        }
+    } catch {
+        Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+        throw "adb.exe не найден, и не удалось скачать Platform Tools ($($_.Exception.Message)). Установите Android Platform Tools вручную и повторите."
+    }
+    throw "adb.exe не найден после распаковки Platform Tools."
+}
+
+function Test-HasFirmwarePackage {
+    $manifest = Join-Path $RootDir "firmware\manifest.json"
+    $d = Join-Path $RootDir "firmware\openstationd"
+    $i = Join-Path $RootDir "firmware\OpenStationIME.apk"
+    $l = Join-Path $RootDir "firmware\OpenStationLauncher.apk"
+    return ((Test-Path $manifest) -and (Test-Path $d) -and (Test-Path $i) -and (Test-Path $l))
+}
+
+function Test-HasBuildToolchain {
+    try {
+        $null = Resolve-AndroidSdkRoot
+        $null = Resolve-Java17Home
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-ConnectedAdbDevices {
+    $raw = (& $AdbPath devices 2>$null) -split "\r?\n"
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($ln in $raw) {
+        $t = $ln.Trim()
+        if (-not $t -or $t.StartsWith("List of devices") -or $t.StartsWith("*")) { continue }
+        $parts = $t -split "\s+"
+        if ($parts.Count -ge 2) {
+            $list.Add([pscustomobject]@{ Serial = $parts[0]; State = $parts[1] })
+        }
+    }
+    return $list
 }
 
 function Resolve-AndroidSdkRoot {
@@ -169,19 +222,89 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
     throw "Таймаут ожидания готовности Android (sys.boot_completed=1, system_server, settings, pm) ($TimeoutSec сек)"
 }
 
-Write-Host "=== OpenStation Max Deploy ===" -ForegroundColor Cyan
+Write-Host "=== OpenStation Max v1.2.0 Deploy ===" -ForegroundColor Cyan
 $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
 Write-Host "ADB: $AdbPath" -ForegroundColor Gray
 
-if (-not $GeminiApiKey) {
-    Write-Host "[!] Параметр -GeminiApiKey не передан (если ключ еще не задан на станции, добавьте его позже в http://<IP>:8080 -> Алиса)." -ForegroundColor DarkYellow
+if ($Interactive -and -not $DeviceSerial) {
+    while (-not $DeviceSerial) {
+        $devs = @(Get-ConnectedAdbDevices | Where-Object { $_.State -eq "device" })
+        if ($devs.Count -eq 1) {
+            Write-Host "Найдена станция по ADB: $($devs[0].Serial)" -ForegroundColor Green
+            $ans = Read-Host "Нажмите Enter чтобы прошить $($devs[0].Serial), или введите Wi-Fi IP станции"
+            if ([string]::IsNullOrWhiteSpace($ans)) {
+                $DeviceSerial = $devs[0].Serial
+            } else {
+                $DeviceSerial = $ans.Trim()
+            }
+        } elseif ($devs.Count -gt 1) {
+            Write-Host "Найдено несколько ADB-устройств:" -ForegroundColor Yellow
+            for ($idx = 0; $idx -lt $devs.Count; $idx++) {
+                Write-Host ("  [{0}] {1} ({2})" -f ($idx + 1), $devs[$idx].Serial, $devs[$idx].State)
+            }
+            $pick = Read-Host "Введите номер (1-$($devs.Count)) или Wi-Fi IP станции"
+            if ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $devs.Count) {
+                $DeviceSerial = $devs[[int]$pick - 1].Serial
+            } elseif (-not [string]::IsNullOrWhiteSpace($pick)) {
+                $DeviceSerial = $pick.Trim()
+            }
+        } else {
+            Write-Host "Устройства по USB ADB не обнаружены." -ForegroundColor DarkYellow
+            $inp = Read-Host "Подключите USB-кабель и нажмите Enter для поиска, ИЛИ введите Wi-Fi IP станции (напр. 192.168.0.20)"
+            if (-not [string]::IsNullOrWhiteSpace($inp)) {
+                $targetIp = $inp.Trim()
+                if ($targetIp -match '^\d+\.\d+\.\d+\.\d+$') { $targetIp = "${targetIp}:5555" }
+                Write-Host "Подключение к $targetIp..." -ForegroundColor Gray
+                & $AdbPath connect $targetIp
+                $DeviceSerial = $targetIp
+            }
+        }
+    }
+    if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+$') {
+        $DeviceSerial = "${DeviceSerial}:5555"
+    }
 }
 
 $DaemonBin = "$RootDir\daemon\build\openstationd"
 $ImeApk = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk"
 $LauncherApk = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk"
 
-if ($UsePrebuilt) {
+if (-not $UseFirmware -and -not $UsePrebuilt -and -not $SkipBuild) {
+    if (-not (Test-HasBuildToolchain) -and (Test-HasFirmwarePackage)) {
+        Write-Host "SDK/NDK/Gradle не найдены — автоматически использую готовую прошивку из firmware/!" -ForegroundColor Yellow
+        $UseFirmware = $true
+    }
+}
+
+if ($UseFirmware) {
+    Write-Host "[1/7] Проверка готовой прошивки в firmware/ (manifest.json + SHA-256)..." -ForegroundColor Yellow
+    $fwDir = Join-Path $RootDir "firmware"
+    $manifestPath = Join-Path $fwDir "manifest.json"
+    if (-not (Test-Path $manifestPath)) {
+        throw "Не найден файл $manifestPath. Выполните .\scripts\build_firmware.ps1 или передайте -UsePrebuilt."
+    }
+    $manifest = Get-Content -Raw $manifestPath -Encoding UTF8 | ConvertFrom-Json
+    Write-Host ("  Версия прошивки: {0} ({1}, autonomous={2})" -f $manifest.version, $manifest.device, $manifest.autonomous) -ForegroundColor Gray
+
+    foreach ($key in @("daemon", "launcher", "ime")) {
+        $entry = $manifest.files.$key
+        if (-not $entry) { throw "В manifest.json отсутствует запись '$key'" }
+        $fpath = Join-Path $fwDir $entry.fileName
+        if (-not (Test-Path $fpath)) { throw "Отсутствует файл прошивки: $fpath" }
+        $actualHash = (Get-FileHash -Path $fpath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash = ([string]$entry.sha256).ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            throw "Нарушена контрольная сумма SHA-256 файла $($entry.fileName)! Ожидалось $expectedHash, получено $actualHash."
+        }
+        Write-Host ("  OK: {0} ({1:N0} байт, SHA-256 совпал)" -f $entry.fileName, $entry.size) -ForegroundColor DarkGreen
+    }
+    $DaemonBin = Join-Path $fwDir $manifest.files.daemon.fileName
+    $LauncherApk = Join-Path $fwDir $manifest.files.launcher.fileName
+    $ImeApk = Join-Path $fwDir $manifest.files.ime.fileName
+    $SkipBuild = $true
+}
+
+if ($UsePrebuilt -and -not $UseFirmware) {
     Write-Host "[1/7] Скачивание готовых бинарников из GitHub Releases ($ReleaseRepo)..." -ForegroundColor Yellow
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DaemonBin) | Out-Null
@@ -276,6 +399,30 @@ if ($idOut -notmatch "uid=0") {
     throw "adbd должен работать от root (uid=0). Получено: $idOut"
 }
 Wait-BootCompleted -TimeoutSec 60
+
+if ($Interactive -and -not $GeminiApiKey) {
+    $existingKeyProbe = ((Invoke-AdbSh "cat /data/local/openstation/config.json 2>/dev/null || true") | Out-String).Trim()
+    $hasExistingKey = $false
+    if ($existingKeyProbe) {
+        try {
+            $tmpC = $existingKeyProbe | ConvertFrom-Json
+            if ($tmpC.assistant -and -not [string]::IsNullOrWhiteSpace([string]$tmpC.assistant.geminiApiKey)) {
+                $hasExistingKey = $true
+            }
+        } catch {}
+    }
+    if ($hasExistingKey) {
+        Write-Host "[*] На станции уже сохранён ключ Gemini API." -ForegroundColor Green
+        $kIn = Read-Host "Нажмите Enter чтобы сохранить существующий ключ, или введите новый ключ Gemini API"
+        if (-not [string]::IsNullOrWhiteSpace($kIn)) { $GeminiApiKey = $kIn.Trim() }
+    } else {
+        Write-Host "[*] Можно сразу указать ключ Google Gemini API (либо пропустить и ввести позже в Мастере настройки на ТВ / телефоне)." -ForegroundColor Cyan
+        $kIn = Read-Host "Gemini API key (Enter чтобы настроить позже в Мастере)"
+        if (-not [string]::IsNullOrWhiteSpace($kIn)) { $GeminiApiKey = $kIn.Trim() }
+    }
+} elseif (-not $GeminiApiKey) {
+    Write-Host "[!] Параметр -GeminiApiKey не передан (ключ можно задать прямо на ТВ/телефоне в Мастере настройки)." -ForegroundColor DarkYellow
+}
 
 Write-Host "[3/7] Резервное копирование оригинальных системных файлов Яндекса..." -ForegroundColor Yellow
 $BackupLocalDir = "$RootDir\backup"
@@ -458,48 +605,53 @@ mv /data/local/openstation/ym_app.new /data/local/openstation/ym_app
     }
 }
 
-if ($GeminiApiKey) {
-    $curCfgText = ((Invoke-AdbSh "cat /data/local/openstation/config.json 2>/dev/null || true") | Out-String).Trim()
-    $needSeed = $false
-    $cfgObj = $null
-    if (-not $curCfgText) {
-        $needSeed = $true
-        $cfgObj = [pscustomobject]@{
-            assistant = [pscustomobject]@{
+$curCfgText = ((Invoke-AdbSh "cat /data/local/openstation/config.json 2>/dev/null || true") | Out-String).Trim()
+$needSeed = $false
+$cfgObj = $null
+if (-not $curCfgText) {
+    $needSeed = $true
+    $cfgObj = [pscustomobject]@{
+        setupCompleted = $false
+        audio = [pscustomobject]@{
+            captureMode = "alsa_16ch"
+            kwsThreads = 1
+        }
+        assistant = [pscustomobject]@{
+            enabled = $true
+            mode = "gemini"
+            geminiApiKey = $(if ($GeminiApiKey) { $GeminiApiKey } else { "" })
+            geminiModel = "gemini-3.8-live"
+            geminiProxyHost = "ai-pool.comss.one"
+        }
+    }
+} elseif ($GeminiApiKey) {
+    try {
+        $cfgObj = $curCfgText | ConvertFrom-Json
+        if (-not ($cfgObj.PSObject.Properties.Name -contains "assistant") -or $null -eq $cfgObj.assistant) {
+            $cfgObj | Add-Member -NotePropertyName "assistant" -NotePropertyValue ([pscustomobject]@{
                 enabled = $true
                 mode = "gemini"
                 geminiApiKey = $GeminiApiKey
                 geminiModel = "gemini-3.8-live"
+                geminiProxyHost = "ai-pool.comss.one"
+            })
+            if ($cfgObj.PSObject.Properties.Name -contains "input" -and $null -ne $cfgObj.input -and [string]$cfgObj.input.actionShort -eq "wyoming") {
+                $cfgObj.input.actionShort = "assistant"
             }
+            $needSeed = $true
+        } elseif ([string]::IsNullOrWhiteSpace([string]$cfgObj.assistant.geminiApiKey) -or $Interactive) {
+            $cfgObj.assistant | Add-Member -Force -NotePropertyName "geminiApiKey" -NotePropertyValue $GeminiApiKey
+            $needSeed = $true
         }
-    } else {
-        try {
-            $cfgObj = $curCfgText | ConvertFrom-Json
-            if (-not ($cfgObj.PSObject.Properties.Name -contains "assistant") -or $null -eq $cfgObj.assistant) {
-                $cfgObj | Add-Member -NotePropertyName "assistant" -NotePropertyValue ([pscustomobject]@{
-                    enabled = $true
-                    mode = "gemini"
-                    geminiApiKey = $GeminiApiKey
-                    geminiModel = "gemini-3.8-live"
-                })
-                if ($cfgObj.PSObject.Properties.Name -contains "input" -and $null -ne $cfgObj.input -and [string]$cfgObj.input.actionShort -eq "wyoming") {
-                    $cfgObj.input.actionShort = "assistant"
-                }
-                $needSeed = $true
-            } elseif ([string]::IsNullOrWhiteSpace([string]$cfgObj.assistant.geminiApiKey)) {
-                $cfgObj.assistant | Add-Member -Force -NotePropertyName "geminiApiKey" -NotePropertyValue $GeminiApiKey
-                $needSeed = $true
-            }
-        } catch {
-            Write-Host "ПРЕДУПРЕЖДЕНИЕ: существующий config.json не удалось распарсить, оставлен без изменений" -ForegroundColor DarkYellow
-        }
+    } catch {
+        Write-Host "ПРЕДУПРЕЖДЕНИЕ: существующий config.json не удалось распарсить, оставлен без изменений" -ForegroundColor DarkYellow
     }
-    if ($needSeed -and $null -ne $cfgObj) {
-        $newCfgJson = ($cfgObj | ConvertTo-Json -Depth 10) -replace "`r", ""
-        $b64Cfg = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($newCfgJson + "`n"))
-        Invoke-AdbSh "echo $b64Cfg | base64 -d > /data/local/openstation/config.json && chmod 644 /data/local/openstation/config.json"
-        Write-Host "Ключ Gemini Live API добавлен в /data/local/openstation/config.json" -ForegroundColor Gray
-    }
+}
+if ($needSeed -and $null -ne $cfgObj) {
+    $newCfgJson = ($cfgObj | ConvertTo-Json -Depth 10) -replace "`r", ""
+    $b64Cfg = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($newCfgJson + "`n"))
+    Invoke-AdbSh "mkdir -p /data/local/openstation && echo $b64Cfg | base64 -d > /data/local/openstation/config.json && chmod 644 /data/local/openstation/config.json"
+    Write-Host "Конфигурация /data/local/openstation/config.json обновлена" -ForegroundColor Gray
 }
 
 Invoke-AdbSh @'
@@ -930,6 +1082,8 @@ put_if_diff global device_provisioned 1
 put_if_diff secure user_setup_complete 1
 put_if_diff secure install_non_market_apps 1
 put_if_diff global install_non_market_apps 1
+put_if_diff global stay_on_while_plugged_in 7
+put_if_diff global hdmi_control_enabled 1
 '@
 if (-not [string]::IsNullOrWhiteSpace($PrivateDnsHost)) {
     if ($PrivateDnsHost -notmatch '^[A-Za-z0-9.-]+$') {
@@ -1042,6 +1196,45 @@ Invoke-AdbSh "rm -f /data/local/openstation/pause_usb_guard /data/local/openstat
 Invoke-Adb @("push", $ImeApk, "/data/local/tmp/OpenStationIME.apk")
 Invoke-Adb @("push", $LauncherApk, "/data/local/tmp/OpenStationLauncher.apk")
 
+# Запись базового firmware_manifest.json на станцию для точной работы OTA через GitHub
+$localFwManifest = "$RootDir\firmware\manifest.json"
+$daemonHash = (Get-FileHash -Path $DaemonBin -Algorithm SHA256).Hash.ToLowerInvariant()
+$launcherHash = (Get-FileHash -Path $LauncherApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$imeHash = (Get-FileHash -Path $ImeApk -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifestPushed = $false
+if ($UseFirmware -and (Test-Path $localFwManifest)) {
+    Invoke-Adb @("push", $localFwManifest, "/data/local/openstation/firmware_manifest.json")
+    Invoke-AdbSh "chmod 644 /data/local/openstation/firmware_manifest.json"
+    $manifestPushed = $true
+} elseif (Test-Path $localFwManifest) {
+    try {
+        $mfObj = Get-Content -Raw $localFwManifest | ConvertFrom-Json
+        if ($mfObj.files.daemon.sha256 -eq $daemonHash -and
+            $mfObj.files.launcher.sha256 -eq $launcherHash -and
+            $mfObj.files.ime.sha256 -eq $imeHash) {
+            Invoke-Adb @("push", $localFwManifest, "/data/local/openstation/firmware_manifest.json")
+            Invoke-AdbSh "chmod 644 /data/local/openstation/firmware_manifest.json"
+            $manifestPushed = $true
+        }
+    } catch {}
+}
+if (-not $manifestPushed) {
+    $genMf = [ordered]@{
+        name         = "OpenStation Max"
+        device       = "yandexstation_2"
+        version      = "1.2.0"
+        autonomous   = $true
+        buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        files        = [ordered]@{
+            daemon   = [ordered]@{ fileName = "openstationd"; size = [int64](Get-Item $DaemonBin).Length; sha256 = $daemonHash }
+            launcher = [ordered]@{ fileName = "OpenStationLauncher.apk"; size = [int64](Get-Item $LauncherApk).Length; sha256 = $launcherHash }
+            ime      = [ordered]@{ fileName = "OpenStationIME.apk"; size = [int64](Get-Item $ImeApk).Length; sha256 = $imeHash }
+        }
+    } | ConvertTo-Json -Depth 6
+    $b64Mf = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($genMf -replace "`r", "") + "`n"))
+    Invoke-AdbSh "echo $b64Mf | base64 -d > /data/local/openstation/firmware_manifest.json && chmod 644 /data/local/openstation/firmware_manifest.json"
+}
+
 $check = Invoke-AdbSh @'
 set -e
 pm install -r -g -d /data/local/tmp/OpenStationIME.apk
@@ -1094,6 +1287,18 @@ ip -4 addr show wlan0 2>/dev/null | grep inet || true
 echo "=== DAEMON LOG ==="
 tail -n 20 /data/local/openstation/openstationd.log 2>/dev/null || cat /data/local/openstation/boot.log 2>/dev/null || true
 '@
-Write-Host ($check -join "`n")
+$checkText = $check -join "`n"
+Write-Host $checkText
 
-Write-Host "=== Готово! Откройте http://<IP-станции>:8080 в браузере ===" -ForegroundColor Green
+$stationIp = "127.0.0.1"
+if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
+    $stationIp = $Matches[1]
+}
+
+Write-Host ""
+Write-Host "========================================================================" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.2.0 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
+Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
+Write-Host "  АВТОНОМНАЯ РАБОТА: Все серверы работают на самой станции — ПК больше не нужен!" -ForegroundColor Yellow
+Write-Host "========================================================================" -ForegroundColor Green

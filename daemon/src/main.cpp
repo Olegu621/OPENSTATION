@@ -11,6 +11,7 @@
 #include "net/mdns_responder.hpp"
 #include "net/mqtt_client.hpp"
 #include "net/web_tools.hpp"
+#include "ota/ota_manager.hpp"
 #include "utils/json_min.hpp"
 #include "utils/logger.hpp"
 #include "web/http_ws_server.hpp"
@@ -40,6 +41,8 @@
 #include <vector>
 
 namespace {
+
+constexpr const char* kFirmwareVersion = "1.2.0";
 
 std::atomic<bool> g_stop{false};
 
@@ -241,6 +244,7 @@ bool spawn_detached(const std::vector<std::string>& args) {
     if (pid == 0) {
         pid_t pid2 = fork();
         if (pid2 == 0) {
+            setsid();
             int nullfd = open("/dev/null", O_RDWR);
             if (nullfd >= 0) {
                 dup2(nullfd, STDIN_FILENO);
@@ -248,6 +252,7 @@ bool spawn_detached(const std::vector<std::string>& args) {
                 dup2(nullfd, STDERR_FILENO);
                 if (nullfd > 2) ::close(nullfd);
             }
+            for (int fd = 3; fd < 1024; ++fd) ::close(fd);
             std::vector<char*> c_args;
             c_args.reserve(args.size() + 1);
             for (const auto& s : args) c_args.push_back(const_cast<char*>(s.c_str()));
@@ -498,6 +503,150 @@ ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, 
     return sr;
 }
 
+std::string trim_ws_copy(const std::string& s) {
+    size_t b = 0;
+    while (b < s.size() && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
+    size_t e = s.size();
+    while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r' || s[e - 1] == '\n')) --e;
+    return s.substr(b, e - b);
+}
+
+bool is_valid_dns_host(const std::string& host) {
+    if (host.empty() || host.size() > 128) return false;
+    for (unsigned char c : host) {
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+openstation::json::Value probe_gemini_live_json(const std::string& api_key_in,
+                                                const std::string& model_in,
+                                                const std::string& proxy_host_in) {
+    using namespace openstation;
+    using json::Value;
+
+    std::string key = trim_ws_copy(api_key_in);
+    std::string model = trim_ws_copy(model_in);
+    if (model.empty()) model = "gemini-3.8-live";
+    if (model.rfind("models/", 0) != 0) model = "models/" + model;
+    std::string proxy_host = trim_ws_copy(proxy_host_in);
+
+    Value res = Value::make_obj();
+    if (key.empty()) {
+        res["ok"] = Value::make_bool(false);
+        res["via"] = Value::make_str("");
+        res["latencyMs"] = Value::make_int(0);
+        res["code"] = Value::make_int(0);
+        res["error"] = Value::make_str("Укажите Gemini API Key");
+        return res;
+    }
+
+    ensure_sntp_time(1500);
+
+    std::string path = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=" + key;
+    Value gen_cfg = Value::make_obj();
+    Value mods = Value::make_arr();
+    mods.push(Value::make_str("AUDIO"));
+    gen_cfg["responseModalities"] = std::move(mods);
+    Value setup_inner = Value::make_obj();
+    setup_inner["model"] = Value::make_str(model);
+    setup_inner["generationConfig"] = std::move(gen_cfg);
+    Value setup_msg = Value::make_obj();
+    setup_msg["setup"] = std::move(setup_inner);
+    std::string setup_payload = setup_msg.dump(-1);
+
+    std::vector<std::string> targets;
+    targets.push_back(""); // direct first
+    if (!proxy_host.empty()) targets.push_back(proxy_host);
+
+    std::string last_err;
+    std::string last_via = "direct";
+    int last_code = 0;
+    int64_t last_ms = 0;
+
+    for (size_t idx = 0; idx < targets.size(); ++idx) {
+        const std::string& host_override = targets[idx];
+        last_via = host_override.empty() ? "direct" : host_override;
+        auto t0 = std::chrono::steady_clock::now();
+
+        TlsWsClient ws;
+        std::string err;
+        if (!ws.connect("generativelanguage.googleapis.com", 443, path,
+                        "/data/local/openstation/cacert.pem", err, 5500, host_override)) {
+            last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count();
+            last_err = err.empty() ? "TLS connect failed" : err;
+            last_code = 0;
+            continue;
+        }
+        if (!ws.send_text(setup_payload)) {
+            ws.close();
+            last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count();
+            last_err = "Failed to send Gemini setup";
+            last_code = 0;
+            continue;
+        }
+        WsFrame fr;
+        std::string rerr;
+        WsRecvStatus st = ws.recv_frame(fr, 5000, rerr);
+        ws.close();
+        last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0).count();
+
+        if (st == WsRecvStatus::Frame) {
+            Value j;
+            if (json::Parser::parse(fr.payload, j) && j.is_obj()) {
+                if (const auto* eo = j.get("error"); eo && eo->is_obj()) {
+                    const auto* msgp = eo->get("message");
+                    last_err = (msgp && msgp->is_str()) ? msgp->as_str() : "Gemini API error";
+                    last_code = 400;
+                    std::string low = last_err;
+                    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (low.find("location") != std::string::npos ||
+                        low.find("region") != std::string::npos ||
+                        low.find("country") != std::string::npos) {
+                        continue;
+                    }
+                    break;
+                }
+            }
+            res["ok"] = Value::make_bool(true);
+            res["via"] = Value::make_str(last_via);
+            res["latencyMs"] = Value::make_int(last_ms);
+            res["code"] = Value::make_int(0);
+            res["error"] = Value::make_str("");
+            return res;
+        } else if (st == WsRecvStatus::Closed) {
+            last_code = static_cast<int>(fr.close_code);
+            std::string reason = fr.payload.size() > 2 ? fr.payload.substr(2) : rerr;
+            last_err = reason.empty() ? ("WebSocket closed (" + std::to_string(last_code) + ")") : reason;
+            std::string low = last_err;
+            for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            bool geo = (last_code == 1007) ||
+                       (low.find("location") != std::string::npos) ||
+                       (low.find("country") != std::string::npos) ||
+                       (low.find("region") != std::string::npos);
+            if (!geo) {
+                break; // Clear auth / invalid key / model error: no need to mask with proxy failure
+            }
+        } else {
+            last_code = 0;
+            last_err = rerr.empty() ? "Timeout waiting for Gemini setupComplete" : rerr;
+        }
+    }
+
+    res["ok"] = Value::make_bool(false);
+    res["via"] = Value::make_str(last_via);
+    res["latencyMs"] = Value::make_int(last_ms);
+    res["code"] = Value::make_int(last_code);
+    res["error"] = Value::make_str(last_err);
+    return res;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -506,6 +655,10 @@ int main(int argc, char** argv) {
     mallopt(M_DECAY_TIME, 1);
 
     for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
+            printf("openstationd %s\n", kFirmwareVersion);
+            return 0;
+        }
         if (strcmp(argv[i], "--probe-audio") == 0) {
             openstation::AudioEngine::run_cli_probe();
             return 0;
@@ -637,6 +790,21 @@ int main(int argc, char** argv) {
     std::atomic<int> android_vol_max{15};
     auto start_tp = std::chrono::steady_clock::now();
 
+    std::mutex dns_mu;
+    std::string private_dns_mode_cache;
+    std::string private_dns_host_cache;
+    bool dns_late_probed = false;
+    auto refresh_private_dns_cache = [&]() {
+        std::string m = trim_ws_copy(run_cmd_capture("/system/bin/settings get global private_dns_mode 2>/dev/null"));
+        std::string h = trim_ws_copy(run_cmd_capture("/system/bin/settings get global private_dns_specifier 2>/dev/null"));
+        if (m == "null") m.clear();
+        if (h == "null") h.clear();
+        std::lock_guard<std::mutex> lk(dns_mu);
+        private_dns_mode_cache = std::move(m);
+        private_dns_host_cache = std::move(h);
+    };
+    refresh_private_dns_cache();
+
     AlsaMixer mixer;
     FramebufferHw leds;
     UinputKeys uinput;
@@ -647,6 +815,7 @@ int main(int argc, char** argv) {
     WyomingServer wyoming;
     MdnsResponder mdns;
     MqttClient mqtt;
+    OtaManager ota;
     HttpWsServer http;
 
     for (int attempt = 0; attempt < 5 && !g_stop.load(); ++attempt) {
@@ -679,6 +848,7 @@ int main(int argc, char** argv) {
         wyoming.update_config(c.wyoming);
         mdns.update_hostname(c.device_hostname);
         mqtt.update_config(c.mqtt);
+        ota.update_config(c.ota);
 
         // Notify Launcher Android AudioEffect EQ service
         json::Value lcmd = json::Value::make_obj();
@@ -1966,7 +2136,14 @@ int main(int argc, char** argv) {
         root["hostname"] = Value::make_str(c.device_hostname);
         root["ip"] = Value::make_str(MdnsResponder::detect_local_ipv4());
         root["uptimeSec"] = Value::make_int(up);
+        root["firmwareVersion"] = Value::make_str(kFirmwareVersion);
+        root["autonomous"] = Value::make_bool(true);
         root["device"] = Value::make_str("Yandex Station Max (yandexstation_2 / S905X2)");
+        {
+            std::lock_guard<std::mutex> lk(dns_mu);
+            root["privateDnsMode"] = Value::make_str(private_dns_mode_cache);
+            root["privateDnsHost"] = Value::make_str(private_dns_host_cache);
+        }
         root["hardware"] = leds.get_status_json();
 
         Value au = Value::make_obj();
@@ -1981,6 +2158,7 @@ int main(int argc, char** argv) {
         root["timers"] = timers.list_timers_json();
         root["wyoming"] = wyoming.get_status_json();
         root["mqtt"] = mqtt.get_status_json();
+        root["ota"] = ota.get_status_json();
         root["config"] = c.to_json();
         return root;
     };
@@ -2120,6 +2298,170 @@ int main(int argc, char** argv) {
                 }
                 bool ok = assistant.send_text_prompt(v.get("text")->as_str());
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}", ok ? 200 : 400);
+            }
+            if (req.method == "POST" && req.path == "/api/assistant/test") {
+                json::Value v;
+                json::Parser::parse(req.body, v);
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+                std::string key = c.assistant.gemini_api_key;
+                std::string model = c.assistant.gemini_model;
+                std::string proxy = c.assistant.gemini_proxy_host;
+                if (v.is_obj()) {
+                    if (const auto* k = v.get("geminiApiKey"); k && k->is_str() && !trim_ws_copy(k->as_str()).empty()) {
+                        key = k->as_str();
+                    }
+                    if (const auto* m = v.get("geminiModel"); m && m->is_str() && !trim_ws_copy(m->as_str()).empty()) {
+                        model = m->as_str();
+                    }
+                    if (const auto* p = v.get("geminiProxyHost"); p && p->is_str()) {
+                        proxy = p->as_str();
+                    }
+                }
+                json::Value pr = probe_gemini_live_json(key, model, proxy);
+                return HttpResponse::json(pr.dump(-1), 200);
+            }
+            if (req.method == "POST" && req.path == "/api/setup/complete") {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.setup_completed = true;
+                    c = cfg;
+                }
+                save_cfg(c);
+                json::Value st = build_status_json();
+                std::string out = st.dump(-1);
+                if (http.ws_client_count() > 0) {
+                    json::Value msg = json::Value::make_obj();
+                    msg["type"] = json::Value::make_str("telemetry");
+                    msg["data"] = std::move(st);
+                    http.broadcast_ws_text(msg.dump(-1));
+                }
+                return HttpResponse::json(out);
+            }
+            if (req.method == "POST" && req.path == "/api/setup/reset") {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.setup_completed = false;
+                    c = cfg;
+                }
+                save_cfg(c);
+                json::Value st = build_status_json();
+                std::string out = st.dump(-1);
+                if (http.ws_client_count() > 0) {
+                    json::Value msg = json::Value::make_obj();
+                    msg["type"] = json::Value::make_str("telemetry");
+                    msg["data"] = std::move(st);
+                    http.broadcast_ws_text(msg.dump(-1));
+                }
+                return HttpResponse::json(out);
+            }
+            if (req.method == "POST" && req.path == "/api/system/dns") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                std::string mode = "hostname";
+                if (const auto* mp = v.get("mode"); mp && mp->is_str()) mode = mp->as_str();
+                if (mode != "hostname" && mode != "opportunistic" && mode != "off") {
+                    return HttpResponse::json("{\"error\":\"invalid mode\"}", 400);
+                }
+                std::string host;
+                if (const auto* hp = v.get("host"); hp && hp->is_str()) host = trim_ws_copy(hp->as_str());
+                if (mode == "hostname" && !is_valid_dns_host(host)) {
+                    return HttpResponse::json("{\"error\":\"invalid dns host\"}", 400);
+                }
+                std::string cmd = "/system/bin/settings put global private_dns_mode " + mode;
+                if (mode == "hostname" && !host.empty()) {
+                    cmd += " && /system/bin/settings put global private_dns_specifier " + host;
+                }
+                ShellResult sr = run_shell_with_timeout(cmd, 4, 256);
+                refresh_private_dns_cache();
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(!sr.timed_out && sr.exit_code == 0);
+                {
+                    std::lock_guard<std::mutex> lk(dns_mu);
+                    out["mode"] = json::Value::make_str(private_dns_mode_cache);
+                    out["host"] = json::Value::make_str(private_dns_host_cache);
+                }
+                if (!sr.output.empty()) out["output"] = json::Value::make_str(sr.output);
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/system/restart_daemon") {
+                spawn_detached({
+                    "/system/bin/sh", "-c",
+                    "sleep 0.5; killall openstationd 2>/dev/null || true; sleep 1; "
+                    "export LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64; "
+                    "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1"
+                });
+                return HttpResponse::json("{\"ok\":true}");
+            }
+            if (req.method == "POST" && req.path == "/api/system/reboot") {
+                spawn_detached({
+                    "/system/bin/sh", "-c",
+                    "sleep 0.6; /system/bin/svc power reboot || /system/bin/reboot"
+                });
+                return HttpResponse::json("{\"ok\":true}");
+            }
+            if (req.method == "GET" && req.path == "/api/ota/status") {
+                return HttpResponse::json(ota.get_status_json().dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/ota/check") {
+                if (!req.body.empty()) {
+                    json::Value v;
+                    if (json::Parser::parse(req.body, v) && v.is_obj()) {
+                        DaemonConfig c;
+                        bool updated = false;
+                        {
+                            std::lock_guard<std::mutex> lk(cfg_mu);
+                            if (const auto* rp = v.get("repo"); rp && rp->is_str()) {
+                                cfg.ota.repo = rp->as_str();
+                                updated = true;
+                            }
+                            if (const auto* br = v.get("branch"); br && br->is_str()) {
+                                cfg.ota.branch = br->as_str();
+                                updated = true;
+                            }
+                            if (const auto* ac = v.get("autoCheck"); ac && ac->is_bool()) {
+                                cfg.ota.auto_check = ac->as_bool(cfg.ota.auto_check);
+                                updated = true;
+                            }
+                            if (updated) {
+                                cfg.sanitize_and_validate();
+                                c = cfg;
+                            }
+                        }
+                        if (updated) {
+                            ota.update_config(c.ota);
+                            save_cfg(c);
+                        }
+                    }
+                }
+                bool started = ota.check_now();
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(started);
+                out["started"] = json::Value::make_bool(started);
+                out["ota"] = ota.get_status_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/ota/install") {
+                bool force = false;
+                if (!req.body.empty()) {
+                    json::Value v;
+                    if (json::Parser::parse(req.body, v) && v.is_obj()) {
+                        if (const auto* fp = v.get("force"); fp) force = fp->as_bool(false);
+                    }
+                }
+                OtaInstallStartResult r = ota.start_install(force);
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(r.accepted);
+                out["message"] = json::Value::make_str(r.message);
+                out["ota"] = ota.get_status_json();
+                return HttpResponse::json(out.dump(-1));
             }
             if (req.method == "POST" && req.path == "/api/audio/volume") {
                 json::Value v;
@@ -2333,6 +2675,15 @@ int main(int argc, char** argv) {
             }
         });
 
+    ota.start(kFirmwareVersion, cfg.ota, [&](const json::Value& st) {
+        if (http.ws_client_count() > 0) {
+            json::Value msg = json::Value::make_obj();
+            msg["type"] = json::Value::make_str("ota");
+            msg["data"] = st;
+            http.broadcast_ws_text(msg.dump(-1));
+        }
+    });
+
     // Non-blocking loopback UDP 8087 receiver for low-overhead visualizer spectrum updates (96-byte float[24] or JSON)
     int spec_udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (spec_udp_fd >= 0) {
@@ -2421,6 +2772,16 @@ int main(int argc, char** argv) {
 
         if ((now - last_mqtt_tp) >= std::chrono::seconds(5)) {
             last_mqtt_tp = now;
+            if (!dns_late_probed &&
+                std::chrono::duration_cast<std::chrono::seconds>(now - start_tp).count() >= 12) {
+                bool empty_dns = false;
+                {
+                    std::lock_guard<std::mutex> lk(dns_mu);
+                    empty_dns = private_dns_mode_cache.empty() || private_dns_host_cache.empty();
+                }
+                if (empty_dns) refresh_private_dns_cache();
+                dns_late_probed = true;
+            }
             if (mqtt.is_connected()) {
                 DaemonConfig c;
                 {
@@ -2458,6 +2819,7 @@ int main(int argc, char** argv) {
     LOGI("Main", "Shutting down...");
     if (spec_udp_fd >= 0) ::close(spec_udp_fd);
     Logger::instance().set_sink(nullptr);
+    ota.stop();
     timers.stop();
     http.stop();
     mqtt.stop();

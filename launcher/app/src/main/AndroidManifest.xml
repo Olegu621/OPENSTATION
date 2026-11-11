@@ -54,6 +54,12 @@
             android:launchMode="singleTask" />
 
         <activity
+            android:name=".SetupWizardActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask" />
+
+        <activity
             android:name=".VoiceAssistActivity"
             android:excludeFromRecents="true"
             android:exported="true"

@@ -7,9 +7,10 @@
 [![Platform](https://img.shields.io/badge/Устройство-Яндекс_Станция_Макс_(yandexstation__2)-6c5ce7)](#)
 [![Android](https://img.shields.io/badge/Android-9_Pie_(API_28_%7C_arm64--v8a)-00b894)](#)
 [![AI](https://img.shields.io/badge/ИИ-Gemini_3.8_Live_+_Sherpa--ONNX-00d2ff)](#)
+[![Autonomous](https://img.shields.io/badge/Сервер-100%25_на_станции_(без_ПК)-10b981)](#-полная-автономность-без-пк)
 [![Reversible](https://img.shields.io/badge/Откат_на_сток-100%25_обратимо-f59e0b)](#-полный-откат-к-заводской-прошивке-яндекса)
 
-*Живая 60fps сфера с морфингом в док-бар и системный оверлей поверх всех приложений, нативная Яндекс Музыка с «Моей волной», полное управление LED-кольцом, матричным экраном, усилителями, микрофонами, HDMI-CEC и умным домом Home Assistant.*
+*Полностью автономная прошивка для Яндекс Станции Макс v1.2.0: живая 60fps сфера с морфингом в док-бар и системный оверлей поверх всех приложений, голос «Алисы» (Gemini Live + офлайн KWS), нативная Яндекс Музыка с «Моей волной», мастер настройки ТВ ↔ телефон и собственный веб-сервер прямо внутри колонки.*
 
 <br/>
 
@@ -134,109 +135,81 @@
 
 ---
 
-## 🚀 Понятная установка с нуля (для всех)
+## 🔋 Полная автономность (без ПК)
 
-> Установка **не затрагивает загрузчик и системные разделы** — все оригинальные сервисы и политики Яндекса сохраняются в папку `backup/`, и в любой момент можно вернуться на заводскую прошивку одной командой.
+Компьютер нужен **только один раз — на момент прошивки** (`FLASH_OPENSTATION.bat`). После перезагрузки кабель можно отключать — вся система живёт и работает внутри самой Станции Макс:
+
+- **Системный демон `openstationd` (C++):** автозапуск из `/vendor/bin/rc_local.sh`, встроенный HTTP/WebSocket-сервер (`:8080`), mDNS (`http://station-max.local:8080`), офлайн Wake Word `"Алиса"`, голосовой поток Gemini Live + SNI-fallback, Wyoming Satellite (`:10700`), MQTT, HDMI-CEC и управление железом.
+- **Локальный музыкальный сервер и плеер:** нативный `ExoPlayer` + локальный сервер Яндекс Музыки (`127.0.0.1:18080`) прямо на Android внутри колонки.
+- **On-device диагностика и управление:** смена Private DNS (`dns.comss.one`), тест Gemini Live прямо со станции, перезапуск демона и перезагрузка колонки с телефона или ТВ.
+
+---
+
+## ⚡ Прошивка в 1 клик (`FLASH_OPENSTATION.bat`)
+
+> Установка **не затрагивает загрузчик и системные разделы** — все оригинальные сервисы и политики Яндекса сохраняются в папку `backup/`, и в любой момент можно вернуться на заводскую прошивку батником [`ROLLBACK_STOCK.bat`](ROLLBACK_STOCK.bat).
 
 ### Что понадобится
 
 1. **Яндекс Станция Макс (`yandexstation_2`)** с активным **root ADB** (по USB-кабелю Type-C ↔ ПК или по Wi-Fi `IP:5555`).
-2. **Компьютер на Windows 10 / 11.**
-3. **API-ключ Google Gemini** (бесплатный, делается за 1 минуту).
+2. **Компьютер на Windows 10 / 11** *(только на 2 минуты прошивки — компиляторы и даже `adb` ставить заранее не обязательно!)*.
+3. **Бесплатный API-ключ Google Gemini** *(делается за 1 минуту на [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — можно ввести как в батнике, так и потом на ТВ/телефоне в Мастере настройки)*.
+
+### Пошагово
+
+1. Скачайте репозиторий (**Code → Download ZIP** вверху GitHub и распакуйте, либо `git clone https://github.com/Olegu621/OPENSTATION.git`).
+2. Подключите Станцию Макс к ПК по USB Type-C *(или узнайте её IP в вашей Wi-Fi сети)*.
+3. Запустите двойным кликом **[`FLASH_OPENSTATION.bat`](FLASH_OPENSTATION.bat)** и выберите:
+   - **`[1]`** — автопоиск по USB и установка готовой проверенной прошивки из `firmware/`;
+   - **`[2]`** — подключение по Wi-Fi (введите IP колонки, например `192.168.0.20`);
+   - **`[3]`** — пересобрать всё из исходников (для разработчиков) и прошить.
+4. Если на ПК ещё не установлен `adb.exe`, установщик **сам скачает** официальный Google Platform Tools в `tools\platform-tools\`, проверит контрольные суммы SHA-256 прошивки (`firmware/manifest.json`), сохранит сток в `backup/`, пропишет `Private DNS = dns.comss.one`, прошьёт все компоненты и перезагрузит колонку.
+5. После перезагрузки **отсоедините ПК** — на экране телевизора автоматически откроется **Мастер настройки OpenStation**.
 
 ---
 
-### Шаг 1. Получите бесплатный ключ Gemini API
+## ✨ Мастер настройки (на ТВ и на телефоне)
 
-1. Откройте [Google AI Studio — API Keys](https://aistudio.google.com/apikey) (войдите в Google-аккаунт).
-2. Нажмите **Create API key** → выберите или создайте проект → скопируйте ключ (обычно начинается с `AIza...` или `AQ.Ab8...`).
+При первом включении (или в любой момент по кнопке **«✨ Мастер»** на вкладке **«Станция»** и в шапке веб-пульта) доступен пошаговый мастер из 5 этапов:
 
----
-
-### Шаг 2. DNS для работы Gemini (`dns.comss.one`)
-
-В России и ряде регионов серверы Google Gemini без специального DNS не открываются или сбрасывают соединение с ошибкой `1007`.
-
-- **Ничего вручную настраивать не нужно:** скрипт установки `deploy.ps1` **автоматически** прописывает на колонке `Private DNS = dns.comss.one`, а также оставляет включённым резервный SNI-прокси `ai-pool.comss.one` в настройках ассистента.
-- *(Необязательно)* Если у вас уже настроен обход или DNS `dns.comss.one` прямо на роутере и вы не хотите менять настройки DNS на колонке, передайте флаг `-PrivateDnsHost ""` при запуске `deploy.ps1`.
+1. **Старт и связь:** проверка автономного сервера `:8080`, `station-max.local`, температуры SoC, матрицы `fb5` и статуса `Private DNS = dns.comss.one`.
+2. **Алиса (Gemini Live + KWS):** вставьте ключ Gemini API с телефона (отсканируйте QR-код на левой панели -> откроется `http://<IP>:8080/#wizard`) или прямо пультом на ТВ, выберите голос/характер, прокси fallback, нажмите **«Проверить Gemini Live»** и скажите **«Алиса»** вслух для проверки микрофонов.
+3. **Яндекс Музыка и звук:** вход в аккаунт Яндекса (по QR/коду на ТВ или OAuth-токеном в мастере с телефона), выбор маршрута выхода и эквалайзера, тест 440 Гц.
+4. **Свет, кнопки и ТВ:** тест кольца LED (`fb4`), кнопки Action и проверки HDMI-CEC (вкл/выкл телевизора).
+5. **Готово:** сохраняет настройку (`setupCompleted = true`) — при завершении с телефона мастер на ТВ закрывается автоматически и открывает главный экран с живой сферой.
 
 ---
 
-### Шаг 3. Установите ADB и проверьте подключение колонки
+## ☁ Обновления по воздуху (GitHub OTA)
 
-1. Откройте **PowerShell** от обычного пользователя и установите Android Platform Tools (`adb`):
-   ```powershell
-   winget install Google.PlatformTools
-   ```
-   *(Либо скачайте [Platform Tools с сайта Android](https://developer.android.com/tools/releases/platform-tools) и распакуйте в `C:\Android\platform-tools`.)*
-   После установки перезапустите окно PowerShell.
+После первоначальной прошивки подключать Станцию к ПК для обновлений больше **не нужно** — `openstationd` сам обновляет себя, ТВ-лаунчер (`OpenStationLauncher`) и клавиатуру (`OpenStationIME`) напрямую с GitHub:
 
-2. Подключите Станцию Макс к ПК по USB-кабелю **или** по Wi-Fi:
-   ```powershell
-   # Только если подключаетесь по Wi-Fi вместо USB (подставьте IP колонки):
-   adb connect 192.168.0.20:5555
-   ```
-
-3. Проверьте связь и права `root`:
-   ```powershell
-   adb devices
-   adb shell id
-   ```
-   В ответе должно быть устройство со статусом `device` и строкой `uid=0(root)`.
+- **Автоматическая проверка:** при запуске демон проверяет [`firmware/manifest.json`](firmware/manifest.json) на ветке `main` (`Olegu621/OPENSTATION`) и подсвечивает доступное обновление золотой кнопкой **«⬇ vX.Y.Z»** на экране **«Станция»** в ТВ-лаунчере и в шапке веб-пульта.
+- **Обновление в 1 клик (с ТВ или телефона):** откройте **⬇ OTA** на ТВ-экране *«Станция»* или карточку **«Обновления прошивки (GitHub OTA)»** в веб-пульте (**Умный дом & Система**), чтобы посмотреть список изменений и запустить установку.
+- **Строгая защита от сбоев:** проверяется модель устройства (`yandexstation_2`), свободное место на `/data`, точный размер и контрольная сумма **SHA-256** каждого файла, ZIP-заголовок APK и самотест нового `openstationd --version` до замены активных компонентов. Ваши ключи Gemini и сессия Яндекс Музыки (`config.json`) полностью сохраняются.
 
 ---
-
-### Шаг 4. Установите OpenStation Max одной командой
-
-Выберите удобный способ — **обычным пользователям подходит Вариант А** (ничего компилировать не нужно):
-
-#### Вариант А — Быстрая установка из готового релиза (рекомендуется для всех)
-
-Нужен только `adb` из Шага 3. Скрипт сам скачает свежие `openstationd`, `OpenStationLauncher` и `OpenStationIME`, сделает бэкап стока, настроит `dns.comss.one`, выдаст все разрешения и перезагрузит колонку:
-
-```powershell
-git clone https://github.com/Olegu621/OPENSTATION.git
-cd OPENSTATION
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 -UsePrebuilt -GeminiApiKey "ВСТАВЬТЕ_ВАШ_КЛЮЧ_GEMINI"
-```
-
-> **Нет установленного `git`?** Нажмите вверху страницы GitHub зелёную кнопку **Code → Download ZIP**, распакуйте архив (например, в `C:\OPENSTATION`), откройте PowerShell в этой папке и выполните последнюю строку `powershell -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 -UsePrebuilt -GeminiApiKey "..."`.
-
-> **Подключение по Wi-Fi вместо USB?** Добавьте `-DeviceSerial 192.168.0.20` (достаточно указать IP колонки).
-
-#### Вариант Б — Полная сборка из исходников (для разработчиков)
-
-Если вы хотите самостоятельно пересобрать C++-демон и Kotlin-приложения:
-
-```powershell
-git clone https://github.com/Olegu621/OPENSTATION.git
-cd OPENSTATION
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 -GeminiApiKey "ВСТАВЬТЕ_ВАШ_КЛЮЧ_GEMINI"
-```
 
 <details>
-<summary><b>Требуемые инструменты для сборки из исходников (скрипт найдёт их сам)</b></summary>
+<summary><b>🛠 Ручная установка через PowerShell / сборка из исходников</b></summary>
 
-`deploy.ps1` автоматически ищет SDK в `ANDROID_HOME`, `%LOCALAPPDATA%\Android\Sdk` и `C:\Android`:
-- **JDK 17** (`winget install EclipseAdoptium.Temurin.17.JDK`)
-- **Android SDK** (`platforms;android-34`, `build-tools;34.0.0`)
-- **Android NDK r26c** (`26.3.11579264`)
-- **CMake 3.22.1+** и **Ninja** (из SDK Manager или `winget install Kitware.CMake Ninja-build.Ninja`)
-- **Gradle 8.5+** (`C:\Android\gradle-8.5` или `PATH`)
-- **Python 3** (используется CMake-скриптом [`daemon/tools/embed_web.py`](daemon/tools/embed_web.py) для упаковки веб-панели в бинарник)
+1. Прошить готовую прошивку из `firmware/` без интерактивных вопросов (подставив свой ключ):
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 -UseFirmware -GeminiApiKey "ВСТАВЬТЕ_ВАШ_КЛЮЧ_GEMINI"
+   ```
+   *(Для Wi-Fi добавьте `-DeviceSerial 192.168.0.20`; если ключ не передавать, укажете его позже в Мастере настройки).*
+
+2. Пересобрать пакет `firmware/` (бинарник C++17 `openstationd`, `OpenStationLauncher.apk`, `OpenStationIME.apk`, `manifest.json` с SHA-256):
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_firmware.ps1
+   ```
+
+3. Скрипт [`scripts/deploy.ps1`](scripts/deploy.ps1) и [`scripts/build_firmware.ps1`](scripts/build_firmware.ps1) автоматически ищут SDK в `ANDROID_HOME`, `%LOCALAPPDATA%\Android\Sdk` и `C:\Android`:
+   - **JDK 17** (`winget install EclipseAdoptium.Temurin.17.JDK`)
+   - **Android SDK** (`platforms;android-34`, `build-tools;34.0.0`) + **NDK r26c** (`26.3.11579264`)
+   - **CMake 3.22.1+**, **Ninja**, **Gradle 8.5+**, **Python 3**
 
 </details>
-
-После окончания деплоя колонка перезагрузится, автоматически перейдёт на рабочий стол **OpenStation Max**, а в конце лога появится её локальный IP-адрес и адрес веб-пульта.
-
----
-
-### Шаг 5. Вход в Яндекс Музыку (по желанию)
-
-Чтобы работали персональные рекомендации **«Моя волна»**, **«Мне нравится»** и поиск полных треков:
-
-1. **На экране телевизора:** пультом перейдите на вкладку **«Музыка и ТВ» → «Полный плеер» → «Вход»** и отсканируйте QR-код / введите код в Яндексе.
-2. **Либо с телефона/ПК через веб-пульт:** откройте `http://<IP-станции>:8080` → вкладка **«Пульт, Музыка & ТВ»** → вставьте OAuth-токен Яндекса (`y0_...` или ссылку редиректа) → **«Войти по токену»**.
 
 ---
 
@@ -269,8 +242,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 -GeminiApiKey "В�
 
 Полезные флаги установщика [`scripts/deploy.ps1`](scripts/deploy.ps1):
 
-- `-UsePrebuilt` — скачать готовый бинарник `openstationd` и APK из раздела Releases и прошить без компиляции;
-- `-SkipBuild` — пропустить шаг компиляции и использовать уже собранные файлы в `daemon/build/` и `*/app/build/outputs/apk/`;
+- `-UseFirmware` — установить проверенные бинарники из локальной папки [`firmware/`](firmware/) с проверкой SHA-256 (используется в `FLASH_OPENSTATION.bat`);
+- `-Interactive` — интерактивный мастер выбора USB/Wi-Fi устройства и опционального ввода ключа Gemini API в консоли;
+- `-UsePrebuilt` — скачать готовый бинарник `openstationd` и APK из GitHub Releases;
+- `-SkipBuild` — пропустить компиляцию и использовать собранные файлы в `daemon/build/` и `*/app/build/outputs/apk/`;
 - `-DeviceSerial <id|IP>` — выбрать конкретную станцию (например `-DeviceSerial 192.168.0.20` или серийный номер ADB);
 - `-GeminiApiKey "<ключ>"` — записать/обновить ключ Gemini API в `/data/local/openstation/config.json`;
 - `-PrivateDnsHost "dns.comss.one"` — настроить Private DNS (передайте `""`, чтобы пропустить);
@@ -284,7 +259,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\deploy.ps1 -GeminiApiKey "В�
 
 ## 🔄 Полный откат к заводской прошивке Яндекса
 
-Скрипт аккуратно остановит демон `openstationd`, вернёт оригинальный `/vendor/bin/rc_local.sh`, восстановит `device_owner`, политики, заводскую клавиатуру, все пакеты Яндекса и перезагрузит колонку:
+Просто запустите двойным кликом **[`ROLLBACK_STOCK.bat`](ROLLBACK_STOCK.bat)** *(или выполните команду PowerShell ниже)* — скрипт остановит `openstationd`, вернёт оригинальный `/vendor/bin/rc_local.sh`, восстановит `device_owner`, политики, клавиатуру, пакеты Яндекса и перезагрузит колонку:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\rollback.ps1
@@ -311,10 +286,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\rollback.ps1 -UninstallApps
 ## 📁 Структура репозитория
 
 ```text
-├── assets/         # Модели sherpa-onnx/Silero VAD (KWS), cacert.pem и пакет Яндекс Музыки (ym_app.tar.gz)
-├── daemon/         # C++17 системный демон openstationd (LED, Audio, KWS, Gemini Live, Wyoming, MQTT, Web UI)
-├── docs/images/    # Скриншоты интерфейса ТВ, Яндекс Музыки и веб-пульта
-├── ime/            # Android TV клавиатура OpenStationIME (RU/EN + приём текста по UDP :8085)
-├── launcher/       # Android TV лаунчер OpenStationLauncher (3-экранная Сфера, оверлей, ExoPlayer Музыка)
-└── scripts/        # Автоматический установщик deploy.ps1, скрипт отката rollback.ps1 и сборщик prepare_ym_app.py
+├── FLASH_OPENSTATION.bat  # Прошивка в 1 клик (авто-ADB, SHA-256 проверка firmware/, USB/Wi-Fi)
+├── ROLLBACK_STOCK.bat     # Возврат на стоковую прошивку Яндекса в 1 клик
+├── firmware/              # Готовые бинарники openstationd, OpenStationLauncher.apk, OpenStationIME.apk + manifest.json
+├── assets/                # Модели sherpa-onnx/Silero VAD (KWS), cacert.pem и пакет Яндекс Музыки (ym_app.tar.gz)
+├── daemon/                # C++17 системный демон + автономный веб-сервер (LED, Audio, KWS, Gemini Live, Wyoming, MQTT)
+├── docs/images/           # Скриншоты интерфейса ТВ, Яндекс Музыки и веб-пульта
+├── ime/                   # Android TV клавиатура OpenStationIME (RU/EN + приём текста по UDP :8085)
+├── launcher/              # Android TV лаунчер OpenStationLauncher (Мастер настройки, Сфера, оверлей, Музыка)
+└── scripts/               # Установщик deploy.ps1, сборщик пакета build_firmware.ps1 и откат rollback.ps1
 ```

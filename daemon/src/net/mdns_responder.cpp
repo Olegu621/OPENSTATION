@@ -167,12 +167,37 @@ void MdnsResponder::stop() {
             ::close(sock_fd_);
             sock_fd_ = -1;
         }
+        joined_ip_.clear();
     }
 }
 
 void MdnsResponder::update_hostname(const std::string& hostname) {
     std::lock_guard<std::mutex> lk(mu_);
     hostname_ = sanitize_label(hostname);
+}
+
+void MdnsResponder::ensure_multicast_membership(const std::string& ip_str) {
+    if (ip_str.empty()) return;
+    int fd = -1;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (sock_fd_ < 0 || ip_str == joined_ip_) return;
+        fd = sock_fd_;
+    }
+    struct in_addr ina {};
+    if (inet_pton(AF_INET, ip_str.c_str(), &ina) != 1) return;
+
+    struct ip_mreq mreq {};
+    mreq.imr_multiaddr.s_addr = inet_addr(kMdnsAddr);
+    mreq.imr_interface = ina;
+    setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &ina, sizeof(ina));
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        joined_ip_ = ip_str;
+    }
+    LOGI("mDNS", "Multicast bound to IPv4 %s (%s.local)", ip_str.c_str(), hostname_.c_str());
 }
 
 void MdnsResponder::send_announcement(uint32_t ttl_sec) {
@@ -186,6 +211,7 @@ void MdnsResponder::send_announcement(uint32_t ttl_sec) {
     if (fd < 0) return;
     std::string ip_str = detect_local_ipv4();
     if (ip_str.empty()) return;
+    ensure_multicast_membership(ip_str);
 
     struct in_addr ina {};
     if (inet_pton(AF_INET, ip_str.c_str(), &ina) != 1) return;
@@ -296,7 +322,13 @@ void MdnsResponder::worker_loop() {
                 }
             }
         } else {
-            if (++ticks >= 25) {
+            std::string cur_ip = detect_local_ipv4();
+            bool ip_changed = false;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                ip_changed = (!cur_ip.empty() && cur_ip != joined_ip_);
+            }
+            if (ip_changed || ++ticks >= 25) {
                 ticks = 0;
                 send_announcement(120);
             }

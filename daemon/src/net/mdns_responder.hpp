@@ -20,9 +20,11 @@ public:
 
 private:
     void worker_loop();
+    void ensure_multicast_membership(const std::string& ip_str);
     void send_announcement(uint32_t ttl_sec);
 
     std::string hostname_ = "station-max";
+    std::string joined_ip_;
     int web_port_ = 8080;
     int wyoming_port_ = 10700;
     int sock_fd_ = -1;

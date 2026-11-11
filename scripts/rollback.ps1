@@ -7,7 +7,8 @@ param(
     [string]$AdbPath = "",
     [string]$DeviceSerial = "",
     [switch]$UninstallApps,
-    [switch]$NoReboot
+    [switch]$NoReboot,
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,18 +26,51 @@ function Resolve-AdbExecutable {
     if (-not $cmdPath) { $cmdPath = (Get-Command adb -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
     $candidates = @(
         $cmdPath,
+        (Join-Path $RootDir "tools\platform-tools\adb.exe"),
+        (Join-Path $RootDir "platform-tools\adb.exe"),
         $(if ($env:ANDROID_HOME) { Join-Path $env:ANDROID_HOME "platform-tools\adb.exe" }),
         $(if ($env:ANDROID_SDK_ROOT) { Join-Path $env:ANDROID_SDK_ROOT "platform-tools\adb.exe" }),
         $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" }),
         "C:\Android\platform-tools\adb.exe",
-        (Join-Path $RootDir "platform-tools\adb.exe"),
         (Join-Path $HOME "OneDrive\Desktop\platform-tools\adb.exe"),
         (Join-Path $HOME "Desktop\platform-tools\adb.exe")
     )
     foreach ($c in $candidates) {
         if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
     }
-    throw "adb.exe не найден. Установите Android Platform Tools (winget install Google.PlatformTools) или передайте -AdbPath `"путь\к\adb.exe`"."
+
+    Write-Host "adb.exe не найден в системе — скачиваю Google Platform Tools в tools\platform-tools\..." -ForegroundColor Yellow
+    $toolsDir = Join-Path $RootDir "tools"
+    $zipPath = Join-Path $toolsDir "platform-tools-latest-windows.zip"
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath $toolsDir -Force
+        Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+        $dlAdb = Join-Path $toolsDir "platform-tools\adb.exe"
+        if (Test-Path $dlAdb) {
+            return (Resolve-Path $dlAdb).Path
+        }
+    } catch {
+        Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+        throw "adb.exe не найден, и не удалось скачать Platform Tools ($($_.Exception.Message))."
+    }
+    throw "adb.exe не найден после распаковки Platform Tools."
+}
+
+function Get-ConnectedAdbDevices {
+    $raw = (& $AdbPath devices 2>$null) -split "\r?\n"
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($ln in $raw) {
+        $t = $ln.Trim()
+        if (-not $t -or $t.StartsWith("List of devices") -or $t.StartsWith("*")) { continue }
+        $parts = $t -split "\s+"
+        if ($parts.Count -ge 2) {
+            $list.Add([pscustomobject]@{ Serial = $parts[0]; State = $parts[1] })
+        }
+    }
+    return $list
 }
 
 if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+$') {
@@ -113,6 +147,43 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
 Write-Host "=== OpenStation Max Rollback ===" -ForegroundColor Cyan
 $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
 Write-Host "ADB: $AdbPath" -ForegroundColor Gray
+
+if ($Interactive -and -not $DeviceSerial) {
+    while (-not $DeviceSerial) {
+        $devs = @(Get-ConnectedAdbDevices | Where-Object { $_.State -eq "device" })
+        if ($devs.Count -eq 1) {
+            Write-Host "Найдена станция по ADB: $($devs[0].Serial)" -ForegroundColor Green
+            $ans = Read-Host "Нажмите Enter чтобы откатить $($devs[0].Serial), или введите Wi-Fi IP станции"
+            if ([string]::IsNullOrWhiteSpace($ans)) {
+                $DeviceSerial = $devs[0].Serial
+            } else {
+                $DeviceSerial = $ans.Trim()
+            }
+        } elseif ($devs.Count -gt 1) {
+            Write-Host "Найдено несколько ADB-устройств:" -ForegroundColor Yellow
+            for ($idx = 0; $idx -lt $devs.Count; $idx++) {
+                Write-Host ("  [{0}] {1} ({2})" -f ($idx + 1), $devs[$idx].Serial, $devs[$idx].State)
+            }
+            $pick = Read-Host "Введите номер (1-$($devs.Count)) или Wi-Fi IP станции"
+            if ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $devs.Count) {
+                $DeviceSerial = $devs[[int]$pick - 1].Serial
+            } elseif (-not [string]::IsNullOrWhiteSpace($pick)) {
+                $DeviceSerial = $pick.Trim()
+            }
+        } else {
+            $inp = Read-Host "Устройство не найдено по USB. Подключите USB и нажмите Enter ИЛИ введите Wi-Fi IP станции"
+            if (-not [string]::IsNullOrWhiteSpace($inp)) {
+                $targetIp = $inp.Trim()
+                if ($targetIp -match '^\d+\.\d+\.\d+\.\d+$') { $targetIp = "${targetIp}:5555" }
+                & $AdbPath connect $targetIp
+                $DeviceSerial = $targetIp
+            }
+        }
+    }
+    if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+$') {
+        $DeviceSerial = "${DeviceSerial}:5555"
+    }
+}
 
 Wait-AdbReady -TimeoutSec 60
 $idOut = (Invoke-Adb @("shell", "id") | Out-String)

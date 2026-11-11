@@ -360,7 +360,7 @@ HttpClientResponse perform_single(const HttpClientRequest& req) {
     }
 
     const bool use_tls = (u.scheme == "https");
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::clamp(req.timeout_ms, 500, 60000));
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::clamp(req.timeout_ms, 500, 180000));
     auto rem_ms = [&]() -> int {
         auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
                         deadline - std::chrono::steady_clock::now())

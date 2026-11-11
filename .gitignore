@@ -8,11 +8,18 @@ build/
 .cxx/
 */.cxx/
 *.apk
+!firmware/OpenStationLauncher.apk
+!firmware/OpenStationIME.apk
 *.aab
 *.ap_
 *.dex
 local.properties
 */local.properties
+
+# Downloaded portable tools & release archives
+tools/
+platform-tools/
+*.zip
 
 # IDE & OS metadata
 .idea/

@@ -11,6 +11,9 @@
   let toastTimer = null;
   let lastHistSig = "";
   let lastAlsaSig = "";
+  let wizStep = 1;
+  let wizPopulatedOnce = false;
+  let otaPendingRestart = false;
 
   function showToast(msg, isErr = false) {
     const t = $("toast");
@@ -167,6 +170,11 @@
         username: $("mqttUser").value,
         password: $("mqttPass").value,
         baseTopic: $("mqttTopic").value.trim() || "openstation/station_max"
+      },
+      ota: {
+        autoCheck: $("otaAutoCheck") ? $("otaAutoCheck").checked : true,
+        repo: ($("otaRepo") ? $("otaRepo").value.trim() : "") || "Olegu621/OPENSTATION",
+        branch: ($("otaBranch") ? $("otaBranch").value.trim() : "") || "main"
       }
     };
     try {
@@ -309,6 +317,77 @@
     }
   }
 
+  function applyOtaState(ota, fwVer) {
+    ota = ota || {};
+    const instVer = ota.installedVersion || fwVer || "1.2.0";
+    if ($("otaVersionBadge")) {
+      $("otaVersionBadge").textContent = `v${instVer}`;
+    }
+    const hdrBtn = $("badgeOtaUpdate");
+    if (hdrBtn) {
+      if (ota.updateAvailable && ota.latestVersion) {
+        hdrBtn.style.display = "inline-flex";
+        hdrBtn.textContent = `⬇ v${ota.latestVersion}`;
+      } else {
+        hdrBtn.style.display = "none";
+      }
+    }
+    const ban = $("otaStatusBanner");
+    if (ban) {
+      const st = ota.state || "idle";
+      const changedList = Array.isArray(ota.changedComponents) && ota.changedComponents.length
+        ? ` (${ota.changedComponents.join(", ")})`
+        : "";
+      if (st === "checking") {
+        ban.textContent = `⏳ ${ota.progressText || "Проверка GitHub..."}`;
+        ban.className = "status-banner warn";
+      } else if (st === "downloading" || st === "verifying" || st === "installing" || st === "restarting") {
+        ban.textContent = `⬇ ${ota.progressText || "Обновление прошивки..."}`;
+        ban.className = "status-banner live";
+      } else if (st === "available" || ota.updateAvailable) {
+        ban.textContent = `✨ Доступно обновление v${ota.latestVersion || "?"}${changedList}`;
+        ban.className = "status-banner warn";
+      } else if (st === "up_to_date") {
+        ban.textContent = `✓ ${ota.progressText || ("Установлена последняя версия v" + instVer)}`;
+        ban.className = "status-banner ok";
+      } else if (st === "error") {
+        ban.textContent = `✗ ${ota.error || ota.progressText || "Ошибка OTA"}`;
+        ban.className = "status-banner err";
+      } else {
+        ban.textContent = `Текущая версия v${instVer} · Репозиторий ${ota.repo || "Olegu621/OPENSTATION"}`;
+        ban.className = "status-banner";
+      }
+    }
+    const pw = $("otaProgressWrap");
+    const pf = $("otaProgressFill");
+    const pl = $("otaProgressLabel");
+    const inProg = !!(ota.busy || ["checking", "downloading", "verifying", "installing", "restarting"].includes(ota.state));
+    if (pw) {
+      pw.style.display = inProg ? "block" : "none";
+      if (pf) pf.style.width = `${Math.max(4, Math.min(100, ota.progressPct || 0))}%`;
+      if (pl) pl.textContent = `${ota.progressPct || 0}% · ${ota.progressText || ""}`;
+    }
+    const cl = $("otaChangelogBox");
+    if (cl) {
+      if (ota.changelog) {
+        cl.style.display = "block";
+        cl.textContent = `Список изменений (v${ota.latestVersion || instVer}): ${ota.changelog}`;
+      } else {
+        cl.style.display = "none";
+      }
+    }
+    if ($("btnOtaCheck")) $("btnOtaCheck").disabled = !!ota.busy;
+    if ($("btnOtaInstall")) {
+      $("btnOtaInstall").disabled = !!ota.busy;
+      $("btnOtaInstall").style.display = (ota.updateAvailable && !ota.busy) ? "inline-flex" : "none";
+      if (ota.latestVersion) $("btnOtaInstall").textContent = `⬇ Установить v${ota.latestVersion}`;
+    }
+    if ($("btnOtaReinstall")) {
+      $("btnOtaReinstall").disabled = !!ota.busy;
+      $("btnOtaReinstall").style.display = (!ota.updateAvailable && !ota.busy) ? "inline-flex" : "none";
+    }
+  }
+
   function applyAliceBanner(astState, ast, cfgAst) {
     const stRu = ALICE_STATE_RU[astState] || astState;
     const qb = $("btnQuickAlice");
@@ -413,10 +492,16 @@
 
     applyAliceBanner(ast.state || "idle", ast, cfg.assistant);
     applyMusicState(d.music || {});
+    applyOtaState(d.ota || {}, d.firmwareVersion);
+    if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
+      otaPendingRestart = false;
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.2.0") + " активна!");
+    }
     updateAliceLiveBox(ast.liveUserText || "", ast.liveModelText || "");
     if (Array.isArray(ast.history)) {
       renderAliceHistory(ast.history);
     }
+    syncWizardTelemetry(d, populateInputs);
 
     if (populateInputs && cfg.ledRing) {
       document.querySelectorAll("#ringModes .seg").forEach((b) => {
@@ -515,6 +600,9 @@
       $("mqttUser").value = cfg.mqtt?.username || "";
       $("mqttPass").value = cfg.mqtt?.password || "";
       $("mqttTopic").value = cfg.mqtt?.baseTopic || "openstation/station_max";
+      if ($("otaRepo")) $("otaRepo").value = cfg.ota?.repo || "Olegu621/OPENSTATION";
+      if ($("otaBranch")) $("otaBranch").value = cfg.ota?.branch || "main";
+      if ($("otaAutoCheck")) $("otaAutoCheck").checked = cfg.ota?.autoCheck !== false;
     } else if (!saveTimer) {
       if (cfg.ledRing?.mode) {
         document.querySelectorAll("#ringModes .seg").forEach((b) => {
@@ -598,8 +686,9 @@
    "pdmFilter", "captureMode", "primaryMicCh", "loopbackCh", "loopbackEn", "aecEn", "nsEn",
    "actShort", "actLong", "rotaryInvert", "rotaryStep", "wyoEn", "wyoAlways",
    "astEnabled", "astMode", "astVoice", "astModel", "astPrompt", "astWakeEn", "astKeywords",
-   "astKwsThreads", "astChime", "astSearch", "astEchoGuard", "astPreRoll", "astFollowUp", "astMaxSess", "astVadSilence"].forEach((id) => {
-    $(id).addEventListener("change", scheduleConfigPush);
+   "astKwsThreads", "astChime", "astSearch", "astEchoGuard", "astPreRoll", "astFollowUp", "astMaxSess", "astVadSilence",
+   "otaAutoCheck", "otaRepo", "otaBranch"].forEach((id) => {
+    if ($(id)) $(id).addEventListener("change", scheduleConfigPush);
   });
 
   $("btnSaveAll").addEventListener("click", () => pushConfig(true));
@@ -848,7 +937,14 @@
           const msg = JSON.parse(ev.data);
           if (msg.type === "telemetry") applyTelemetry(msg.data, state === null);
           else if (msg.type === "log") appendLog(msg.line);
-          else if (msg.type === "assistant_event") {
+          else if (msg.type === "ota") {
+            if (state) state.ota = msg.data;
+            applyOtaState(msg.data, state?.firmwareVersion);
+            if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
+              otaPendingRestart = false;
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.2.0"));
+            }
+          } else if (msg.type === "assistant_event") {
             const fakeAst = Object.assign({}, state?.assistant || {}, {
               state: msg.state || "idle",
               active: !["idle", "error"].includes(msg.state || "idle"),
@@ -882,10 +978,369 @@
     };
   }
 
+  async function runGeminiLiveTest(keyVal, modelVal, proxyVal, targetEl) {
+    if (targetEl) {
+      targetEl.textContent = "⏳ Проверка подключения к Gemini Live...";
+      if (targetEl.classList.contains("status-banner")) targetEl.className = "status-banner warn";
+    }
+    try {
+      const r = await api("/api/assistant/test", "POST", {
+        geminiApiKey: keyVal || "",
+        geminiModel: modelVal || "gemini-3.8-live",
+        geminiProxyHost: proxyVal ?? "ai-pool.comss.one"
+      });
+      if (r.ok) {
+        const msg = `✓ Gemini Live подключён (маршрут: ${r.via}, ${r.latencyMs} мс)`;
+        if (targetEl) {
+          targetEl.textContent = msg;
+          if (targetEl.classList.contains("status-banner")) targetEl.className = "status-banner ok";
+        }
+        showToast(msg);
+      } else {
+        const err = `✗ Ошибка Gemini Live${r.code ? " (" + r.code + ")" : ""}: ${r.error || "нет ответа"}`;
+        if (targetEl) {
+          targetEl.textContent = err;
+          if (targetEl.classList.contains("status-banner")) targetEl.className = "status-banner err";
+        }
+        showToast(err, true);
+      }
+      return r;
+    } catch (e) {
+      const msg = "Ошибка проверки: " + e.message;
+      if (targetEl) {
+        targetEl.textContent = msg;
+        if (targetEl.classList.contains("status-banner")) targetEl.className = "status-banner err";
+      }
+      showToast(msg, true);
+      return null;
+    }
+  }
+
+  function setWizardStep(step) {
+    wizStep = Math.max(1, Math.min(4, step));
+    document.querySelectorAll(".wiz-step-pill").forEach((b) => {
+      b.classList.toggle("active", parseInt(b.dataset.step, 10) === wizStep);
+    });
+    for (let i = 1; i <= 4; i++) {
+      const p = $("wizStep" + i);
+      if (p) p.classList.toggle("active", i === wizStep);
+    }
+    $("btnWizPrev").style.visibility = wizStep > 1 ? "visible" : "hidden";
+    $("btnWizNext").style.display = wizStep < 4 ? "inline-flex" : "none";
+    $("btnWizFinish").style.display = wizStep === 4 ? "inline-flex" : "none";
+    $("wizProgressText").textContent = `Шаг ${wizStep} из 4`;
+    if (state) syncWizardTelemetry(state, false);
+  }
+
+  function openWizard(step = 1) {
+    wizPopulatedOnce = false;
+    if (state) syncWizardTelemetry(state, true);
+    setWizardStep(step);
+    $("wizardModal").style.display = "flex";
+  }
+
+  function closeWizard(rememberDismiss = true) {
+    $("wizardModal").style.display = "none";
+    if (rememberDismiss) sessionStorage.setItem("os_wiz_dismissed", "1");
+    if (location.hash === "#wizard") {
+      try { history.replaceState(null, "", location.pathname + location.search); } catch {}
+    }
+  }
+
+  function syncWizardTelemetry(d, populateFields) {
+    const hw = d.hardware || {};
+    const cfg = d.config || {};
+    const au = d.audio || {};
+    const eng = au.engine || {};
+    const ast = d.assistant || {};
+    const ww = ast.wakeWord || {};
+    const m = d.music || {};
+
+    if ($("wizFwBadge")) {
+      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.2.0"} · На станции`;
+    }
+    if ($("sysAutoInfo")) {
+      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.2.0"} · Сервер работает прямо на станции (${d.ip || "local"}:8080, ${d.hostname || "station-max"}.local). ПК после прошивки не требуется.`;
+    }
+    if ($("wizDiagIp")) $("wizDiagIp").textContent = `${d.ip || "127.0.0.1"}:${cfg.webPort || 8080}`;
+    if ($("wizDiagMdns")) $("wizDiagMdns").textContent = `${d.hostname || "station-max"}.local`;
+    if ($("wizDiagHw")) {
+      const oled = hw.fb5Present ? `OLED ${hw.fb5Width}x${hw.fb5Height}` : "OLED откл.";
+      $("wizDiagHw").textContent = `${(hw.socTempC || 0).toFixed(1)} °C · ${oled}`;
+    }
+    if ($("wizDiagMic")) {
+      $("wizDiagMic").textContent = `${cfg.audio?.captureMode || "alsa_16ch"} · KWS: ${ww.ready ? "Алиса ОК" : (ww.status || "выкл")}`;
+    }
+
+    const dnsHost = d.privateDnsHost || "";
+    const dnsMode = d.privateDnsMode || "";
+    if ($("sysDnsHost") && document.activeElement !== $("sysDnsHost") && dnsHost) {
+      $("sysDnsHost").value = dnsHost;
+    }
+    if ($("wizDnsHost") && document.activeElement !== $("wizDnsHost") && dnsHost) {
+      $("wizDnsHost").value = dnsHost;
+    }
+    if ($("wizNetBanner")) {
+      const dnsLabel = dnsMode === "hostname" && dnsHost ? `Private DNS: ${dnsHost}` : `DNS: ${dnsMode || "авто"}`;
+      $("wizNetBanner").textContent = `✓ Автономный режим · IP: ${d.ip || "local"} · ${dnsLabel} · Мастер синхронизирован с ТВ`;
+    }
+
+    if ($("wizMusicBanner")) {
+      if (m.hasAuth) {
+        $("wizMusicBanner").textContent = `✓ Яндекс Музыка: @${m.userLogin || "OK"}${m.hasPlus ? " · Плюс" : ""}`;
+        $("wizMusicBanner").className = "status-banner ok";
+      } else {
+        $("wizMusicBanner").textContent = "Аккаунт Яндекс Музыки не подключён (опционально — можно войти токеном или с ТВ).";
+        $("wizMusicBanner").className = "status-banner warn";
+      }
+    }
+
+    if ($("wizChecklist")) {
+      const hasKey = !!(cfg.assistant?.geminiApiKey);
+      const checks = [
+        { ok: true, txt: `Сервер на станции (${d.ip || "OK"}:8080)` },
+        { ok: hasKey, txt: hasKey ? "Ключ Gemini Live API задан" : "Ключ Gemini API не задан (Шаг 2)" },
+        { ok: !!ww.ready, txt: ww.ready ? "Офлайн фраза «Алиса» активна" : "Wake Word выключен" },
+        { ok: !!m.hasAuth, txt: m.hasAuth ? `Яндекс Музыка: @${m.userLogin || "OK"}` : "Яндекс Музыка: без входа (опц.)" }
+      ];
+      $("wizChecklist").innerHTML = checks.map((c) =>
+        `<div class="wiz-check-item ${c.ok ? "ok" : "warn"}">${c.ok ? "✓" : "•"} ${c.txt}</div>`
+      ).join("");
+    }
+
+    if ((populateFields || !wizPopulatedOnce) && cfg.assistant) {
+      wizPopulatedOnce = true;
+      if ($("wizApiKey") && document.activeElement !== $("wizApiKey")) $("wizApiKey").value = cfg.assistant.geminiApiKey || "";
+      if ($("wizProxyHost") && document.activeElement !== $("wizProxyHost")) {
+        $("wizProxyHost").value = cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "ai-pool.comss.one";
+      }
+      if ($("wizVoice") && document.activeElement !== $("wizVoice")) $("wizVoice").value = cfg.assistant.voiceName || "Aoede";
+      if ($("wizWakeEn")) $("wizWakeEn").checked = cfg.assistant.wakeWordEnabled !== false;
+      if ($("wizAudioRoute") && document.activeElement !== $("wizAudioRoute")) $("wizAudioRoute").value = cfg.audio?.outputRoute || "auto";
+      if ($("wizEqPreset") && document.activeElement !== $("wizEqPreset")) $("wizEqPreset").value = cfg.audio?.eqPreset || "balanced";
+      if ($("wizRingMode") && document.activeElement !== $("wizRingMode")) $("wizRingMode").value = cfg.ledRing?.mode || "music";
+      if ($("wizRingColor") && document.activeElement !== $("wizRingColor")) $("wizRingColor").value = cfg.ledRing?.color || "#00d4ff";
+      if ($("wizAutoBri")) $("wizAutoBri").checked = cfg.ledRing?.autoBrightness !== false;
+      if ($("wizActShort") && document.activeElement !== $("wizActShort")) $("wizActShort").value = cfg.input?.actionShort || "assistant";
+    }
+  }
+
+  async function pushPartialConfig(patch, toastMsg = "") {
+    try {
+      const next = await api("/api/config", "POST", patch);
+      applyTelemetry(next, true);
+      if (toastMsg) showToast(toastMsg);
+      return next;
+    } catch (e) {
+      showToast("Ошибка применения настроек: " + e.message, true);
+      return null;
+    }
+  }
+
+  async function applyDnsHost(hostVal) {
+    const clean = (hostVal || "").trim();
+    try {
+      const payload = clean ? { mode: "hostname", host: clean } : { mode: "opportunistic", host: "" };
+      const r = await api("/api/system/dns", "POST", payload);
+      showToast(r.ok ? `DNS обновлён: ${r.host || r.mode}` : "Не удалось обновить DNS", !r.ok);
+      const s = await api("/api/status");
+      applyTelemetry(s, false);
+    } catch (e) {
+      showToast("Ошибка DNS: " + e.message, true);
+    }
+  }
+
+  if ($("btnTestAlice")) {
+    $("btnTestAlice").addEventListener("click", () => {
+      runGeminiLiveTest($("astApiKey").value.trim(), $("astModel").value.trim(), $("astProxyHost")?.value.trim(), $("aliceTestResult"));
+    });
+  }
+  if ($("btnOpenWizard")) $("btnOpenWizard").addEventListener("click", () => openWizard(1));
+  if ($("btnSmartOpenWizard")) $("btnSmartOpenWizard").addEventListener("click", () => openWizard(1));
+  if ($("btnWizClose")) $("btnWizClose").addEventListener("click", () => closeWizard(true));
+  if ($("btnWizSkip")) $("btnWizSkip").addEventListener("click", () => closeWizard(true));
+  document.querySelectorAll(".wiz-step-pill").forEach((b) => {
+    b.addEventListener("click", () => setWizardStep(parseInt(b.dataset.step, 10) || 1));
+  });
+  if ($("btnWizPrev")) $("btnWizPrev").addEventListener("click", () => setWizardStep(wizStep - 1));
+  if ($("btnWizNext")) $("btnWizNext").addEventListener("click", () => setWizardStep(wizStep + 1));
+
+  if ($("btnWizToggleKey")) {
+    $("btnWizToggleKey").addEventListener("click", () => {
+      const inp = $("wizApiKey");
+      const show = inp.type === "password";
+      inp.type = show ? "text" : "password";
+      $("btnWizToggleKey").textContent = show ? "Скрыть" : "Показать";
+    });
+  }
+  if ($("btnApplyDns")) $("btnApplyDns").addEventListener("click", () => applyDnsHost($("sysDnsHost").value));
+  if ($("btnWizApplyDns")) $("btnWizApplyDns").addEventListener("click", () => applyDnsHost($("wizDnsHost").value));
+
+  if ($("btnWizTestGemini")) {
+    $("btnWizTestGemini").addEventListener("click", async () => {
+      const key = $("wizApiKey").value.trim();
+      const proxy = $("wizProxyHost").value.trim();
+      await pushPartialConfig({
+        assistant: {
+          enabled: true,
+          mode: "gemini",
+          geminiApiKey: key,
+          geminiProxyHost: proxy,
+          voiceName: $("wizVoice").value,
+          wakeWordEnabled: $("wizWakeEn").checked
+        }
+      });
+      await runGeminiLiveTest(key, $("astModel")?.value.trim() || "gemini-3.8-live", proxy, $("wizGeminiBanner"));
+    });
+  }
+  if ($("btnWizTestSay")) $("btnWizTestSay").addEventListener("click", triggerAlice);
+
+  ["wizVoice", "wizWakeEn"].forEach((id) => {
+    if ($(id)) {
+      $(id).addEventListener("change", () => pushPartialConfig({
+        assistant: {
+          voiceName: $("wizVoice").value,
+          wakeWordEnabled: $("wizWakeEn").checked,
+          geminiApiKey: $("wizApiKey").value.trim(),
+          geminiProxyHost: $("wizProxyHost").value.trim()
+        }
+      }, "Параметры Алисы сохранены"));
+    }
+  });
+  if ($("btnWizYmOAuth")) {
+    $("btnWizYmOAuth").addEventListener("click", async () => {
+      const tok = $("wizYmToken").value.trim();
+      if (!tok) return;
+      await sendMusicCmd({ cmd: "music_oauth", token: tok, autoPlay: false }, "Токен передан Яндекс Музыке");
+      $("wizYmToken").value = "";
+    });
+  }
+  if ($("btnWizYmTv")) $("btnWizYmTv").addEventListener("click", () => sendMusicCmd({ cmd: "launch_music" }, "Открываем Яндекс Музыку на ТВ"));
+  if ($("btnWizYmWave")) $("btnWizYmWave").addEventListener("click", () => sendMusicCmd({ cmd: "play_my_wave", mood: "any", openUi: false }, "Запускаем Мою волну..."));
+  if ($("btnWizTone440")) $("btnWizTone440").addEventListener("click", () => api("/api/audio/test_tone", "POST", { freq: 440, duration: 700, sweep: false }).then(() => showToast("Тестовый тон 440 Гц")).catch(() => {}));
+  if ($("wizAudioRoute")) {
+    $("wizAudioRoute").addEventListener("change", () => pushPartialConfig({ audio: { outputRoute: $("wizAudioRoute").value } }, "Выход звука обновлён"));
+  }
+  if ($("wizEqPreset")) {
+    $("wizEqPreset").addEventListener("change", () => pushPartialConfig({ audio: { eqPreset: $("wizEqPreset").value } }, "Эквалайзер применён"));
+  }
+  ["wizRingMode", "wizRingColor", "wizAutoBri"].forEach((id) => {
+    if ($(id)) {
+      $(id).addEventListener("change", () => pushPartialConfig({
+        ledRing: {
+          mode: $("wizRingMode").value,
+          color: $("wizRingColor").value,
+          autoBrightness: $("wizAutoBri").checked
+        }
+      }, "Подсветка обновлена"));
+    }
+  });
+  if ($("wizActShort")) {
+    $("wizActShort").addEventListener("change", () => pushPartialConfig({ input: { actionShort: $("wizActShort").value } }, "Кнопка Action обновлена"));
+  }
+  if ($("btnWizCecWake")) {
+    $("btnWizCecWake").addEventListener("click", () => api("/api/remote/cec", "POST", { cmd: "wakeup" }).then(() => showToast("Команда HDMI-CEC отправлена ТВ")).catch(() => {}));
+  }
+  if ($("btnWizFinish")) {
+    $("btnWizFinish").addEventListener("click", async () => {
+      await pushPartialConfig({
+        assistant: {
+          geminiApiKey: $("wizApiKey").value.trim(),
+          geminiProxyHost: $("wizProxyHost").value.trim(),
+          voiceName: $("wizVoice").value,
+          wakeWordEnabled: $("wizWakeEn").checked
+        },
+        ledRing: {
+          mode: $("wizRingMode").value,
+          color: $("wizRingColor").value,
+          autoBrightness: $("wizAutoBri").checked
+        },
+        audio: {
+          outputRoute: $("wizAudioRoute").value,
+          eqPreset: $("wizEqPreset").value
+        },
+        input: {
+          actionShort: $("wizActShort").value
+        }
+      });
+      try {
+        const next = await api("/api/setup/complete", "POST", {});
+        applyTelemetry(next, true);
+        closeWizard(true);
+        showToast("Мастер настройки завершён! Станция готова.");
+      } catch (e) {
+        showToast("Ошибка завершения: " + e.message, true);
+      }
+    });
+  }
+  if ($("btnRestartDaemon")) {
+    $("btnRestartDaemon").addEventListener("click", async () => {
+      if (!confirm("Перезапустить демон openstationd на станции? Связь восстановится через 2-3 секунды.")) return;
+      try {
+        await api("/api/system/restart_daemon", "POST", {});
+        showToast("Демон перезапускается...");
+      } catch (e) { showToast("Ошибка: " + e.message, true); }
+    });
+  }
+  if ($("btnRebootStation")) {
+    $("btnRebootStation").addEventListener("click", async () => {
+      if (!confirm("Перезагрузить Яндекс Станцию Макс? Веб-пульт станет недоступен на ~30 секунд.")) return;
+      try {
+        await api("/api/system/reboot", "POST", {});
+        showToast("Команда перезагрузки отправлена станции...");
+      } catch (e) { showToast("Ошибка: " + e.message, true); }
+    });
+  }
+  if ($("badgeOtaUpdate")) {
+    $("badgeOtaUpdate").addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === "smart"));
+      document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "tab-smart"));
+      $("otaCard")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+  if ($("btnOtaCheck")) {
+    $("btnOtaCheck").addEventListener("click", async () => {
+      try {
+        const body = {
+          repo: ($("otaRepo")?.value.trim()) || "Olegu621/OPENSTATION",
+          branch: ($("otaBranch")?.value.trim()) || "main",
+          autoCheck: $("otaAutoCheck") ? $("otaAutoCheck").checked : true
+        };
+        const r = await api("/api/ota/check", "POST", body);
+        if (r.ota) applyOtaState(r.ota, state?.firmwareVersion);
+        showToast(r.started ? "Проверка обновлений на GitHub..." : "Проверка уже выполняется");
+      } catch (e) { showToast("Ошибка OTA: " + e.message, true); }
+    });
+  }
+  async function triggerOtaInstall(force) {
+    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.2.0";
+    const msg = force
+      ? `Скачать и переустановить OpenStation Max v${ver} с GitHub? Проверяется SHA-256, настройки сохранятся.`
+      : `Установить обновление OpenStation Max v${ver} с GitHub? Проверяется SHA-256, настройки сохранятся.`;
+    if (!confirm(msg)) return;
+    otaPendingRestart = true;
+    try {
+      const r = await api("/api/ota/install", "POST", { force: !!force });
+      if (r.ota) applyOtaState(r.ota, state?.firmwareVersion);
+      showToast(r.message || "Запуск обновления OTA...", !r.ok);
+    } catch (e) {
+      otaPendingRestart = false;
+      showToast("Ошибка OTA: " + e.message, true);
+    }
+  }
+  if ($("btnOtaInstall")) $("btnOtaInstall").addEventListener("click", () => triggerOtaInstall(false));
+  if ($("btnOtaReinstall")) $("btnOtaReinstall").addEventListener("click", () => triggerOtaInstall(true));
+  window.addEventListener("hashchange", () => {
+    if (location.hash === "#wizard") openWizard(1);
+  });
+
   async function init() {
     try {
       const s = await api("/api/status");
       applyTelemetry(s, true);
+      if (location.hash === "#wizard" || (s.config?.setupCompleted === false && !sessionStorage.getItem("os_wiz_dismissed"))) {
+        openWizard(1);
+      }
       const l = await api("/api/logs");
       (l.logs || []).forEach(appendLog);
       loadApps();

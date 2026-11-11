@@ -104,10 +104,17 @@ struct MqttConfig {
     bool discovery = true;
 };
 
+struct OtaConfig {
+    bool auto_check = true;
+    std::string repo = "Olegu621/OPENSTATION";
+    std::string branch = "main";
+};
+
 struct DaemonConfig {
     std::string path = "/data/local/openstation/config.json";
     int web_port = 8080;
     std::string device_hostname = "station-max";
+    bool setup_completed = false;
     LedRingConfig led_ring;
     LedScreenConfig led_screen;
     AudioConfig audio;
@@ -115,6 +122,7 @@ struct DaemonConfig {
     AssistantConfig assistant;
     WyomingConfig wyoming;
     MqttConfig mqtt;
+    OtaConfig ota;
 
     json::Value to_json() const;
     void from_json(const json::Value& v);
