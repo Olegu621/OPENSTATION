@@ -205,7 +205,7 @@ void DaemonConfig::sanitize_and_validate() {
     audio.pdm_filter = std::clamp(audio.pdm_filter, 0, 4);
     audio.mic_sensitivity = std::clamp(audio.mic_sensitivity, 10, 100);
     if (!is_one_of(audio.capture_mode, {"aaudio", "alsa_16ch"})) {
-        audio.capture_mode = "alsa_16ch";
+        audio.capture_mode = "aaudio";
     }
     audio.primary_mic_channel = std::clamp(audio.primary_mic_channel, -1, 15);
     audio.loopback_channel = std::clamp(audio.loopback_channel, 0, 15);

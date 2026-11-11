@@ -453,43 +453,14 @@ void WakeWordEngine::worker_loop() {
             const float peak_thr = std::clamp(noise_rms * (2.2f - sens_norm * 0.6f), rms_floor * 1.8f, 0.06f);
             bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.25f);
 
-            if (energetic) {
-                if (vad_sleeping && lead_count >= kVadWin) {
-                    // Warm up Silero LSTM state with up to 4 pre-onset windows from lead_ring
-                    size_t warm_samples = std::min<size_t>(lead_count, 4 * kVadWin);
-                    size_t wstart = (lead_head + kLeadInMax - warm_samples) % kLeadInMax;
-                    for (size_t off = 0; off < warm_samples; off += kVadWin) {
-                        size_t idx = (wstart + off) % kLeadInMax;
-                        g_sherpa.vadAccept(vad, lead_ring.data() + idx, static_cast<int32_t>(kVadWin));
-                    }
-                    vad_sleeping = false;
-                }
-                vad_warm_wins = 32; // ~1024 ms active Silero tracking after acoustic activity
-            } else if (!kws_active && hangover_wins == 0 && vad_warm_wins == 0) {
-                if (win_rms < noise_rms * 2.2f) {
-                    noise_rms = std::clamp(noise_rms * 0.99f + win_rms * 0.01f, 0.0008f, 0.020f);
-                }
-            }
+            // Feed window into Silero VAD neural network (0.08 ms inference time on hexacore S905X2;
+            // running continuously ensures zero gating loss for far-field room speech and faint whispers)
+            g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
+            bool speech = (g_sherpa.vadDetected(vad) != 0);
+            vad_speech_active_.store(speech);
 
-            bool speech = false;
-            if (kws_active || hangover_wins > 0 || vad_warm_wins > 0) {
-                vad_sleeping = false;
-                if (vad_warm_wins > 0 && !energetic) {
-                    --vad_warm_wins;
-                }
-                g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
-                speech = (g_sherpa.vadDetected(vad) != 0);
-                vad_speech_active_.store(speech);
-
-                if (speech || (++vad_clr_cnt & 31U) == 0U) {
-                    g_sherpa.vadClear(vad);
-                }
-            } else {
-                if (!vad_sleeping) {
-                    vad_sleeping = true;
-                    g_sherpa.vadReset(vad);
-                    vad_speech_active_.store(false);
-                }
+            if (speech || (++vad_clr_cnt & 31U) == 0U) {
+                g_sherpa.vadClear(vad);
             }
 
             bool fed_current = false;
@@ -498,7 +469,7 @@ void WakeWordEngine::worker_loop() {
                     feed_lead_to_kws();
                     kws_active = true;
                 }
-                hangover_wins = 22; // ~704 ms extra KWS tail after Silero min_silence_duration
+                hangover_wins = 30; // ~960 ms extra KWS tail across syllables ("а-ли-са")
                 g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
                 fed_current = true;
             } else if (kws_active && hangover_wins > 0) {

@@ -583,6 +583,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     vc["prebuiltVoiceConfig"] = std::move(pvb);
     Value sc = Value::make_obj();
     sc["voiceConfig"] = std::move(vc);
+    sc["languageCode"] = Value::make_str("ru-RU");
     gen_cfg["speechConfig"] = std::move(sc);
 
     if (ext_thinking) {
@@ -618,6 +619,10 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
         if (!sp.empty()) sp += "\n\n";
         sp += "Системный контекст OpenStation Max:\n"
               "- Текущие дата и время на колонке: " + std::string(dt_buf) + ".\n"
+              "- СТРОГОЕ ПРАВИЛО ЯЗЫКА И РАСПОЗНАВАНИЯ: Распознавай и понимай ТОЛЬКО русский и английский языки. "
+              "Категорически запрещено принимать входящую речь за французский, португальский, испанский, турецкий или любой другой иностранный язык! "
+              "Если звуки микрофона или фоновый шум отдалённо напоминают иностранные слова (например, французские «oui», «ça», «dá», «le»), это исключительно акустический шум микрофона или неразборчивый русский — интерпретируй их ВСЕГДА ТОЛЬКО как русскую речь (или английскую, если фраза полностью на английском). "
+              "Отвечай ВСЕГДА только на грамотном русском языке (на английском отвечай только если пользователь сам явно обратился по-английски). Никогда не отвечай на французском языке!\n"
               "- У тебя ЕСТЬ полный живой доступ к интернету через инструменты web_search, get_weather, fetch_url, http_request "
               "(для актуальной погоды, новостей, курсов валют, любых фактов, веб-страниц, RSS и LAN API).\n"
               "- У тебя ЕСТЬ полный root-доступ ко всей колонке и Android TV: аппаратный звук/эквалайзер (set_volume, set_eq_preset, "
@@ -1057,7 +1062,13 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     setup_obj["systemInstruction"] = std::move(sys_inst);
     setup_obj["tools"] = std::move(tools);
     setup_obj["realtimeInputConfig"] = std::move(ric);
-    setup_obj["inputAudioTranscription"] = Value::make_obj();
+    Value iat = Value::make_obj();
+    Value lcodes = Value::make_arr();
+    lcodes.push(Value::make_str("ru-RU"));
+    lcodes.push(Value::make_str("en-US"));
+    iat["languageCodes"] = std::move(lcodes);
+    iat["mode"] = Value::make_str("SMART");
+    setup_obj["inputAudioTranscription"] = std::move(iat);
     setup_obj["outputAudioTranscription"] = Value::make_obj();
 
     Value msg = Value::make_obj();

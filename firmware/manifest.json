@@ -1,20 +1,20 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.3.0",
+    "version":  "1.3.1",
     "autonomous":  true,
     "changelog":  "OpenStation Max v1.3.0: Standalone GUI прошивальщик OpenStationFlasher.exe с автоустановкой драйверов Amlogic (без USB Burning Tool); фикс бутлупа \u0027After UBT\u0027 (разблокировка AVB2); поддержка ревизий 0008, 00052 и 00053 (Zigbee 2023+); плавный морфинг шара в визуализатор частиц под музыку на ТВ и LED-экране; 7 стилей часов и 6 визуализаторов; 10-полосный ISO эквалайзер + Bass Boost; погодный оверлей на ТВ и матрице; агент ИИ Алиса со сменой голоса и долговременной памятью; повышенная чувствительность 7 микрофонов с адаптивным AGC; чистый UI без перегруженности.",
-    "buildTimeUtc":  "2026-11-11T22:56:32Z",
+    "buildTimeUtc":  "2026-11-11T23:51:22Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  2281928,
-                                 "sha256":  "1555547884496c504a765795cf1771739452ff96905de6ad9f0722eb9d5b732d"
+                                 "size":  2293544,
+                                 "sha256":  "3d22b966a1ab67bbe4c03d9711df37ac728e0786ef5d7db259ccbb3b4bedd06c"
                              },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4686301,
-                                   "sha256":  "6512ce29b06d1f9bc5843381863bf4ef0b761a91c950e3ef8dfc41c00534a7b4"
+                                   "size":  4689618,
+                                   "sha256":  "74b44b5f9927d4e033ad90a343d9cf620c65278407009a665deed157459903dc"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

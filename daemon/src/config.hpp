@@ -55,14 +55,14 @@ struct AudioConfig {
     std::string eq_preset = "balanced"; // flat, balanced, bass_boost, vocal, night, rock, electronic, custom
     std::array<float, 10> eq_bands = {2.0f, 1.5f, 0.5f, 0.0f, 0.0f, 0.5f, 1.0f, 1.5f, 1.5f, 1.0f}; // dB -12..+12
     int bass_boost = 30;               // 0..100%
-    int pdm_gain = 3;                  // 0..8 (~6dB * val)
+    int pdm_gain = 2;                  // 0..8 (2 = stock default from /vendor/etc/mixer_paths_tv.xml)
     int pdm_filter = 1;                // 0..4
     bool loopback_enable = true;
     bool aec_enable = true;
     bool ns_enable = true;
     int mic_sensitivity = 85;          // 10..100% far-field mic & wake-word sensitivity
     bool mic_muted = false;
-    std::string capture_mode = "alsa_16ch"; // alsa_16ch (raw 16ch /dev/snd/pcmC0D1c, low CPU) or aaudio (1ch 16k VQE/shared)
+    std::string capture_mode = "aaudio"; // aaudio (stock 1ch 16k libyandexvqe hardware DSP) or alsa_16ch
     int primary_mic_channel = -1;      // 0..15 or -1 = 7-mic array beamform average
     int loopback_channel = 8;          // reference channel in 16ch frame (calibrated empirically)
 };

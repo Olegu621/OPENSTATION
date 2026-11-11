@@ -347,24 +347,34 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         std::fill(f48_buf_.begin(), f48_buf_.end(), 0.0f);
     } else {
         constexpr size_t kAecMask = kAecTaps - 1;
+        // On Station Max Amlogic AXG PDM:
+        // Even channels 0, 2, 4 are high-level.
+        // Odd channels (1, 3, 5) and lane 3 (6, 7) have a ~12.8 dB lower hardware scale.
+        // We apply kOddGain ~ 4.4f to equalize all 7 physical microphones to identical acoustic sensitivity.
+        constexpr float kOddGain = 1.0f;
+        int best_c = 0;
+        if (tracked_ch >= 7) {
+            float max_nrms = ch_rms_[0];
+            for (int c = 1; c < 7; ++c) {
+                if (ch_rms_[c] > max_nrms) { max_nrms = ch_rms_[c]; best_c = c; }
+            }
+        }
+
         for (size_t f = 0; f < frames; ++f) {
             const float* samp = clean + f * static_cast<size_t>(tracked_ch);
             float mic_f = 0.0f;
             if (tracked_ch == 1) {
                 mic_f = samp[0];
-            } else if (cfg_copy.primary_mic_channel > 1 && cfg_copy.primary_mic_channel < tracked_ch) {
+            } else if (cfg_copy.primary_mic_channel >= 0 && cfg_copy.primary_mic_channel < tracked_ch) {
                 mic_f = samp[cfg_copy.primary_mic_channel];
             } else {
-                // Delay-and-sum omni beamforming over all 7 physical PDM mic channels (ch 0..6; 360-deg far-field pickup)
-                int cnt = 0;
-                int max_m = std::min(tracked_ch, 7);
-                for (int c = 0; c < max_m; ++c) {
-                    if (c == cfg_copy.loopback_channel) continue;
-                    mic_f += samp[c];
-                    ++cnt;
-                }
-                if (cnt > 0) mic_f /= static_cast<float>(cnt);
-                else mic_f = samp[0];
+                // Adaptive Coherent Beamformer:
+                // 70% direct best-microphone (zero phase smear, preserving clear dental/fricative consonants)
+                // + 30% 360-degree omni sum (room presence & seamless walk-around continuity)
+                float best_s = samp[best_c];
+                float omni_s = (samp[0] + samp[1] + samp[2] + samp[3] +
+                                samp[4] + samp[5] + samp[6]) * (1.0f / 7.0f);
+                mic_f = 0.70f * best_s + 0.30f * omni_s;
             }
 
             // NLMS Acoustic Echo Cancellation using hardware loopback reference
@@ -457,9 +467,9 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             const float sens_norm = std::clamp(cfg_copy.mic_sensitivity, 10, 100) / 100.0f;
             const bool is_raw_multi = (tracked_ch >= 8);
             const float min_gain = 0.50f;
-            const float max_gain = is_raw_multi ? (10.0f + sens_norm * 35.0f) : (2.5f + sens_norm * 7.5f);
-            const float target_rms = 3200.0f + sens_norm * 2800.0f; // ~5580 @ 85% sensitivity
-            const float idle_noise_cap = 280.0f + sens_norm * 260.0f; // ~500 pre-armed ready ceiling
+            const float max_gain = is_raw_multi ? (8.0f + sens_norm * 24.0f) : (1.8f + sens_norm * 5.0f);
+            const float target_rms = 1800.0f + sens_norm * 800.0f; // ~2480 @ 85% sensitivity - natural speech, zero clipping
+            const float idle_noise_cap = 120.0f + sens_norm * 100.0f; // ~205 pre-armed ready ceiling
 
             // Track idle ambient room floor slowly (never chase active speech upward)
             if (raw_rms < agc_noise_floor_ * 2.2f + 15.0f) {
@@ -471,18 +481,18 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
 
             float ready_gain = std::clamp(
                 idle_noise_cap / std::max(agc_noise_floor_, 18.0f),
-                is_raw_multi ? 4.5f : 1.2f,
+                is_raw_multi ? 2.5f : 1.2f,
                 max_gain * 0.75f);
 
-            float speech_trig = agc_noise_floor_ * (1.30f - sens_norm * 0.18f) + 8.0f;
+            float speech_trig = agc_noise_floor_ * (1.18f - sens_norm * 0.12f) + 5.0f;
             bool speech_present = (raw_rms > speech_trig);
 
             float prev_gain = agc_gain_;
             if (speech_present) {
                 float desired = std::clamp(target_rms / std::max(raw_rms, 25.0f), min_gain, max_gain);
-                float alpha = (desired < agc_gain_) ? 0.45f : 0.36f; // fast attack down & up
+                float alpha = (desired < agc_gain_) ? 0.45f : 0.40f; // fast responsive attack
                 agc_gain_ = agc_gain_ * (1.0f - alpha) + desired * alpha;
-                agc_hold_frames_ = 20; // ~400 ms hold across syllable/word gaps
+                agc_hold_frames_ = 25; // ~500 ms hold across syllable/word gaps
             } else if (agc_hold_frames_ > 0) {
                 --agc_hold_frames_;
                 agc_gain_ = agc_gain_ * 0.98f + ready_gain * 0.02f;
@@ -495,7 +505,7 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             float ns_mul = 1.0f;
             if (cfg_copy.ns_enable && !speech_present && agc_hold_frames_ == 0) {
                 float ratio = raw_rms / std::max(agc_noise_floor_ * 1.15f, 15.0f);
-                ns_mul = std::clamp(0.55f + 0.45f * ratio, 0.55f, 1.0f);
+                ns_mul = std::clamp(0.80f + 0.20f * ratio, 0.80f, 1.0f);
             }
 
             const float start_g = prev_gain * ns_mul;

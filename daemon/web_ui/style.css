@@ -1,12 +1,19 @@
 :root {
+  --lg-bg-color: rgba(255, 255, 255, 0.22);
+  --lg-highlight: rgba(255, 255, 255, 0.75);
+  --lg-text: #ffffff;
+  --lg-hover-glow: rgba(255, 255, 255, 0.4);
+  --lg-red: #fb4268;
+  --lg-grey: #5b5b5b;
+
   --bg: #07090e;
-  --card: rgba(18, 24, 38, 0.58);
-  --border: rgba(255, 255, 255, 0.12);
+  --card: rgba(255, 255, 255, 0.10);
+  --border: rgba(255, 255, 255, 0.18);
   --text: #f1f5f9;
-  --muted: #94a3b8;
+  --muted: #cbd5e1;
   --accent: #00d4ff;
   --accent2: #8b5cf6;
-  --danger: #f43f5e;
+  --danger: #fb4268;
   --ok: #10b981;
 }
 
@@ -16,14 +23,211 @@ body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", Roboto, sans-serif;
   background:
-    radial-gradient(ellipse 65% 50% at 15% 10%, rgba(0, 180, 255, 0.14) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 85% 90%, rgba(139, 92, 246, 0.16) 0%, transparent 60%),
-    radial-gradient(ellipse 40% 30% at 50% 50%, rgba(244, 63, 94, 0.06) 0%, transparent 70%),
-    #07090e;
+    radial-gradient(ellipse 65% 50% at 15% 10%, rgba(0, 180, 255, 0.16) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 85% 90%, rgba(139, 92, 246, 0.18) 0%, transparent 60%),
+    linear-gradient(rgba(7, 9, 14, 0.82), rgba(7, 9, 14, 0.88)),
+    url("https://images.unsplash.com/photo-1551384963-cccb0b7ed94b?q=80&w=3247&auto=format&fit=crop") center/cover;
+  animation: bg-move 6s ease-in-out infinite alternate;
   color: var(--text);
   min-height: 100vh;
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
+}
+
+@keyframes bg-move {
+  from {
+    background-position: center center;
+  }
+  to {
+    background-position: center top;
+  }
+}
+
+/* ========== GLASS CONTAINER (from Petr Knoll / FreeFrontend) ========== */
+.glass-container {
+  position: relative;
+  display: flex;
+  font-weight: 600;
+  color: var(--lg-text);
+  background: transparent;
+  border-radius: 2rem;
+  overflow: hidden;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25), 0 0 24px rgba(0, 0, 0, 0.15);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+  border: 1px solid rgba(255, 255, 255, 0.20);
+}
+
+.glass-container:hover {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35), 0 0 32px var(--lg-hover-glow);
+  transform: translateY(-2px);
+}
+
+.glass-container--rounded {
+  border-radius: 2rem;
+}
+
+.glass-container--large {
+  width: 100%;
+}
+
+.glass-filter {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  filter: url(#lg-dist);
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.glass-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--lg-bg-color);
+  pointer-events: none;
+}
+
+.glass-specular {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  overflow: hidden;
+  box-shadow: inset 1px 1px 0 var(--lg-highlight), inset 0 0 5px var(--lg-highlight);
+  pointer-events: none;
+}
+
+.glass-content {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 1rem 1.5rem 0.9rem;
+}
+
+.glass-content--inline {
+  padding: 0.75rem 1.8rem 0.75rem 1rem;
+  flex: 1 1 auto;
+  justify-content: space-between;
+}
+
+/* ========== PLAYER (from Petr Knoll / FreeFrontend) ========== */
+.player {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  flex: 1 1 auto;
+  justify-content: space-between;
+}
+
+.player__thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0.25rem;
+  gap: 1.1rem;
+}
+
+.player__img {
+  width: 5.2rem;
+  height: 5.2rem;
+  object-fit: cover;
+  margin: 0.25rem 0;
+  border-radius: 1rem;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+}
+.player__img:hover {
+  transform: scale(1.06);
+}
+
+.player__legend {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0.5rem;
+}
+
+.player__legend__title {
+  font-size: 1.15rem;
+  margin: 0 0 3px 0;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.player__legend__sub-title {
+  font-size: 0.92rem;
+  margin: 0;
+  opacity: 0.85;
+  color: #f1f5f9;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.player__controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.player__btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  border-radius: 50%;
+  transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+}
+.player__btn:hover {
+  transform: scale(1.2);
+  background: rgba(255, 255, 255, 0.15);
+}
+.player__btn.liked svg path {
+  fill: var(--lg-red);
+}
+
+.player__controls__play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.26);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    inset 0 1px 1px rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 2.2), background 0.2s;
+}
+.player__controls__play:hover {
+  transform: scale(1.12);
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.45),
+    inset 0 1px 2px #fff;
+}
+
+.player__controls__ff {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+}
+.player__controls__ff:hover {
+  transform: scale(1.15);
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .app-shell {

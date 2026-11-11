@@ -815,7 +815,9 @@ class AliceOrbView @JvmOverloads constructor(
             "fireflies" -> drawFirefliesVisualizer(canvas, cx, cy, radius, alpha)
             "aurora" -> drawAuroraVisualizer(canvas, cx, cy, radius, alpha)
             "matrix" -> drawMatrixVisualizer(canvas, cx, cy, radius, alpha)
-            else -> drawSpecterrCircleVisualizer(canvas, cx, cy, radius, alpha) // "particles" -> Specterr Flagship
+            "specterr" -> drawSpecterrCircleVisualizer(canvas, cx, cy, radius, alpha)
+            "nexus", "anomaly" -> drawNexusVisualizer(canvas, cx, cy, radius, alpha)
+            else -> drawNexusVisualizer(canvas, cx, cy, radius, alpha) // Filip Zrnzevic Three.js Anomaly Scanner (yyyRgry)
         }
     }
 
@@ -1080,5 +1082,209 @@ class AliceOrbView @JvmOverloads constructor(
             k < 0.70f -> blendColor(Color.parseColor("#6366F1"), Color.parseColor("#EC4899"), (k - 0.35f) / 0.35f)
             else -> blendColor(Color.parseColor("#EC4899"), Color.parseColor("#F59E0B"), (k - 0.70f) / 0.30f)
         }
+    }
+
+    /**
+     * Filip Zrnzevic Three.js "Nexus Anomaly Detection" Audio Visualizer (codepen.io/filipz/pen/yyyRgry):
+     * - Central 3D rotating geodesic wireframe icosahedron with normal vertex audio displacement
+     * - Crimson-neon anomaly palette (#FF4E42 / #C2362F / #FFB3AB)
+     * - Concentric cyberpunk radar targeting circles with 8-point tick marks
+     * - Rotating 360-degree radar scanner sweep beam with trailing gradient fade
+     * - Central crosshair targeting reticle pulsing with bass kicks
+     * - Floating quantum particles drifting with audio-reactive speed
+     */
+    private var nexusRotX = 0f
+    private var nexusRotY = 0f
+    private var nexusRotZ = 0f
+    private var nexusScannerAngle = 0f
+    private val nexusProjectedX = FloatArray(12)
+    private val nexusProjectedY = FloatArray(12)
+    private val nexusProjectedZ = FloatArray(12)
+
+    private fun drawNexusVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+        val bass = LiveOrbState.musicBass
+        val mid = LiveOrbState.musicMid
+        val energy = LiveOrbState.musicOverall
+
+        // 1. Update 3D rotation and radar sweep
+        nexusRotX += 0.010f + energy * 0.035f
+        nexusRotY += 0.016f + bass * 0.055f
+        nexusRotZ += 0.007f + mid * 0.025f
+        nexusScannerAngle = (nexusScannerAngle + 0.035f + energy * 0.055f) % (2f * PI.toFloat())
+
+        val cosX = cos(nexusRotX)
+        val sinX = sin(nexusRotX)
+        val cosY = cos(nexusRotY)
+        val sinY = sin(nexusRotY)
+        val cosZ = cos(nexusRotZ)
+        val sinZ = sin(nexusRotZ)
+
+        // 2. Concentric radar scanner rings (.circular-visualizer from yyyRgry)
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeCap = Paint.Cap.ROUND
+
+        // Outer reticle ring
+        val outerR = radius * (0.92f + bass * 0.06f)
+        visPaint.color = Color.parseColor("#FF4E42")
+        visPaint.strokeWidth = max(2f, radius * 0.018f)
+        visPaint.alpha = (alpha * 0.65f).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, outerR, visPaint)
+
+        // Inner dashed ring
+        val innerR = radius * (0.64f + mid * 0.04f)
+        visPaint.strokeWidth = max(1.5f, radius * 0.012f)
+        visPaint.alpha = (alpha * 0.45f).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, innerR, visPaint)
+
+        // Core base ring
+        val coreR = radius * (0.36f + bass * 0.08f)
+        visPaint.strokeWidth = max(1.8f, radius * 0.015f)
+        visPaint.alpha = (alpha * 0.55f).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, coreR, visPaint)
+
+        // 8 Radar tick marks around outer ring (every 45 deg)
+        visPaint.strokeWidth = max(2f, radius * 0.022f)
+        visPaint.alpha = (alpha * 0.85f).toInt().coerceIn(0, 255)
+        val tickLen = radius * 0.07f
+        for (i in 0 until 8) {
+            val a = (i * PI / 4.0).toFloat()
+            val r0 = outerR - tickLen * 0.5f
+            val r1 = outerR + tickLen * 0.5f
+            canvas.drawLine(cx + cos(a) * r0, cy + sin(a) * r0, cx + cos(a) * r1, cy + sin(a) * r1, visPaint)
+        }
+
+        // 3. Sweeping radar scanner line beam (.scanner-line)
+        val beamX = cx + cos(nexusScannerAngle) * outerR
+        val beamY = cy + sin(nexusScannerAngle) * outerR
+        visPaint.strokeWidth = max(2.5f, radius * 0.025f)
+        visPaint.color = Color.parseColor("#FF4E42")
+        visPaint.alpha = (alpha * (0.75f + energy * 0.25f)).toInt().coerceIn(0, 255)
+        canvas.drawLine(cx, cy, beamX, beamY, visPaint)
+
+        // Scanner sweep trail
+        for (t in 1..4) {
+            val ta = nexusScannerAngle - t * 0.06f
+            val bx = cx + cos(ta) * outerR
+            val by = cy + sin(ta) * outerR
+            visPaint.strokeWidth = max(1f, radius * 0.012f)
+            visPaint.alpha = (alpha * (0.30f / t)).toInt().coerceIn(0, 255)
+            canvas.drawLine(cx, cy, bx, by, visPaint)
+        }
+
+        // 4. Project 12 3D Geodesic vertices with audio displacement
+        val sphereBaseR = radius * 0.52f
+        for (i in 0 until 12) {
+            val v = ICO_VERTS[i]
+            val freqDisp = LiveOrbState.rawBands[(i * 3) % 24] * 0.55f + bass * 0.45f
+            val r = sphereBaseR * (1.0f + freqDisp * 0.58f)
+
+            // Original vertex in model space
+            val vx = v[0] * r
+            val vy = v[1] * r
+            val vz = v[2] * r
+
+            // Rotate around X
+            val y1 = vy * cosX - vz * sinX
+            val z1 = vy * sinX + vz * cosX
+
+            // Rotate around Y
+            val x2 = vx * cosY + z1 * sinY
+            val z2 = -vx * sinY + z1 * cosY
+
+            // Rotate around Z
+            val x3 = x2 * cosZ - y1 * sinZ
+            val y3 = x2 * sinZ + y1 * cosZ
+
+            // Perspective projection
+            val fov = radius * 4.0f
+            val scale = fov / (fov + z2)
+            nexusProjectedX[i] = cx + x3 * scale
+            nexusProjectedY[i] = cy + y3 * scale
+            nexusProjectedZ[i] = z2
+        }
+
+        // 5. Draw 30 Geodesic wireframe edges
+        visPaint.strokeWidth = max(1.8f, radius * 0.016f)
+        for (edge in ICO_EDGES) {
+            val u = edge[0]
+            val v = edge[1]
+            val avgZ = (nexusProjectedZ[u] + nexusProjectedZ[v]) * 0.5f
+            val zNorm = ((avgZ / (sphereBaseR * 1.5f)) + 1.0f) * 0.5f
+            val edgeColor = blendColor(Color.parseColor("#C2362F"), Color.parseColor("#FFB3AB"), zNorm)
+            visPaint.color = edgeColor
+            visPaint.alpha = (alpha * (0.35f + zNorm * 0.60f)).toInt().coerceIn(0, 255)
+            canvas.drawLine(nexusProjectedX[u], nexusProjectedY[u], nexusProjectedX[v], nexusProjectedY[v], visPaint)
+        }
+
+        // 6. Draw Geodesic vertex nodes
+        visPaint.style = Paint.Style.FILL
+        for (i in 0 until 12) {
+            val zNorm = ((nexusProjectedZ[i] / (sphereBaseR * 1.5f)) + 1.0f) * 0.5f
+            val nodeR = max(2.5f, radius * 0.022f) * (0.7f + zNorm * 0.6f + bass * 0.3f)
+            visPaint.color = Color.parseColor("#FF4E42")
+            visPaint.alpha = (alpha * (0.4f + zNorm * 0.5f)).toInt().coerceIn(0, 255)
+            canvas.drawCircle(nexusProjectedX[i], nexusProjectedY[i], nodeR * 1.6f, visPaint)
+            visPaint.color = Color.parseColor("#FFFFFF")
+            visPaint.alpha = (alpha * (0.7f + zNorm * 0.3f)).toInt().coerceIn(0, 255)
+            canvas.drawCircle(nexusProjectedX[i], nexusProjectedY[i], nodeR, visPaint)
+        }
+
+        // 7. Center Crosshair Targeting Reticle [ + ]
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeWidth = max(2f, radius * 0.016f)
+        visPaint.color = Color.parseColor("#FF4E42")
+        visPaint.alpha = (alpha * 0.85f).toInt().coerceIn(0, 255)
+        val crossLen = radius * (0.09f + bass * 0.04f)
+        canvas.drawLine(cx - crossLen, cy, cx + crossLen, cy, visPaint)
+        canvas.drawLine(cx, cy - crossLen, cx, cy + crossLen, visPaint)
+
+        // 8. Floating Ambient Quantum Particles (from yyyRgry floating particles)
+        for (p in warpParticles) {
+            p[1] += p[2] * (0.005f + energy * 0.02f)
+            if (p[1] > 1.35f) {
+                p[1] = 0.20f
+                p[0] = (Math.random() * 2.0 * Math.PI).toFloat()
+            }
+            val ang = p[0]
+            val dist = p[1] * radius
+            val px = cx + cos(ang) * dist
+            val py = cy + sin(ang) * dist
+            val pSize = p[3] * (0.8f + bass * 0.4f)
+            val pNorm = (p[1] / 1.35f).coerceIn(0f, 1f)
+            visPaint.style = Paint.Style.FILL
+            visPaint.color = if (p[4].toInt() % 2 == 0) Color.parseColor("#FF4E42") else Color.parseColor("#FFB3AB")
+            visPaint.alpha = (alpha * (1f - pNorm) * 0.75f).toInt().coerceIn(0, 255)
+            canvas.drawCircle(px, py, pSize, visPaint)
+        }
+    }
+
+    companion object {
+        // Pre-computed normalized icosahedron coordinates: NORM = 1 / sqrt(1 + PHI^2) = 0.5257311f, PHI * NORM = 0.8506508f
+        private val ICO_VERTS = arrayOf(
+            floatArrayOf(-0.5257311f,  0.8506508f,  0.0f),
+            floatArrayOf( 0.5257311f,  0.8506508f,  0.0f),
+            floatArrayOf(-0.5257311f, -0.8506508f,  0.0f),
+            floatArrayOf( 0.5257311f, -0.8506508f,  0.0f),
+            floatArrayOf( 0.0f, -0.5257311f,  0.8506508f),
+            floatArrayOf( 0.0f,  0.5257311f,  0.8506508f),
+            floatArrayOf( 0.0f, -0.5257311f, -0.8506508f),
+            floatArrayOf( 0.0f,  0.5257311f, -0.8506508f),
+            floatArrayOf( 0.8506508f,  0.0f, -0.5257311f),
+            floatArrayOf( 0.8506508f,  0.0f,  0.5257311f),
+            floatArrayOf(-0.8506508f,  0.0f, -0.5257311f),
+            floatArrayOf(-0.8506508f,  0.0f,  0.5257311f)
+        )
+        // 30 unique edges of an icosahedron connecting pairs with dist ~ 1.05
+        private val ICO_EDGES = arrayOf(
+            intArrayOf(0, 11), intArrayOf(0, 5), intArrayOf(0, 1), intArrayOf(0, 7), intArrayOf(0, 10),
+            intArrayOf(1, 5), intArrayOf(1, 9), intArrayOf(1, 8), intArrayOf(1, 7),
+            intArrayOf(2, 11), intArrayOf(2, 4), intArrayOf(2, 3), intArrayOf(2, 6), intArrayOf(2, 10),
+            intArrayOf(3, 4), intArrayOf(3, 9), intArrayOf(3, 8), intArrayOf(3, 6),
+            intArrayOf(4, 5), intArrayOf(4, 9), intArrayOf(4, 11),
+            intArrayOf(5, 9), intArrayOf(5, 11),
+            intArrayOf(6, 7), intArrayOf(6, 8), intArrayOf(6, 10),
+            intArrayOf(7, 8), intArrayOf(7, 10),
+            intArrayOf(8, 9), intArrayOf(10, 11)
+        )
     }
 }
