@@ -102,13 +102,14 @@ std::string MdnsResponder::detect_local_ipv4() {
     return chosen;
 }
 
-bool MdnsResponder::start(const std::string& hostname, int web_port, int wyoming_port) {
+bool MdnsResponder::start(const std::string& hostname, int web_port, int wyoming_port, int adb_port) {
     if (running_.load()) stop();
     {
         std::lock_guard<std::mutex> lk(mu_);
         hostname_ = sanitize_label(hostname);
         web_port_ = web_port;
         wyoming_port_ = wyoming_port;
+        adb_port_ = (adb_port > 0 && adb_port <= 65535) ? adb_port : 0;
         sock_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
     }
     if (sock_fd_ < 0) {
@@ -144,8 +145,8 @@ bool MdnsResponder::start(const std::string& hostname, int web_port, int wyoming
 
     running_.store(true);
     worker_ = std::thread(&MdnsResponder::worker_loop, this);
-    LOGI("mDNS", "Responder active (%s.local, _http._tcp:%d, _wyoming._tcp:%d)",
-         hostname_.c_str(), web_port_, wyoming_port_);
+    LOGI("mDNS", "Responder active (%s.local, _http._tcp:%d, _wyoming._tcp:%d, _adb._tcp:%d)",
+         hostname_.c_str(), web_port_, wyoming_port_, adb_port_);
     return true;
 }
 
@@ -172,8 +173,42 @@ void MdnsResponder::stop() {
 }
 
 void MdnsResponder::update_hostname(const std::string& hostname) {
-    std::lock_guard<std::mutex> lk(mu_);
-    hostname_ = sanitize_label(hostname);
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::string next = sanitize_label(hostname);
+        if (next != hostname_) {
+            hostname_ = std::move(next);
+            changed = true;
+        }
+    }
+    if (changed && running_.load()) {
+        send_announcement(120);
+    }
+}
+
+void MdnsResponder::update_adb_port(int adb_port) {
+    int next = (adb_port > 0 && adb_port <= 65535) ? adb_port : 0;
+    int prev = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        prev = adb_port_;
+        adb_port_ = next;
+    }
+    if (!running_.load() || prev == next) return;
+    if (next == 0 && prev > 0) {
+        send_adb_goodbye();
+    }
+    send_announcement(120);
+    if (next > 0) {
+        LOGI("mDNS", "Advertising _adb._tcp.local on port %d", next);
+    } else {
+        LOGI("mDNS", "Stopped advertising _adb._tcp.local");
+    }
+}
+
+void MdnsResponder::announce_now() {
+    if (running_.load()) send_announcement(120);
 }
 
 void MdnsResponder::ensure_multicast_membership(const std::string& ip_str) {
@@ -200,13 +235,69 @@ void MdnsResponder::ensure_multicast_membership(const std::string& ip_str) {
     LOGI("mDNS", "Multicast bound to IPv4 %s (%s.local)", ip_str.c_str(), hostname_.c_str());
 }
 
-void MdnsResponder::send_announcement(uint32_t ttl_sec) {
+void MdnsResponder::send_adb_goodbye() {
+    std::lock_guard<std::mutex> slk(send_mu_);
     std::string host;
     int fd = -1;
     {
         std::lock_guard<std::mutex> lk(mu_);
         fd = sock_fd_;
         host = hostname_;
+    }
+    if (fd < 0) return;
+    std::string ip_str = detect_local_ipv4();
+    if (ip_str.empty()) return;
+    ensure_multicast_membership(ip_str);
+
+    std::string fqdn = host + ".local";
+    std::string adb_svc = "_adb._tcp.local";
+    std::string adb_inst = host + "._adb._tcp.local";
+
+    std::vector<uint8_t> pkt;
+    pkt.reserve(192);
+    append_u16(pkt, 0);
+    append_u16(pkt, 0x8400);
+    append_u16(pkt, 0);
+    append_u16(pkt, 2); // SRV goodbye + TXT goodbye
+    append_u16(pkt, 0);
+    append_u16(pkt, 0);
+
+    std::vector<uint8_t> srv_adb;
+    append_u16(srv_adb, 0);
+    append_u16(srv_adb, 0);
+    append_u16(srv_adb, 0);
+    append_dns_name(srv_adb, fqdn);
+    append_rr_header(pkt, adb_inst, 33, 0x8001, 0, static_cast<uint16_t>(srv_adb.size()));
+    pkt.insert(pkt.end(), srv_adb.begin(), srv_adb.end());
+
+    std::vector<uint8_t> txt_adb;
+    append_txt_str(txt_adb, "v=1");
+    append_rr_header(pkt, adb_inst, 16, 0x8001, 0, static_cast<uint16_t>(txt_adb.size()));
+    pkt.insert(pkt.end(), txt_adb.begin(), txt_adb.end());
+
+    struct sockaddr_in dst {};
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(kMdnsPort);
+    dst.sin_addr.s_addr = inet_addr(kMdnsAddr);
+    sendto(fd, pkt.data(), pkt.size(), 0,
+           reinterpret_cast<struct sockaddr*>(&dst), sizeof(dst));
+    (void)adb_svc;
+}
+
+void MdnsResponder::send_announcement(uint32_t ttl_sec) {
+    std::lock_guard<std::mutex> slk(send_mu_);
+    std::string host;
+    int fd = -1;
+    int web_port = 8080;
+    int wyoming_port = 10700;
+    int adb_port = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        fd = sock_fd_;
+        host = hostname_;
+        web_port = web_port_;
+        wyoming_port = wyoming_port_;
+        adb_port = adb_port_;
     }
     if (fd < 0) return;
     std::string ip_str = detect_local_ipv4();
@@ -221,14 +312,18 @@ void MdnsResponder::send_announcement(uint32_t ttl_sec) {
     std::string http_inst = host + "._http._tcp.local";
     std::string wyo_svc = "_wyoming._tcp.local";
     std::string wyo_inst = host + "._wyoming._tcp.local";
+    std::string adb_svc = "_adb._tcp.local";
+    std::string adb_inst = host + "._adb._tcp.local";
+
+    const uint16_t ancount = (adb_port > 0) ? 10 : 7;
 
     // Build unsolicited DNS mDNS response (QR=1, AA=1)
     std::vector<uint8_t> pkt;
-    pkt.reserve(512);
+    pkt.reserve(640);
     append_u16(pkt, 0);      // ID = 0
     append_u16(pkt, 0x8400); // Flags: Response, Authoritative
     append_u16(pkt, 0);      // QDCOUNT
-    append_u16(pkt, 7);      // ANCOUNT: A + 2*PTR + 2*SRV + 2*TXT
+    append_u16(pkt, ancount);// ANCOUNT: A + PTR/SRV/TXT for each service
     append_u16(pkt, 0);      // NSCOUNT
     append_u16(pkt, 0);      // ARCOUNT
 
@@ -247,7 +342,7 @@ void MdnsResponder::send_announcement(uint32_t ttl_sec) {
     std::vector<uint8_t> srv_http;
     append_u16(srv_http, 0);
     append_u16(srv_http, 0);
-    append_u16(srv_http, static_cast<uint16_t>(web_port_));
+    append_u16(srv_http, static_cast<uint16_t>(web_port));
     append_dns_name(srv_http, fqdn);
     append_rr_header(pkt, http_inst, 33, 0x8001, ttl_sec, static_cast<uint16_t>(srv_http.size()));
     pkt.insert(pkt.end(), srv_http.begin(), srv_http.end());
@@ -269,7 +364,7 @@ void MdnsResponder::send_announcement(uint32_t ttl_sec) {
     std::vector<uint8_t> srv_wyo;
     append_u16(srv_wyo, 0);
     append_u16(srv_wyo, 0);
-    append_u16(srv_wyo, static_cast<uint16_t>(wyoming_port_));
+    append_u16(srv_wyo, static_cast<uint16_t>(wyoming_port));
     append_dns_name(srv_wyo, fqdn);
     append_rr_header(pkt, wyo_inst, 33, 0x8001, ttl_sec, static_cast<uint16_t>(srv_wyo.size()));
     pkt.insert(pkt.end(), srv_wyo.begin(), srv_wyo.end());
@@ -279,6 +374,30 @@ void MdnsResponder::send_announcement(uint32_t ttl_sec) {
     append_txt_str(txt_wyo, "type=satellite");
     append_rr_header(pkt, wyo_inst, 16, 0x8001, ttl_sec, static_cast<uint16_t>(txt_wyo.size()));
     pkt.insert(pkt.end(), txt_wyo.begin(), txt_wyo.end());
+
+    if (adb_port > 0) {
+        // 8. PTR _adb._tcp.local -> <host>._adb._tcp.local
+        std::vector<uint8_t> ptr_adb;
+        append_dns_name(ptr_adb, adb_inst);
+        append_rr_header(pkt, adb_svc, 12, 0x0001, ttl_sec, static_cast<uint16_t>(ptr_adb.size()));
+        pkt.insert(pkt.end(), ptr_adb.begin(), ptr_adb.end());
+
+        // 9. SRV <host>._adb._tcp.local
+        std::vector<uint8_t> srv_adb;
+        append_u16(srv_adb, 0);
+        append_u16(srv_adb, 0);
+        append_u16(srv_adb, static_cast<uint16_t>(adb_port));
+        append_dns_name(srv_adb, fqdn);
+        append_rr_header(pkt, adb_inst, 33, 0x8001, ttl_sec, static_cast<uint16_t>(srv_adb.size()));
+        pkt.insert(pkt.end(), srv_adb.begin(), srv_adb.end());
+
+        // 10. TXT _adb
+        std::vector<uint8_t> txt_adb;
+        append_txt_str(txt_adb, "name=OpenStation Max");
+        append_txt_str(txt_adb, "v=1");
+        append_rr_header(pkt, adb_inst, 16, 0x8001, ttl_sec, static_cast<uint16_t>(txt_adb.size()));
+        pkt.insert(pkt.end(), txt_adb.begin(), txt_adb.end());
+    }
 
     struct sockaddr_in dst {};
     dst.sin_family = AF_INET;
@@ -311,13 +430,17 @@ void MdnsResponder::worker_loop() {
                 std::string raw(reinterpret_cast<const char*>(rx + 12), static_cast<size_t>(n - 12));
                 for (char& c : raw) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 std::string host;
+                int adb_port = 0;
                 {
                     std::lock_guard<std::mutex> lk(mu_);
                     host = hostname_;
+                    adb_port = adb_port_;
                 }
                 if (raw.find(host) != std::string::npos ||
                     raw.find("_wyoming") != std::string::npos ||
-                    raw.find("_http") != std::string::npos) {
+                    raw.find("_http") != std::string::npos ||
+                    raw.find("_services") != std::string::npos ||
+                    (adb_port > 0 && raw.find("_adb") != std::string::npos)) {
                     send_announcement(120);
                 }
             }

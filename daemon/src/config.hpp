@@ -114,6 +114,12 @@ struct OtaConfig {
     std::string branch = "main";
 };
 
+struct NetworkConfig {
+    bool wifi_adb_enabled = true;
+    int wifi_adb_port = 5555;
+    bool wifi_power_save_off = true;
+};
+
 struct DaemonConfig {
     std::string path = "/data/local/openstation/config.json";
     int web_port = 8080;
@@ -127,6 +133,7 @@ struct DaemonConfig {
     WyomingConfig wyoming;
     MqttConfig mqtt;
     OtaConfig ota;
+    NetworkConfig network;
 
     json::Value to_json() const;
     void from_json(const json::Value& v);

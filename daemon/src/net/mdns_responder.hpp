@@ -13,22 +13,27 @@ public:
     MdnsResponder() = default;
     ~MdnsResponder();
 
-    bool start(const std::string& hostname, int web_port, int wyoming_port);
+    bool start(const std::string& hostname, int web_port, int wyoming_port, int adb_port = 0);
     void stop();
     void update_hostname(const std::string& hostname);
+    void update_adb_port(int adb_port);
+    void announce_now();
     static std::string detect_local_ipv4();
 
 private:
     void worker_loop();
     void ensure_multicast_membership(const std::string& ip_str);
     void send_announcement(uint32_t ttl_sec);
+    void send_adb_goodbye();
 
     std::string hostname_ = "station-max";
     std::string joined_ip_;
     int web_port_ = 8080;
     int wyoming_port_ = 10700;
+    int adb_port_ = 0;
     int sock_fd_ = -1;
     std::mutex mu_;
+    std::mutex send_mu_;
     std::atomic<bool> running_{false};
     std::thread worker_;
 };

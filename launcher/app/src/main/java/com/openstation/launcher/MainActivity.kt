@@ -178,7 +178,7 @@ class MainActivity : Activity() {
     private var latestMusicSnap = YmPlayerSnapshot()
 
     // Live daemon state
-    private var fwVer = "1.2.2"
+    private var fwVer = "1.2.3"
     private var ringMode = "music"
     private var micMuted = false
     private var outputRoute = "auto"
@@ -2733,7 +2733,7 @@ class MainActivity : Activity() {
             instBtn?.isEnabled = false
             return
         }
-        val instVer = o.optString("installedVersion", "1.2.2")
+        val instVer = o.optString("installedVersion", "1.2.3")
         val latVer = o.optString("latestVersion", "")
         val repo = o.optString("repo", "Olegu621/OPENSTATION")
         val st = o.optString("state", "idle")

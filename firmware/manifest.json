@@ -1,25 +1,25 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.2.2",
+    "version":  "1.2.3",
     "autonomous":  true,
-    "changelog":  "Добавлена фирменная анимация загрузки OpenStation Max с сохранением оригинала и загрузкой своей заставки (.zip) в веб-пульте, обновлены и упрощены ТВ-экран и веб-пульт для удобного повседневного использования.",
-    "buildTimeUtc":  "2026-11-11T20:22:41Z",
+    "changelog":  "Надёжный Wi-Fi ADB (порт 5555) из коробки и после OTA: самовосстановление adbd по фактическому TCP-сокету, отключение энергосбережения Wi-Fi (iw power_save off), mDNS-публикация _adb._tcp и управление Wi-Fi ADB в веб-пульте.",
+    "buildTimeUtc":  "2026-11-11T20:50:39Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  2032080,
-                                 "sha256":  "75faefa3e2e7e63a90c2eaf140dd566a836a41c0d0b32ebec297ce488ce5bad5"
+                                 "size":  2097368,
+                                 "sha256":  "13d83e127337d0a31fd9899bdcf8fa8f438a46861fed05b7f1e1b8660361fa44"
                              },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4386644,
-                                   "sha256":  "42fb1e5623e5d6b13cc4ddad1287a37ce7e48af1aa94712fad2f99aa8404d938"
+                                   "size":  4386596,
+                                   "sha256":  "01a750b917acf070a160f96c529fc5f6145d55859ae73fe6a2cc38c62e590c0d"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",
                               "size":  808866,
-                              "sha256":  "41e71952b5cf1efb5015ee87d9a3a809cbfee5ab3c23e96d0c05ab99ba5b90cc"
+                              "sha256":  "eeac6b6340de34aa6f29d33df3d413953d683c9014795f4c7c5116fbffac6613"
                           },
                   "bootanimation":  {
                                         "fileName":  "bootanimation.zip",

@@ -43,6 +43,7 @@ add_executable(openstationd
     src/assistant/timer_manager.cpp
     src/assistant/assistant_manager.cpp
     src/wyoming/wyoming_server.cpp
+    src/net/adb_manager.cpp
     src/net/mdns_responder.cpp
     src/net/mqtt_client.cpp
     src/net/http_client.cpp

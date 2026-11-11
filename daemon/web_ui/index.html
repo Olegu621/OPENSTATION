@@ -457,7 +457,7 @@
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.2.2</span>
+                <span class="badge ok" id="otaVersionBadge">v1.2.3</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -555,7 +555,25 @@
                       <input type="number" id="rotaryStep" min="1" max="5" value="1" />
                     </div>
                   </div>
+                  <hr class="adv-divider" />
+                  <div class="row-between" style="margin-bottom:8px;">
+                    <label style="font-size:0.86rem; font-weight:600; color:#e2e8f0; margin:0;">Wi-Fi ADB (отладка по сети)</label>
+                    <span class="badge" id="wifiAdbBadge">Проверка...</span>
+                  </div>
+                  <div class="status-banner" id="wifiAdbStatusBanner" style="margin-bottom:10px;">Проверка состояния Wi-Fi ADB...</div>
+                  <div class="form-row toggle-row">
+                    <label>Включить Wi-Fi ADB (порт 5555)</label>
+                    <input type="checkbox" id="wifiAdbEnabled" checked />
+                  </div>
+                  <div class="form-row" id="wifiAdbCmdRow">
+                    <label>Команда подключения (ADB)</label>
+                    <div class="input-send-row">
+                      <input type="text" id="wifiAdbCmd" readonly value="adb connect station-max.local:5555" />
+                      <button class="btn btn-sm" id="btnCopyWifiAdb" type="button">Копировать</button>
+                    </div>
+                  </div>
                   <div class="btn-row">
+                    <button class="btn btn-sm" id="btnRestartWifiAdb" type="button">↻ Перезапустить ADB</button>
                     <button class="btn btn-sm" id="btnRestartDaemon" type="button">↻ Перезапустить сервис</button>
                   </div>
                 </div>
@@ -636,7 +654,7 @@
           <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.2.2</span>
+          <span class="badge ok" id="wizFwBadge">v1.2.3</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>

@@ -169,7 +169,7 @@ if (-not (Test-Path $manifestPath)) {
 }
 $fwManifest = Get-Content -Raw $manifestPath -Encoding UTF8 | ConvertFrom-Json
 if (-not $Version) { $Version = [string]$fwManifest.version }
-if (-not $Version) { $Version = "1.2.2" }
+if (-not $Version) { $Version = "1.2.3" }
 Write-Host "[1/6] Проверка firmware/ v$Version (SHA-256) и ассетов..." -ForegroundColor Yellow
 
 $DaemonBin = Join-Path $fwDir $fwManifest.files.daemon.fileName
@@ -350,7 +350,7 @@ try {
 
   if [ -d "$OS_SYS" ]; then
     ROM_VER=$(cat "$OS_SYS/VERSION" 2>/dev/null | tr -d ' \r\n')
-    [ -n "$ROM_VER" ] || ROM_VER="1.2.2"
+    [ -n "$ROM_VER" ] || ROM_VER="1.2.3"
 
     DATA_VER=""
     if [ -x "$OS_DATA/openstationd" ]; then
@@ -443,7 +443,51 @@ try {
     return 0
   }
 
+  is_tcp_adb_listening() {
+    for pfile in /proc/net/tcp6 /proc/net/tcp; do
+      [ -r "$pfile" ] || continue
+      while read -r _sl local_addr _rem_addr st _rest; do
+        case "$local_addr:$st" in
+          *:15B3:0A|*:15b3:0A) return 0 ;;
+        esac
+      done < "$pfile"
+    done
+    return 1
+  }
+
+  disable_wifi_power_save() {
+    [ -x /system/bin/iw ] || return 0
+    ps_out=$(/system/bin/iw dev wlan0 get power_save 2>/dev/null)
+    case "$ps_out" in
+      *": on"*) /system/bin/iw dev wlan0 set power_save off 2>/dev/null || true ;;
+    esac
+  }
+
   ensure_adb_props_and_gadget() {
+    if [ -f /data/local/openstation/wifi_adb_disabled ]; then
+      [ -f /data/local/openstation/pause_usb_guard ] && return 0
+      if ! is_usb_adb_ok; then
+        sleep 2
+        [ -f /data/local/openstation/pause_usb_guard ] && return 0
+        if ! is_usb_adb_ok; then
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          setprop sys.usb.config none 2>/dev/null || true
+          w=0
+          while [ $w -lt 5 ]; do
+            adbd_st=$(getprop init.svc.adbd | tr -d '\r\n')
+            usb_st=$(getprop sys.usb.state | tr -d '\r\n')
+            [ "$adbd_st" = "stopped" ] && [ "$usb_st" = "none" ] && break
+            w=$((w+1))
+            sleep 1
+          done
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          setprop sys.usb.config adb 2>/dev/null || true
+          start adbd 2>/dev/null || true
+        fi
+      fi
+      return 0
+    fi
+
     if [ "$(getprop persist.adb.tcp.port | tr -d '\r\n')" != "5555" ]; then
       setprop persist.adb.tcp.port 5555 2>/dev/null || true
     fi
@@ -454,24 +498,41 @@ try {
       setprop persist.sys.usb.config adb 2>/dev/null || true
     fi
     [ -f /data/local/openstation/pause_usb_guard ] && return 0
-    if ! is_usb_adb_ok; then
+    if ! is_usb_adb_ok || ! is_tcp_adb_listening; then
       sleep 2
       [ -f /data/local/openstation/pause_usb_guard ] && return 0
-      if ! is_usb_adb_ok; then
-        setprop sys.usb.config none 2>/dev/null || true
-        w=0
-        while [ $w -lt 5 ]; do
-          adbd_st=$(getprop init.svc.adbd | tr -d '\r\n')
-          usb_st=$(getprop sys.usb.state | tr -d '\r\n')
-          [ "$adbd_st" = "stopped" ] && [ "$usb_st" = "none" ] && break
-          w=$((w+1))
-          sleep 1
-        done
-        setprop persist.adb.tcp.port 5555 2>/dev/null || true
-        setprop service.adb.tcp.port 5555 2>/dev/null || true
-        setprop persist.sys.usb.config adb 2>/dev/null || true
-        setprop sys.usb.config adb 2>/dev/null || true
-        start adbd 2>/dev/null || true
+      if ! is_usb_adb_ok || ! is_tcp_adb_listening; then
+        if is_usb_adb_ok && ! is_tcp_adb_listening; then
+          stop adbd 2>/dev/null || true
+          w=0
+          while [ $w -lt 15 ]; do
+            [ "$(getprop init.svc.adbd | tr -d '\r\n')" = "stopped" ] && break
+            w=$((w+1))
+            sleep 0.1
+          done
+          sleep 0.15
+          setprop persist.adb.tcp.port 5555 2>/dev/null || true
+          setprop service.adb.tcp.port 5555 2>/dev/null || true
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          start adbd 2>/dev/null || true
+          sleep 0.8
+        fi
+        if ! is_usb_adb_ok || ! is_tcp_adb_listening; then
+          setprop sys.usb.config none 2>/dev/null || true
+          w=0
+          while [ $w -lt 5 ]; do
+            adbd_st=$(getprop init.svc.adbd | tr -d '\r\n')
+            usb_st=$(getprop sys.usb.state | tr -d '\r\n')
+            [ "$adbd_st" = "stopped" ] && [ "$usb_st" = "none" ] && break
+            w=$((w+1))
+            sleep 1
+          done
+          setprop persist.adb.tcp.port 5555 2>/dev/null || true
+          setprop service.adb.tcp.port 5555 2>/dev/null || true
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          setprop sys.usb.config adb 2>/dev/null || true
+          start adbd 2>/dev/null || true
+        fi
       fi
     fi
   }
@@ -496,11 +557,12 @@ try {
       if [ "$prov_applied" -eq 0 ]; then
         apply_setting_if_needed global device_provisioned 1
         apply_setting_if_needed secure user_setup_complete 1
-        apply_setting_if_needed global adb_enabled 1
+        [ -f /data/local/openstation/wifi_adb_disabled ] || apply_setting_if_needed global adb_enabled 1
         apply_setting_if_needed global development_settings_enabled 1
         apply_setting_if_needed secure install_non_market_apps 1
         apply_setting_if_needed global install_non_market_apps 1
         apply_setting_if_needed global stay_on_while_plugged_in 7
+        apply_setting_if_needed global wifi_sleep_policy 2
         apply_setting_if_needed global hdmi_control_enabled 1
         if [ ! -f /data/local/openstation/.dns_seeded ]; then
           cur_m=$(settings get global private_dns_mode 2>/dev/null | tr -d '\r\n')
@@ -518,10 +580,13 @@ try {
 
       bc=$(getprop sys.boot_completed | tr -d '\r\n')
       if [ "$bc" = "1" ] && pm path com.openstation.launcher >/dev/null 2>&1 && pm path com.openstation.ime >/dev/null 2>&1; then
-        apply_setting_if_needed global adb_enabled 1
+        [ -f /data/local/openstation/wifi_adb_disabled ] || apply_setting_if_needed global adb_enabled 1
         apply_setting_if_needed global development_settings_enabled 1
         apply_setting_if_needed global device_provisioned 1
         apply_setting_if_needed secure user_setup_complete 1
+        apply_setting_if_needed global stay_on_while_plugged_in 7
+        apply_setting_if_needed global wifi_sleep_policy 2
+        disable_wifi_power_save
         pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true
         appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true
         appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true

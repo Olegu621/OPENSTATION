@@ -222,7 +222,7 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
     throw "Таймаут ожидания готовности Android (sys.boot_completed=1, system_server, settings, pm) ($TimeoutSec сек)"
 }
 
-Write-Host "=== OpenStation Max v1.2.2 Deploy ===" -ForegroundColor Cyan
+Write-Host "=== OpenStation Max v1.2.3 Deploy ===" -ForegroundColor Cyan
 $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
 Write-Host "ADB: $AdbPath" -ForegroundColor Gray
 
@@ -823,7 +823,51 @@ cat <<'EOF' > /data/local/openstation/rc_block.sh
     return 0
   }
 
+  is_tcp_adb_listening() {
+    for pfile in /proc/net/tcp6 /proc/net/tcp; do
+      [ -r "$pfile" ] || continue
+      while read -r _sl local_addr _rem_addr st _rest; do
+        case "$local_addr:$st" in
+          *:15B3:0A|*:15b3:0A) return 0 ;;
+        esac
+      done < "$pfile"
+    done
+    return 1
+  }
+
+  disable_wifi_power_save() {
+    [ -x /system/bin/iw ] || return 0
+    ps_out=$(/system/bin/iw dev wlan0 get power_save 2>/dev/null)
+    case "$ps_out" in
+      *": on"*) /system/bin/iw dev wlan0 set power_save off 2>/dev/null || true ;;
+    esac
+  }
+
   ensure_adb_props_and_gadget() {
+    if [ -f /data/local/openstation/wifi_adb_disabled ]; then
+      [ -f /data/local/openstation/pause_usb_guard ] && return 0
+      if ! is_usb_adb_ok; then
+        sleep 2
+        [ -f /data/local/openstation/pause_usb_guard ] && return 0
+        if ! is_usb_adb_ok; then
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          setprop sys.usb.config none 2>/dev/null || true
+          w=0
+          while [ $w -lt 5 ]; do
+            adbd_st=$(getprop init.svc.adbd | tr -d '\r\n')
+            usb_st=$(getprop sys.usb.state | tr -d '\r\n')
+            [ "$adbd_st" = "stopped" ] && [ "$usb_st" = "none" ] && break
+            w=$((w+1))
+            sleep 1
+          done
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          setprop sys.usb.config adb 2>/dev/null || true
+          start adbd 2>/dev/null || true
+        fi
+      fi
+      return 0
+    fi
+
     if [ "$(getprop persist.adb.tcp.port | tr -d '\r\n')" != "5555" ]; then
       setprop persist.adb.tcp.port 5555 2>/dev/null || true
     fi
@@ -835,24 +879,41 @@ cat <<'EOF' > /data/local/openstation/rc_block.sh
       setprop persist.sys.usb.config adb 2>/dev/null || true
     fi
     [ -f /data/local/openstation/pause_usb_guard ] && return 0
-    if ! is_usb_adb_ok; then
+    if ! is_usb_adb_ok || ! is_tcp_adb_listening; then
       sleep 2
       [ -f /data/local/openstation/pause_usb_guard ] && return 0
-      if ! is_usb_adb_ok; then
-        setprop sys.usb.config none 2>/dev/null || true
-        w=0
-        while [ $w -lt 5 ]; do
-          adbd_st=$(getprop init.svc.adbd | tr -d '\r\n')
-          usb_st=$(getprop sys.usb.state | tr -d '\r\n')
-          [ "$adbd_st" = "stopped" ] && [ "$usb_st" = "none" ] && break
-          w=$((w+1))
-          sleep 1
-        done
-        setprop persist.adb.tcp.port 5555 2>/dev/null || true
-        setprop service.adb.tcp.port 5555 2>/dev/null || true
-        setprop persist.sys.usb.config adb 2>/dev/null || true
-        setprop sys.usb.config adb 2>/dev/null || true
-        start adbd 2>/dev/null || true
+      if ! is_usb_adb_ok || ! is_tcp_adb_listening; then
+        if is_usb_adb_ok && ! is_tcp_adb_listening; then
+          stop adbd 2>/dev/null || true
+          w=0
+          while [ $w -lt 15 ]; do
+            [ "$(getprop init.svc.adbd | tr -d '\r\n')" = "stopped" ] && break
+            w=$((w+1))
+            sleep 0.1
+          done
+          sleep 0.15
+          setprop persist.adb.tcp.port 5555 2>/dev/null || true
+          setprop service.adb.tcp.port 5555 2>/dev/null || true
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          start adbd 2>/dev/null || true
+          sleep 0.8
+        fi
+        if ! is_usb_adb_ok || ! is_tcp_adb_listening; then
+          setprop sys.usb.config none 2>/dev/null || true
+          w=0
+          while [ $w -lt 5 ]; do
+            adbd_st=$(getprop init.svc.adbd | tr -d '\r\n')
+            usb_st=$(getprop sys.usb.state | tr -d '\r\n')
+            [ "$adbd_st" = "stopped" ] && [ "$usb_st" = "none" ] && break
+            w=$((w+1))
+            sleep 1
+          done
+          setprop persist.adb.tcp.port 5555 2>/dev/null || true
+          setprop service.adb.tcp.port 5555 2>/dev/null || true
+          setprop persist.sys.usb.config adb 2>/dev/null || true
+          setprop sys.usb.config adb 2>/dev/null || true
+          start adbd 2>/dev/null || true
+        fi
       fi
     fi
   }
@@ -862,7 +923,7 @@ cat <<'EOF' > /data/local/openstation/rc_block.sh
     key="$2"
     want="$3"
     cur=$(settings get "$ns" "$key" 2>/dev/null | tr -d '\r\n')
-    if [ -n "$cur" ] && [ "$cur" != "$want" ]; then
+    if [ "$cur" != "$want" ]; then
       settings put "$ns" "$key" "$want" 2>/dev/null || true
     fi
   }
@@ -873,12 +934,17 @@ cat <<'EOF' > /data/local/openstation/rc_block.sh
     ensure_adb_props_and_gadget
     bc=$(getprop sys.boot_completed | tr -d '\r\n')
     if [ "$bc" = "1" ]; then
-      apply_setting_if_needed global adb_enabled 1
+      if [ ! -f /data/local/openstation/wifi_adb_disabled ]; then
+        apply_setting_if_needed global adb_enabled 1
+      fi
       apply_setting_if_needed global development_settings_enabled 1
       apply_setting_if_needed global device_provisioned 1
       apply_setting_if_needed secure user_setup_complete 1
       apply_setting_if_needed secure install_non_market_apps 1
       apply_setting_if_needed global install_non_market_apps 1
+      apply_setting_if_needed global stay_on_while_plugged_in 7
+      apply_setting_if_needed global wifi_sleep_policy 2
+      disable_wifi_power_save
       sleep 2
       ensure_adb_props_and_gadget
       break
@@ -887,7 +953,7 @@ cat <<'EOF' > /data/local/openstation/rc_block.sh
     sleep 2
   done
 
-  # Фаза B: постоянный лёгкий сторож USB ConfigFS + props (не перезапускает openstationd)
+  # Фаза B: постоянный лёгкий сторож USB ConfigFS + TCP 5555 (не перезапускает openstationd)
   while true; do
     ensure_adb_props_and_gadget
     sleep 10
@@ -1122,6 +1188,7 @@ sync
 # Короткий фоновый сторож (<=90s) с проверкой точного persist/sys.usb="adb" и ConfigFS на время перезапуска system_server
 touch /data/local/openstation/tmp_guard.pid
 cat <<'GUARD' > /data/local/openstation/tmp_guard.sh
+echo $$ > /acct/uid_0/cgroup.procs 2>/dev/null || echo $$ > /acct/cgroup.procs 2>/dev/null || true
 tmp_usb_ok() {
     [ "$(getprop persist.sys.usb.config | tr -d '\r\n')" = "adb" ] || return 1
     [ "$(getprop sys.usb.config | tr -d '\r\n')" = "adb" ] || return 1
@@ -1204,6 +1271,7 @@ put_if_diff secure user_setup_complete 1
 put_if_diff secure install_non_market_apps 1
 put_if_diff global install_non_market_apps 1
 put_if_diff global stay_on_while_plugged_in 7
+put_if_diff global wifi_sleep_policy 2
 put_if_diff global hdmi_control_enabled 1
 '@
 if (-not [string]::IsNullOrWhiteSpace($PrivateDnsHost)) {
@@ -1246,21 +1314,36 @@ f1_ok=0
 case "$f1" in
     *ffs.adb) f1_ok=1 ;;
 esac
-if [ "$p_usb" = "adb" ] && [ "$s_usb" = "adb" ] && [ "$st_usb" = "adb" ] && [ "$adbd_s" = "running" ] && [ "$idp" = "0x4e40" ] && [ "$f1_ok" -eq 1 ] && [ -z "$f2" ] && [ -n "$udc" ] && [ "$udc" != "none" ]; then
+tcp5555_ok=0
+if [ -f /data/local/openstation/wifi_adb_disabled ]; then
+    tcp5555_ok=1
+else
+    for pfile in /proc/net/tcp6 /proc/net/tcp; do
+        [ -r "$pfile" ] || continue
+        while read -r _sl laddr _raddr st _rest; do
+            case "$laddr:$st" in
+                *:15B3:0A|*:15b3:0A) tcp5555_ok=1; break ;;
+            esac
+        done < "$pfile"
+        [ "$tcp5555_ok" -eq 1 ] && break
+    done
+fi
+if [ "$p_usb" = "adb" ] && [ "$s_usb" = "adb" ] && [ "$st_usb" = "adb" ] && [ "$adbd_s" = "running" ] && [ "$idp" = "0x4e40" ] && [ "$f1_ok" -eq 1 ] && [ -z "$f2" ] && [ -n "$udc" ] && [ "$udc" != "none" ] && [ "$tcp5555_ok" -eq 1 ]; then
     echo "OK"
 else
-    echo "MISMATCH persist=$p_usb sys=$s_usb state=$st_usb adbd=$adbd_s idProduct=$idp f1=$f1 f2=$f2 udc=$udc"
+    echo "MISMATCH persist=$p_usb sys=$s_usb state=$st_usb adbd=$adbd_s idProduct=$idp f1=$f1 f2=$f2 udc=$udc tcp5555=$tcp5555_ok"
 fi
 '@
 
 $usbState = (Invoke-AdbSh $usbProbeScript | Out-String).Trim()
 if ($usbState -ne "OK") {
-    Write-Host "Нормализация USB ConfigFS -> pure adb (0x4e40) ($usbState)..." -ForegroundColor Gray
+    Write-Host "Нормализация USB ConfigFS -> pure adb (0x4e40) и TCP :5555 ($usbState)..." -ForegroundColor Gray
     $normScript = @'
 setprop persist.adb.tcp.port 5555
 setprop service.adb.tcp.port 5555
 setprop persist.sys.usb.config adb
 cat <<'NORM' > /data/local/openstation/usb_norm.sh
+echo $$ > /acct/uid_0/cgroup.procs 2>/dev/null || echo $$ > /acct/cgroup.procs 2>/dev/null || true
 setprop sys.usb.config none
 w=0
 while [ $w -lt 5 ]; do
@@ -1352,7 +1435,7 @@ if (-not $manifestPushed) {
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.2.2"
+        version      = "1.2.3"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = $genFiles
@@ -1403,7 +1486,12 @@ echo "persist.adb.tcp.port=$(getprop persist.adb.tcp.port)"
 echo "service.adb.tcp.port=$(getprop service.adb.tcp.port)"
 echo "adb_enabled=$(settings get global adb_enabled)"
 echo "dev_enabled=$(settings get global development_settings_enabled)"
+echo "wifi_sleep_policy=$(settings get global wifi_sleep_policy)"
 echo "install_non_market=$(settings get secure install_non_market_apps)"
+if [ -x /system/bin/iw ]; then
+    echo "iw_power_save=$(/system/bin/iw dev wlan0 get power_save 2>/dev/null | tr -d '\r\n')"
+fi
+grep -E ':15B3 .* 0A ' /proc/net/tcp6 /proc/net/tcp 2>/dev/null || true
 echo "=== IME ==="
 settings get secure default_input_method
 echo "=== HOME ==="
@@ -1423,8 +1511,9 @@ if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "  OpenStation Max v1.2.2 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.2.3 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
 Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
 Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
+Write-Host "  Wi-Fi ADB: adb connect ${stationIp}:5555" -ForegroundColor Cyan
 Write-Host "  АВТОНОМНАЯ РАБОТА: Все серверы работают на самой станции — ПК больше не нужен!" -ForegroundColor Yellow
 Write-Host "========================================================================" -ForegroundColor Green

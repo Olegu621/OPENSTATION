@@ -7,6 +7,7 @@
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
 #include "hw/uinput_keys.hpp"
+#include "net/adb_manager.hpp"
 #include "net/http_client.hpp"
 #include "net/mdns_responder.hpp"
 #include "net/mqtt_client.hpp"
@@ -44,7 +45,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.2.2";
+constexpr const char* kFirmwareVersion = "1.2.3";
 
 std::atomic<bool> g_stop{false};
 
@@ -1052,6 +1053,7 @@ int main(int argc, char** argv) {
     TimerManager timers;
     WyomingServer wyoming;
     MdnsResponder mdns;
+    AdbManager adb_mgr;
     MqttClient mqtt;
     OtaManager ota;
     HttpWsServer http;
@@ -1246,6 +1248,7 @@ int main(int argc, char** argv) {
         assistant.set_mic_muted(c.audio.mic_muted);
         wyoming.update_config(c.wyoming);
         mdns.update_hostname(c.device_hostname);
+        adb_mgr.update_config(c.network, c.device_hostname);
         mqtt.update_config(c.mqtt);
         ota.update_config(c.ota);
 
@@ -2530,6 +2533,9 @@ int main(int argc, char** argv) {
     });
 
     mdns.start(cfg.device_hostname, cfg.web_port, cfg.wyoming.port);
+    adb_mgr.start(cfg.network, cfg.device_hostname, [&](int adb_port) {
+        mdns.update_adb_port(adb_port);
+    });
 
     mqtt.start(cfg.mqtt, [&](const std::string& topic_suffix, const std::string& payload) {
         DaemonConfig next_c;
@@ -2601,9 +2607,10 @@ int main(int argc, char** argv) {
         auto up = std::chrono::duration_cast<std::chrono::seconds>(
                       std::chrono::steady_clock::now() - start_tp)
                       .count();
+        std::string local_ip = MdnsResponder::detect_local_ipv4();
         Value root = Value::make_obj();
         root["hostname"] = Value::make_str(c.device_hostname);
-        root["ip"] = Value::make_str(MdnsResponder::detect_local_ipv4());
+        root["ip"] = Value::make_str(local_ip);
         root["uptimeSec"] = Value::make_int(up);
         root["firmwareVersion"] = Value::make_str(kFirmwareVersion);
         root["autonomous"] = Value::make_bool(true);
@@ -2629,6 +2636,7 @@ int main(int argc, char** argv) {
         root["mqtt"] = mqtt.get_status_json();
         root["ota"] = ota.get_status_json();
         root["bootanim"] = ota.get_bootanim_status_json();
+        root["wifiAdb"] = adb_mgr.get_status_json(local_ip, c.device_hostname);
         root["config"] = c.to_json();
         return root;
     };
@@ -2880,6 +2888,85 @@ int main(int argc, char** argv) {
                 }
                 if (!sr.output.empty()) out["output"] = json::Value::make_str(sr.output);
                 return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/system/wifi_adb") {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+                std::string local_ip = MdnsResponder::detect_local_ipv4();
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["wifiAdb"] = adb_mgr.get_status_json(local_ip, c.device_hostname);
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/system/wifi_adb") {
+                std::string action = "repair";
+                bool cfg_dirty = false;
+                DaemonConfig c;
+                if (!req.body.empty()) {
+                    json::Value v;
+                    if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                        return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                    }
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    if (const auto* ap = v.get("action"); ap && ap->is_str()) {
+                        action = ap->as_str();
+                        if (action != "repair" && action != "restart" &&
+                            action != "enable" && action != "disable") {
+                            return HttpResponse::json("{\"error\":\"invalid action\"}", 400);
+                        }
+                        if (action == "enable") {
+                            cfg.network.wifi_adb_enabled = true;
+                            cfg_dirty = true;
+                        } else if (action == "disable") {
+                            cfg.network.wifi_adb_enabled = false;
+                            cfg_dirty = true;
+                        }
+                    }
+                    if (const auto* ep = v.get("enabled"); ep && ep->is_bool()) {
+                        cfg.network.wifi_adb_enabled = ep->as_bool(cfg.network.wifi_adb_enabled);
+                        cfg_dirty = true;
+                    }
+                    if (const auto* pp = v.get("port"); pp && pp->is_num()) {
+                        int port_val = pp->as_int(cfg.network.wifi_adb_port);
+                        if (port_val < 1024 || port_val > 65535) {
+                            return HttpResponse::json("{\"error\":\"invalid port (1024..65535)\"}", 400);
+                        }
+                        cfg.network.wifi_adb_port = port_val;
+                        cfg_dirty = true;
+                    }
+                    if (const auto* pw = v.get("wifiPowerSaveOff"); pw && pw->is_bool()) {
+                        cfg.network.wifi_power_save_off = pw->as_bool(cfg.network.wifi_power_save_off);
+                        cfg_dirty = true;
+                    }
+                    if (cfg_dirty) {
+                        cfg.sanitize_and_validate();
+                    }
+                    c = cfg;
+                } else {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+
+                if (cfg_dirty) {
+                    adb_mgr.update_config(c.network, c.device_hostname);
+                    save_cfg(c);
+                }
+
+                bool force_restart = (action == "restart");
+                bool ok = adb_mgr.repair_now("webui_" + action, force_restart);
+                json::Value st = build_status_json();
+                st["ok"] = json::Value::make_bool(ok);
+                std::string out = st.dump(-1);
+                if (http.ws_client_count() > 0) {
+                    json::Value msg = json::Value::make_obj();
+                    msg["type"] = json::Value::make_str("telemetry");
+                    msg["data"] = std::move(st);
+                    http.broadcast_ws_text(msg.dump(-1));
+                }
+                return HttpResponse::json(out);
             }
             if (req.method == "POST" && req.path == "/api/system/restart_daemon") {
                 spawn_detached({
@@ -3404,6 +3491,7 @@ int main(int argc, char** argv) {
     timers.stop();
     http.stop();
     mqtt.stop();
+    adb_mgr.stop();
     mdns.stop();
     assistant.stop();
     wyoming.stop();

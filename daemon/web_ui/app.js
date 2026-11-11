@@ -13,6 +13,7 @@
   let wizPopulatedOnce = false;
   let otaPendingRestart = false;
   let bootanimBusy = false;
+  let wifiAdbBusy = false;
 
   const COMPONENT_RU = {
     daemon: "Система",
@@ -174,6 +175,10 @@
       if ($("otaRepo")) ota.repo = $("otaRepo").value.trim() || "Olegu621/OPENSTATION";
       if ($("otaBranch")) ota.branch = $("otaBranch").value.trim() || "main";
       payload.ota = ota;
+    }
+
+    if ($("wifiAdbEnabled")) {
+      payload.network = { wifiAdbEnabled: $("wifiAdbEnabled").checked };
     }
 
     try {
@@ -367,9 +372,73 @@
     if ($("btnBootanimPreview")) $("btnBootanimPreview").disabled = dis || mode === "missing";
   }
 
+  function applyWifiAdbState(wa, d) {
+    wa = wa || {};
+    const netCfg = d?.config?.network || {};
+    const enabled = (wa.enabled !== undefined) ? !!wa.enabled : (netCfg.wifiAdbEnabled !== false);
+    const port = wa.port || netCfg.wifiAdbPort || 5555;
+    const listening = !!wa.listening;
+    const busy = !!(wifiAdbBusy || wa.busy);
+    const ipStr = d?.ip && d.ip !== "127.0.0.1" ? d.ip : "";
+    const hostStr = d?.hostname || "station-max";
+    const cmd = wa.connectCommand || (ipStr ? `adb connect ${ipStr}:${port}` : (wa.mdnsCommand || `adb connect ${hostStr}.local:${port}`));
+
+    const bdg = $("wifiAdbBadge");
+    if (bdg) {
+      if (busy) {
+        bdg.textContent = "Обновление...";
+        bdg.className = "badge warn";
+      } else if (!enabled) {
+        bdg.textContent = "Выключен (USB)";
+        bdg.className = "badge";
+      } else if (listening) {
+        bdg.textContent = `Активен :${port}`;
+        bdg.className = "badge ok";
+      } else {
+        bdg.textContent = "Перезапуск...";
+        bdg.className = "badge warn";
+      }
+    }
+
+    const ban = $("wifiAdbStatusBanner");
+    if (ban) {
+      if (busy) {
+        ban.textContent = "⏳ Выполняется настройка службы Wi-Fi ADB...";
+        ban.className = "status-banner warn";
+      } else if (!enabled) {
+        ban.textContent = "Wi-Fi ADB выключен (отладка работает только по USB)";
+        ban.className = "status-banner";
+      } else if (listening) {
+        const pwNote = wa.wifiPowerSaveState === "off"
+          ? " · Wi-Fi энергосбережение: выкл"
+          : (wa.wifiPowerSaveState === "on" ? " · Wi-Fi энергосбережение: вкл" : "");
+        ban.textContent = `✓ Готов: ${cmd}${pwNote}`;
+        ban.className = "status-banner ok";
+      } else {
+        const r = wa.lastRepairReason ? ` (${wa.lastRepairReason})` : "";
+        ban.textContent = `⏳ Запуск порта :${port}${r}...`;
+        ban.className = "status-banner warn";
+      }
+    }
+
+    if ($("wifiAdbCmd") && document.activeElement !== $("wifiAdbCmd")) {
+      $("wifiAdbCmd").value = cmd;
+    }
+    if ($("wifiAdbCmdRow")) {
+      $("wifiAdbCmdRow").style.display = enabled ? "" : "none";
+    }
+    if ($("wifiAdbEnabled")) {
+      if (!busy && document.activeElement !== $("wifiAdbEnabled")) {
+        $("wifiAdbEnabled").checked = enabled;
+      }
+      $("wifiAdbEnabled").disabled = busy;
+    }
+    if ($("btnRestartWifiAdb")) $("btnRestartWifiAdb").disabled = busy;
+  }
+
   function applyOtaState(ota, fwVer) {
     ota = ota || {};
-    const instVer = ota.installedVersion || fwVer || "1.2.2";
+    const instVer = ota.installedVersion || fwVer || "1.2.3";
     if ($("otaVersionBadge")) {
       $("otaVersionBadge").textContent = `v${instVer}`;
     }
@@ -548,10 +617,11 @@
     applyMusicState(d.music || {});
     applyBootanimState(d.bootanim || {});
     applyOtaState(d.ota || {}, d.firmwareVersion);
+    applyWifiAdbState(d.wifiAdb || {}, d);
 
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
       otaPendingRestart = false;
-      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.2.2") + " активна!");
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.2.3") + " активна!");
     }
     updateAliceLiveBox(ast.liveUserText || "", ast.liveModelText || "");
     if (Array.isArray(ast.history)) {
@@ -1111,7 +1181,7 @@
             applyOtaState(msg.data, state?.firmwareVersion);
             if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
               otaPendingRestart = false;
-              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.2.2"));
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.2.3"));
             }
           } else if (msg.type === "assistant_event") {
             const fakeAst = Object.assign({}, state?.assistant || {}, {
@@ -1212,10 +1282,10 @@
     const m = d.music || {};
 
     if ($("wizFwBadge")) {
-      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.2.2"}`;
+      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.2.3"}`;
     }
     if ($("sysAutoInfo")) {
-      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.2.2"} · Все службы работают автономно внутри станции (${d.ip || "local"}).`;
+      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.2.3"} · Все службы работают автономно внутри станции (${d.ip || "local"}).`;
     }
     if ($("wizDiagIp")) $("wizDiagIp").textContent = d.ip || "127.0.0.1";
     if ($("wizDiagMdns")) $("wizDiagMdns").textContent = `${d.hostname || "station-max"}.local`;
@@ -1428,6 +1498,62 @@
       }
     });
   }
+  async function copyTextSafe(txt, inpEl) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(txt);
+        return true;
+      } catch {}
+    }
+    if (inpEl) {
+      inpEl.focus();
+      inpEl.select();
+      try { inpEl.setSelectionRange(0, txt.length); } catch {}
+      try {
+        if (document.execCommand("copy")) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  async function runWifiAdbAction(payload, toastOk) {
+    wifiAdbBusy = true;
+    applyWifiAdbState(state?.wifiAdb || {}, state || {});
+    try {
+      const next = await api("/api/system/wifi_adb", "POST", payload);
+      wifiAdbBusy = false;
+      applyTelemetry(next, false);
+      if (toastOk) showToast(toastOk, next.ok === false);
+    } catch (e) {
+      wifiAdbBusy = false;
+      applyWifiAdbState(state?.wifiAdb || {}, state || {});
+      showToast("Ошибка Wi-Fi ADB: " + e.message, true);
+    }
+  }
+
+  if ($("btnCopyWifiAdb")) {
+    $("btnCopyWifiAdb").addEventListener("click", async () => {
+      const inp = $("wifiAdbCmd");
+      const val = inp ? inp.value.trim() : "";
+      if (!val) return;
+      const copied = await copyTextSafe(val, inp);
+      showToast(copied ? ("Скопировано: " + val) : "Выделите и скопируйте команду вручную", !copied);
+    });
+  }
+  if ($("wifiAdbEnabled")) {
+    $("wifiAdbEnabled").addEventListener("change", () => {
+      const on = $("wifiAdbEnabled").checked;
+      runWifiAdbAction(
+        { enabled: on, action: on ? "enable" : "disable" },
+        on ? "Wi-Fi ADB включён" : "Wi-Fi ADB отключён (оставлен USB ADB)"
+      );
+    });
+  }
+  if ($("btnRestartWifiAdb")) {
+    $("btnRestartWifiAdb").addEventListener("click", () => {
+      runWifiAdbAction({ action: "restart" }, "Служба ADB перезапущена");
+    });
+  }
   if ($("btnRestartDaemon")) {
     $("btnRestartDaemon").addEventListener("click", async () => {
       if (!confirm("Перезапустить службу управления на станции? Связь восстановится через 2-3 секунды.")) return;
@@ -1468,7 +1594,7 @@
     });
   }
   async function triggerOtaInstall(force) {
-    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.2.2";
+    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.2.3";
     const msg = force
       ? `Скачать и переустановить OpenStation Max v${ver}? Все ваши ключи и настройки сохранятся.`
       : `Установить обновление OpenStation Max v${ver}? Все ваши ключи и настройки сохранятся.`;

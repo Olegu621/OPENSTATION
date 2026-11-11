@@ -666,7 +666,7 @@ void OtaManager::start(const std::string& current_version,
     stop();
     {
         std::lock_guard<std::mutex> lk(mu_);
-        installed_version_ = current_version.empty() ? "1.2.2" : current_version;
+        installed_version_ = current_version.empty() ? "1.2.3" : current_version;
         cfg_ = cfg;
         broadcast_cb_ = std::move(broadcast_cb);
         stop_req_.store(false);

@@ -218,6 +218,10 @@ void DaemonConfig::sanitize_and_validate() {
 
     ota.repo = sanitize_github_repo(ota.repo);
     ota.branch = sanitize_git_branch(ota.branch);
+
+    if (network.wifi_adb_port < 1024 || network.wifi_adb_port > 65535) {
+        network.wifi_adb_port = 5555;
+    }
 }
 
 json::Value DaemonConfig::to_json() const {
@@ -329,6 +333,12 @@ json::Value DaemonConfig::to_json() const {
     ot["branch"] = Value::make_str(ota.branch);
     root["ota"] = std::move(ot);
 
+    Value nw = Value::make_obj();
+    nw["wifiAdbEnabled"] = Value::make_bool(network.wifi_adb_enabled);
+    nw["wifiAdbPort"] = Value::make_int(network.wifi_adb_port);
+    nw["wifiPowerSaveOff"] = Value::make_bool(network.wifi_power_save_off);
+    root["network"] = std::move(nw);
+
     return root;
 }
 
@@ -438,6 +448,15 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ot->get("syncBootanimation"); x && x->is_bool()) ota.sync_bootanimation = x->as_bool();
         if (auto* x = ot->get("repo"); x && x->is_str()) ota.repo = x->as_str();
         if (auto* x = ot->get("branch"); x && x->is_str()) ota.branch = x->as_str();
+    }
+
+    if (auto* x = v.get("wifiAdbEnabled"); x && x->is_bool()) network.wifi_adb_enabled = x->as_bool();
+    if (auto* x = v.get("wifiAdbPort"); x && x->is_num()) network.wifi_adb_port = x->as_int();
+    if (auto* x = v.get("wifiPowerSaveOff"); x && x->is_bool()) network.wifi_power_save_off = x->as_bool();
+    if (auto* nw = v.get("network"); nw && nw->is_obj()) {
+        if (auto* x = nw->get("wifiAdbEnabled"); x && x->is_bool()) network.wifi_adb_enabled = x->as_bool();
+        if (auto* x = nw->get("wifiAdbPort"); x && x->is_num()) network.wifi_adb_port = x->as_int();
+        if (auto* x = nw->get("wifiPowerSaveOff"); x && x->is_bool()) network.wifi_power_save_off = x->as_bool();
     }
 
     sanitize_and_validate();

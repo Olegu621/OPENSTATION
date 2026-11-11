@@ -84,7 +84,7 @@ private:
     std::thread op_thread_;
 
     std::string state_ = "idle"; // idle, checking, up_to_date, available, downloading, verifying, installing, restarting, error
-    std::string installed_version_ = "1.2.2";
+    std::string installed_version_ = "1.2.3";
     std::string installed_build_time_;
     std::string latest_version_;
     std::string latest_build_time_;
