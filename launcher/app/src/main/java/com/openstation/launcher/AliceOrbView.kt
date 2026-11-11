@@ -336,9 +336,21 @@ class AliceOrbView @JvmOverloads constructor(
     private var morphProgress = 0f
     private val visPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val visWavePath = Path()
-    private val visParticles = Array(48) { idx ->
-        val ang = (idx / 48f) * (2f * Math.PI.toFloat())
-        floatArrayOf(ang, 0.45f + (idx % 6) * 0.09f, 0.8f + (idx % 4) * 0.4f, (idx % 7) * 0.8f) // ang, radFraction, speed, phase
+    private val visWavePathBottom = Path()
+    private val visGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    // Specterr Reference Visualizer Engine (specterr.com)
+    private val specterrBars = 64
+    private val specterrHeights = FloatArray(specterrBars)
+    private val specterrPeaks = FloatArray(specterrBars)
+    private val specterrPeakVel = FloatArray(specterrBars)
+    private val warpParticles = Array(64) { idx ->
+        // [0] = angle, [1] = distance (0.2..1.45), [2] = speed, [3] = size, [4] = color index
+        val ang = (idx / 64f) * (2f * Math.PI.toFloat())
+        val dist = 0.22f + (idx % 8) * 0.15f
+        val spd = 0.40f + (idx % 5) * 0.20f
+        val sz = 2.5f + (idx % 4) * 2.2f
+        floatArrayOf(ang, dist, spd, sz, (idx % 4).toFloat())
     }
 
     // Smoothed physics state (for liquid morph between idle / music / listening / thinking / speaking)
@@ -547,6 +559,47 @@ class AliceOrbView @JvmOverloads constructor(
             morphProgress = (morphProgress + morphRate).coerceAtMost(1f)
         } else if (morphProgress > tgtMorph) {
             morphProgress = (morphProgress - morphRate).coerceAtLeast(0f)
+        }
+
+        // Specterr 64-bar frequency calculation & gravity physics
+        if (morphProgress > 0.005f || musicOn) {
+            val raw = LiveOrbState.rawBands
+            val half = specterrBars / 2
+            val rawLen = raw.size
+            for (i in 0 until specterrBars) {
+                // Symmetrical spectrum layout: low bass at center bottom, spreading to highs at top
+                val distFromCenter = if (i < half) (half - 1 - i) else (i - half)
+                val bandIdx = if (rawLen > 0) ((distFromCenter * rawLen) / half).coerceIn(0, rawLen - 1) else 0
+                val rawVal = if (bandIdx < rawLen) raw[bandIdx] else 0f
+                val target = rawVal * (0.95f + bass * 0.65f + mTot * 0.25f)
+
+                // Instant attack on beat, smooth exponential decay
+                if (target > specterrHeights[i]) {
+                    specterrHeights[i] = target.coerceAtMost(1.8f)
+                } else {
+                    specterrHeights[i] = (specterrHeights[i] - dt * 2.5f).coerceAtLeast(0.015f)
+                }
+
+                // Specterr floating peak indicator caps with gravity
+                if (specterrHeights[i] > specterrPeaks[i]) {
+                    specterrPeaks[i] = specterrHeights[i]
+                    specterrPeakVel[i] = 0.40f
+                } else {
+                    specterrPeakVel[i] -= dt * 2.6f
+                    specterrPeaks[i] = (specterrPeaks[i] + specterrPeakVel[i] * dt).coerceAtLeast(specterrHeights[i])
+                }
+            }
+
+            // Specterr Starfield Warp Particles (accelerating outward through 3D space on bass hits)
+            val warpSpdMult = (0.85f + bass * 4.2f + mTot * 1.8f)
+            for (i in warpParticles.indices) {
+                val p = warpParticles[i]
+                p[1] += p[2] * warpSpdMult * dt
+                if (p[1] > 1.45f) {
+                    p[1] = 0.22f + (i % 6) * 0.035f
+                    p[0] = (i * 137.5f) * (Math.PI.toFloat() / 180f) + totalTime * 0.25f
+                }
+            }
         }
 
         val kFast = min(1f, dt * 13f)
@@ -762,100 +815,180 @@ class AliceOrbView @JvmOverloads constructor(
             "fireflies" -> drawFirefliesVisualizer(canvas, cx, cy, radius, alpha)
             "aurora" -> drawAuroraVisualizer(canvas, cx, cy, radius, alpha)
             "matrix" -> drawMatrixVisualizer(canvas, cx, cy, radius, alpha)
-            else -> drawParticlesVisualizer(canvas, cx, cy, radius, alpha) // "particles"
+            else -> drawSpecterrCircleVisualizer(canvas, cx, cy, radius, alpha) // "particles" -> Specterr Flagship
         }
     }
 
-    private fun drawParticlesVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
+    /**
+     * Specterr Reference Circular Visualizer (specterr.com/music-visualizer):
+     * - Central bass-pumping core and concentric neon shockwaves
+     * - 64 high-density radial spectrum bars with smooth gravity falloff
+     * - Floating peak indicator dots that hang and fall with gravity
+     * - Outward-streaming 3D starfield warp particles accelerating on beat
+     */
+    private fun drawSpecterrCircleVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
         val bass = LiveOrbState.musicBass
         val mid = LiveOrbState.musicMid
         val high = LiveOrbState.musicHigh
         val mTot = LiveOrbState.musicOverall
 
+        val bassPunch = (bass * 0.22f + mTot * 0.08f)
+        val coreR = radius * (0.33f + bassPunch)
+
+        // 1. Concentric ambient bass glow aura behind visualizer
+        val glowR = coreR * (1.6f + bass * 0.45f)
+        val auraShader = RadialGradient(
+            cx, cy, glowR,
+            intArrayOf(
+                Color.argb((alpha * (0.35f + bass * 0.35f)).toInt().coerceIn(0, 255), 0, 212, 255),
+                Color.argb((alpha * (0.22f + mid * 0.20f)).toInt().coerceIn(0, 255), 139, 92, 246),
+                Color.TRANSPARENT
+            ),
+            floatArrayOf(0f, 0.65f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        visGlowPaint.shader = auraShader
+        visGlowPaint.style = Paint.Style.FILL
+        canvas.drawCircle(cx, cy, glowR, visGlowPaint)
+        visGlowPaint.shader = null
+
+        // 2. Specterr Starfield Warp Particles (flying outward through 3D space)
         visPaint.style = Paint.Style.FILL
+        for (i in warpParticles.indices) {
+            val p = warpParticles[i]
+            val ang = p[0]
+            val distFrac = p[1]
+            val px = cx + cos(ang) * (distFrac * radius)
+            val py = cy + sin(ang) * (distFrac * radius)
 
-        // Center pulsating core
-        val coreR = radius * (0.28f + bass * 0.22f)
-        visPaint.color = Color.parseColor("#38BDF8")
-        visPaint.alpha = ((alpha * (0.35f + bass * 0.45f))).toInt().coerceIn(0, 255)
-        canvas.drawCircle(cx, cy, coreR, visPaint)
+            // Opacity: fade in as it leaves core, fade out as it approaches boundary
+            val fade = sin((distFrac / 1.45f) * PI.toFloat()).coerceIn(0f, 1f)
+            val pAlpha = ((alpha * fade * (0.55f + bass * 0.45f))).toInt().coerceIn(0, 255)
+            val pSize = max(2.5f, p[3] * (0.6f + distFrac * 0.9f + high * 0.4f))
 
-        // Orbital particle cloud
-        for (i in visParticles.indices) {
-            val p = visParticles[i]
-            val ang = p[0] + totalTime * p[2] * (0.45f + mid * 0.8f)
-            val radBase = radius * p[1] * (0.85f + bass * 0.45f)
-            val wobble = sin(ang * 3f + totalTime * 2.5f) * radius * 0.08f
-            val px = cx + cos(ang) * (radBase + wobble)
-            val py = cy + sin(ang) * (radBase + wobble)
-
-            val pSize = max(3f, radius * 0.024f * (0.8f + (i % 3) * 0.5f + high * 1.2f))
-            val pCol = when (i % 3) {
-                0 -> Color.parseColor("#00D4FF") // Cyan
-                1 -> Color.parseColor("#A855F7") // Violet
-                else -> Color.parseColor("#FACC15") // Champagne
+            val pCol = when (p[4].toInt()) {
+                0 -> Color.parseColor("#00F5FF") // Electric Cyan
+                1 -> Color.parseColor("#A855F7") // Neon Violet
+                2 -> Color.parseColor("#F43F5E") // Hot Pink
+                else -> Color.parseColor("#FBBF24") // Gold
             }
             visPaint.color = pCol
-            visPaint.alpha = alpha
+            visPaint.alpha = pAlpha
             canvas.drawCircle(px, py, pSize, visPaint)
         }
+
+        // 3. 64 Radial Symmetrical Equalizer Bars (Specterr circular waveform)
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeCap = Paint.Cap.ROUND
+        visPaint.strokeWidth = max(3.2f, radius * 0.024f)
+
+        val half = specterrBars / 2
+        for (i in 0 until specterrBars) {
+            val ang = (i.toFloat() / specterrBars) * (2f * PI.toFloat()) - (PI.toFloat() / 2f)
+            val rIn = coreR + radius * 0.02f
+            val h = specterrHeights[i] * radius * 0.68f + radius * 0.03f
+            val rOut = rIn + h
+
+            val x0 = cx + cos(ang) * rIn
+            val y0 = cy + sin(ang) * rIn
+            val x1 = cx + cos(ang) * rOut
+            val y1 = cy + sin(ang) * rOut
+
+            // Color gradient across the frequency spectrum (Cyan -> Violet -> Pink -> Amber)
+            val tColor = abs(i - half).toFloat() / half
+            visPaint.color = blendMultiColor(tColor)
+            visPaint.alpha = alpha
+            canvas.drawLine(x0, y0, x1, y1, visPaint)
+
+            // 4. Floating Peak Indicator Caps (Specterr signature floating dots)
+            val peakH = specterrPeaks[i] * radius * 0.68f + radius * 0.055f
+            val rPeak = rIn + peakH
+            val px = cx + cos(ang) * rPeak
+            val py = cy + sin(ang) * rPeak
+            visPaint.style = Paint.Style.FILL
+            visPaint.alpha = ((alpha * 0.95f)).toInt().coerceIn(0, 255)
+            val peakSize = max(2.2f, radius * 0.012f)
+            canvas.drawCircle(px, py, peakSize, visPaint)
+            visPaint.style = Paint.Style.STROKE
+        }
+
+        // 5. Central Pulsating Glass Core with Rim
+        visPaint.style = Paint.Style.FILL
+        visPaint.color = Color.parseColor("#0B101B")
+        visPaint.alpha = ((alpha * 0.85f)).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, coreR, visPaint)
+
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeWidth = max(2.5f, radius * 0.018f)
+        visPaint.color = Color.parseColor("#00D4FF")
+        visPaint.alpha = ((alpha * (0.65f + bass * 0.35f))).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, coreR, visPaint)
+
+        // Subtle inner glowing ring
+        visPaint.strokeWidth = max(1.5f, radius * 0.010f)
+        visPaint.color = Color.parseColor("#A855F7")
+        canvas.drawCircle(cx, cy, coreR * 0.82f, visPaint)
     }
 
     private fun drawBarsVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
-        visPaint.style = Paint.Style.STROKE
-        visPaint.strokeCap = Paint.Cap.ROUND
-        visPaint.strokeWidth = max(3f, radius * 0.045f)
-
-        val bands = LiveOrbState.rawBands
-        val n = 24
-        val rInner = radius * 0.40f
-        for (i in 0 until n) {
-            val ang = Math.toRadians((i * (360.0 / n) - 90.0))
-            val valB = if (i < bands.size) bands[i] else 0f
-            val rOuter = rInner + valB * radius * 0.65f + radius * 0.04f
-
-            val x0 = cx + cos(ang).toFloat() * rInner
-            val y0 = cy + sin(ang).toFloat() * rInner
-            val x1 = cx + cos(ang).toFloat() * rOuter
-            val y1 = cy + sin(ang).toFloat() * rOuter
-
-            visPaint.color = blendColor(Color.parseColor("#00D4FF"), Color.parseColor("#EC4899"), i / 24f)
-            visPaint.alpha = alpha
-            canvas.drawLine(x0, y0, x1, y1, visPaint)
-        }
+        // High density dual-circular Specterr equalizer
+        drawSpecterrCircleVisualizer(canvas, cx, cy, radius, alpha)
     }
 
     private fun drawWaveVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
-        visPaint.style = Paint.Style.STROKE
-        visPaint.strokeWidth = max(2.5f, radius * 0.035f)
-
         val bass = LiveOrbState.musicBass
         val mid = LiveOrbState.musicMid
         val high = LiveOrbState.musicHigh
+        val mTot = LiveOrbState.musicOverall
 
-        for (w in 0..2) {
+        // Background floating particles
+        visPaint.style = Paint.Style.FILL
+        for (i in 0 until 24) {
+            val t = (totalTime * (0.2f + (i % 4) * 0.08f) + i / 24f) % 1f
+            val px = cx - radius * 0.9f + t * radius * 1.8f
+            val py = cy + sin(t * PI.toFloat() * 2f + i) * radius * 0.45f
+            val pSize = max(2.5f, radius * (0.012f + (i % 3) * 0.010f + high * 0.02f))
+            visPaint.color = if (i % 2 == 0) Color.parseColor("#00F5FF") else Color.parseColor("#EC4899")
+            visPaint.alpha = ((alpha * 0.6f)).toInt().coerceIn(0, 255)
+            canvas.drawCircle(px, py, pSize, visPaint)
+        }
+
+        // Mirrored Specterr Horizon Wave
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeCap = Paint.Cap.ROUND
+
+        for (layer in 0..1) {
             visWavePath.reset()
-            val amp = radius * (0.12f + (if (w == 0) bass else if (w == 1) mid else high) * 0.28f)
-            val freq = 2f + w * 1.5f
-            val phase = totalTime * (2f + w * 1.2f)
-            val yBase = cy + (w - 1) * radius * 0.16f
+            visWavePathBottom.reset()
+            visPaint.strokeWidth = if (layer == 0) max(3f, radius * 0.028f) else max(2f, radius * 0.018f)
 
-            val steps = 30
+            val amp = radius * (0.16f + (if (layer == 0) bass else mid) * 0.35f)
+            val freq = 2.5f + layer * 1.2f
+            val phase = totalTime * (2.8f + layer * 1.5f)
+
+            val steps = 36
             for (i in 0..steps) {
                 val t = i / steps.toFloat()
-                val x = cx - radius * 0.85f + t * radius * 1.7f
-                val env = sin(t * Math.PI.toFloat()) // Window envelope
-                val y = yBase + sin(t * freq * Math.PI.toFloat() * 2f + phase) * amp * env
-                if (i == 0) visWavePath.moveTo(x, y) else visWavePath.lineTo(x, y)
+                val x = cx - radius * 0.88f + t * radius * 1.76f
+                val env = sin(t * PI.toFloat())
+                val yOffset = sin(t * freq * PI.toFloat() * 2f + phase) * amp * env
+                val yTop = cy - abs(yOffset)
+                val yBottom = cy + abs(yOffset)
+
+                if (i == 0) {
+                    visWavePath.moveTo(x, yTop)
+                    visWavePathBottom.moveTo(x, yBottom)
+                } else {
+                    visWavePath.lineTo(x, yTop)
+                    visWavePathBottom.lineTo(x, yBottom)
+                }
             }
 
-            visPaint.color = when (w) {
-                0 -> Color.parseColor("#00D4FF")
-                1 -> Color.parseColor("#818CF8")
-                else -> Color.parseColor("#C084FC")
-            }
+            visPaint.color = if (layer == 0) Color.parseColor("#00F5FF") else Color.parseColor("#A855F7")
             visPaint.alpha = alpha
             canvas.drawPath(visWavePath, visPaint)
+            visPaint.color = if (layer == 0) Color.parseColor("#EC4899") else Color.parseColor("#F59E0B")
+            canvas.drawPath(visWavePathBottom, visPaint)
         }
     }
 
@@ -938,5 +1071,14 @@ class AliceOrbView @JvmOverloads constructor(
         val g = (Color.green(c0) * inv + Color.green(c1) * k).toInt()
         val b = (Color.blue(c0) * inv + Color.blue(c1) * k).toInt()
         return Color.rgb(r, g, b)
+    }
+
+    private fun blendMultiColor(t: Float): Int {
+        val k = t.coerceIn(0f, 1f)
+        return when {
+            k < 0.35f -> blendColor(Color.parseColor("#00F5FF"), Color.parseColor("#6366F1"), k / 0.35f)
+            k < 0.70f -> blendColor(Color.parseColor("#6366F1"), Color.parseColor("#EC4899"), (k - 0.35f) / 0.35f)
+            else -> blendColor(Color.parseColor("#EC4899"), Color.parseColor("#F59E0B"), (k - 0.70f) / 0.30f)
+        }
     }
 }

@@ -23,7 +23,7 @@ constexpr const char* kCaBundlePath = "/data/local/openstation/cacert.pem";
 constexpr size_t kTxChunkSamples = 1600;
 constexpr size_t kMaxConnectingPcmSamples = 16000 * 6;
 constexpr size_t kMaxLivePcmSamples = 16000 * 2;
-constexpr float kSpeechRmsThreshold = 520.0f;
+constexpr float kSpeechRmsThreshold = 95.0f; // Ultra-sensitive far-field speech detector (was 520, which blocked normal room voice)
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(

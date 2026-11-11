@@ -255,8 +255,8 @@ void WakeWordEngine::worker_loop() {
         }
 
         const float sens_norm = std::clamp(cur.mic_sensitivity, 10, 100) / 100.0f;
-        const float vad_thr = std::clamp(0.34f - sens_norm * 0.16f, 0.16f, 0.36f);
-        const float eff_kws_thr = std::clamp(cur.threshold * (1.15f - sens_norm * 0.30f), 0.05f, 0.50f);
+        const float vad_thr = std::clamp(0.20f - sens_norm * 0.12f, 0.06f, 0.25f);
+        const float eff_kws_thr = std::clamp(cur.threshold * (0.75f - sens_norm * 0.25f), 0.02f, 0.25f);
 
         SherpaOnnxVadModelConfig vad_cfg {};
         memset(&vad_cfg, 0, sizeof(vad_cfg));
@@ -447,11 +447,11 @@ void WakeWordEngine::worker_loop() {
             }
             float win_rms = std::sqrt(sum_sq * (1.0f / static_cast<float>(kVadWin)));
             const float sens_norm = std::clamp(cur_cfg.mic_sensitivity, 10, 100) / 100.0f;
-            const float rms_mult = 1.65f - sens_norm * 0.35f;
-            const float rms_floor = 0.0065f - sens_norm * 0.0025f;
-            const float rms_thr = std::clamp(noise_rms * rms_mult, rms_floor, 0.035f);
-            const float peak_thr = std::clamp(noise_rms * (3.6f - sens_norm * 0.8f), rms_floor * 2.8f, 0.12f);
-            bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.35f);
+            const float rms_mult = 1.15f - sens_norm * 0.20f;
+            const float rms_floor = 0.0006f; // ~20 RMS in 16-bit PCM (far-field whisper receptive)
+            const float rms_thr = std::clamp(noise_rms * rms_mult, rms_floor, 0.020f);
+            const float peak_thr = std::clamp(noise_rms * (2.2f - sens_norm * 0.6f), rms_floor * 1.8f, 0.06f);
+            bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.25f);
 
             if (energetic) {
                 if (vad_sleeping && lead_count >= kVadWin) {
@@ -464,10 +464,10 @@ void WakeWordEngine::worker_loop() {
                     }
                     vad_sleeping = false;
                 }
-                vad_warm_wins = 20; // ~640 ms active Silero tracking after acoustic activity
+                vad_warm_wins = 32; // ~1024 ms active Silero tracking after acoustic activity
             } else if (!kws_active && hangover_wins == 0 && vad_warm_wins == 0) {
                 if (win_rms < noise_rms * 2.2f) {
-                    noise_rms = std::clamp(noise_rms * 0.99f + win_rms * 0.01f, 0.0015f, 0.025f);
+                    noise_rms = std::clamp(noise_rms * 0.99f + win_rms * 0.01f, 0.0008f, 0.020f);
                 }
             }
 

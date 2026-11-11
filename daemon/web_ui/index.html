@@ -161,11 +161,6 @@
 
           <div class="card">
             <h2>Настройки Алисы</h2>
-            <div class="form-row toggle-row">
-              <label>Включить Алису</label>
-              <input type="checkbox" id="astEnabled" checked />
-            </div>
-
             <div class="form-row">
               <label>Голос ответа</label>
               <select id="astVoice">
@@ -181,32 +176,29 @@
             </div>
 
             <div class="form-row">
-              <label>Gemini API Key</label>
-              <div class="input-send-row">
-                <input type="password" id="astApiKey" placeholder="AIza... или AQ.Ab8..." autocomplete="off" />
-                <button class="btn btn-sm" id="btnToggleKeyVis" type="button">Показать</button>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <label>Характер и инструкции</label>
-              <textarea id="astPrompt" rows="3"></textarea>
-            </div>
-
-            <div class="form-row">
               <label>Чувствительность микрофонов <span id="lblMicSens">85%</span></label>
               <input type="range" id="micSensitivity" min="10" max="100" step="5" value="85" />
               <div class="hint">Увеличенная дальность улавливания голоса по 7 микрофонам (до 8-10 метров).</div>
             </div>
 
-            <div class="grid-2-tight">
-              <div class="form-row toggle-row">
-                <label>Откликаться на «Алиса»</label>
-                <input type="checkbox" id="astWakeEn" checked />
+            <div class="form-row">
+              <label>Местоположение (для прогноза погоды)</label>
+              <div class="input-send-row">
+                <input type="text" id="locCity" placeholder="Автоопределение по IP..." />
+                <button class="btn btn-sm" id="btnDetectLocation" type="button">📍 По IP</button>
+                <button class="btn btn-sm" id="btnTestWeather" type="button">☀️ Погода</button>
               </div>
-              <div class="form-row toggle-row">
-                <label>Звуковой отклик</label>
-                <input type="checkbox" id="astChime" checked />
+              <div class="hint" id="weatherTestResult" style="margin-top:4px;"></div>
+            </div>
+
+            <div class="form-row">
+              <label>Память Алисы (факты и заметки)</label>
+              <div class="alice-memory-box" id="aliceMemoryBox">
+                <div class="hint" id="memoryEmptyHint">Заметок пока нет. Добавьте ниже или скажите Алисе «Запомни...»</div>
+              </div>
+              <div class="input-send-row" style="margin-top:8px;">
+                <input type="text" id="newMemoryNote" placeholder="Добавить факт («Любимый чай: зелёный»)..." />
+                <button class="btn btn-sm btn-accent" id="btnAddMemoryNote" type="button">+ Запомнить</button>
               </div>
             </div>
 
@@ -217,26 +209,34 @@
             <div class="hint" id="aliceTestResult" style="margin-top:6px;"></div>
 
             <details class="adv-details">
-              <summary>Дополнительные настройки</summary>
+              <summary>Инженерные параметры Gemini Live</summary>
               <div class="adv-details-body">
-                <div class="form-row">
-                  <label>Местоположение (для погоды)</label>
-                  <div class="input-send-row">
-                    <input type="text" id="locCity" placeholder="Автоопределение по IP..." />
-                    <button class="btn btn-sm" id="btnDetectLocation" type="button">📍 По IP</button>
-                    <button class="btn btn-sm" id="btnTestWeather" type="button">☀️ Погода</button>
-                  </div>
-                  <div class="hint" id="weatherTestResult" style="margin-top:4px;"></div>
+                <div class="form-row toggle-row">
+                  <label>Включить Алису</label>
+                  <input type="checkbox" id="astEnabled" checked />
                 </div>
 
                 <div class="form-row">
-                  <label>Память Алисы (факты и заметки)</label>
-                  <div class="alice-memory-box" id="aliceMemoryBox">
-                    <div class="hint" id="memoryEmptyHint">Заметок пока нет. Добавьте ниже или скажите Алисе голосом «Запомни...»</div>
+                  <label>Gemini API Key</label>
+                  <div class="input-send-row">
+                    <input type="password" id="astApiKey" placeholder="AIza... или AQ.Ab8..." autocomplete="off" />
+                    <button class="btn btn-sm" id="btnToggleKeyVis" type="button">Показать</button>
                   </div>
-                  <div class="input-send-row" style="margin-top:6px;">
-                    <input type="text" id="newMemoryNote" placeholder="Добавить факт («Любимый чай: зелёный»)..." />
-                    <button class="btn btn-sm btn-accent" id="btnAddMemoryNote" type="button">+ Запомнить</button>
+                </div>
+
+                <div class="form-row">
+                  <label>Характер и инструкции (системный промпт)</label>
+                  <textarea id="astPrompt" rows="3"></textarea>
+                </div>
+
+                <div class="grid-2-tight">
+                  <div class="form-row toggle-row">
+                    <label>Откликаться на «Алиса»</label>
+                    <input type="checkbox" id="astWakeEn" checked />
+                  </div>
+                  <div class="form-row toggle-row">
+                    <label>Звуковой отклик</label>
+                    <input type="checkbox" id="astChime" checked />
                   </div>
                 </div>
 
@@ -257,10 +257,12 @@
                     </datalist>
                   </div>
                 </div>
+
                 <div class="form-row">
                   <label>Сервер обхода (SNI-прокси)</label>
                   <input type="text" id="astProxyHost" placeholder="ai-pool.comss.one (пусто = выкл)" value="ai-pool.comss.one" />
                 </div>
+
                 <div class="grid-2-tight">
                   <div class="form-row">
                     <label>Продолжение диалога (сек)</label>
@@ -271,6 +273,7 @@
                     <input type="number" id="astMaxSess" min="15" max="600" value="120" />
                   </div>
                 </div>
+
                 <div class="grid-2-tight">
                   <div class="form-row toggle-row">
                     <label>Защита от эха (Echo Guard)</label>
@@ -517,24 +520,6 @@
       <section class="panel" id="tab-system">
         <div class="grid-2">
           <div class="stack">
-            <div class="card" id="bootanimCard">
-              <div class="row-between">
-                <h2>Заставка при включении</h2>
-                <span class="badge" id="bootanimModeBadge">--</span>
-              </div>
-              <div class="status-banner" id="bootanimStatusBanner">Проверка текущей заставки...</div>
-              <input type="file" id="bootanimFileInput" accept=".zip" style="display:none;" />
-              <div class="btn-row">
-                <button class="btn btn-sm btn-accent" id="btnBootanimOta" type="button">⬇ Поставить OpenStation</button>
-                <button class="btn btn-sm" id="btnBootanimUpload" type="button">📁 Загрузить свою (.zip)</button>
-                <button class="btn btn-sm" id="btnBootanimRestore" type="button">↩ Вернуть оригинал</button>
-                <button class="btn btn-sm" id="btnBootanimPreview" type="button">▶ Предпросмотр (5 сек)</button>
-              </div>
-              <p class="hint" style="margin-top:10px; margin-bottom:0;">
-                Можно поставить фирменную заставку OpenStation Max, вернуть оригинальную Яндекс или загрузить свой bootanimation.zip (метод Store без сжатия, до 24 МБ).
-              </p>
-            </div>
-
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
@@ -557,13 +542,28 @@
                 <button class="btn btn-sm btn-accent" id="btnOtaInstall" type="button" style="display:none;">⬇ Установить обновление</button>
                 <button class="btn btn-sm" id="btnOtaReinstall" type="button">Переустановить</button>
               </div>
-              <details class="adv-details">
-                <summary>Дополнительные настройки обновлений</summary>
+
+              <details class="adv-details" id="bootanimCard">
+                <summary>Заставка при включении (Bootanimation) <span class="badge" id="bootanimModeBadge">--</span></summary>
                 <div class="adv-details-body">
-                  <div class="form-row toggle-row">
-                    <label>Обновлять заставку OpenStation при OTA</label>
+                  <div class="status-banner" id="bootanimStatusBanner">Проверка текущей заставки...</div>
+                  <input type="file" id="bootanimFileInput" accept=".zip" style="display:none;" />
+                  <div class="btn-row">
+                    <button class="btn btn-sm btn-accent" id="btnBootanimOta" type="button">⬇ OpenStation</button>
+                    <button class="btn btn-sm" id="btnBootanimUpload" type="button">📁 Загрузить (.zip)</button>
+                    <button class="btn btn-sm" id="btnBootanimRestore" type="button">↩ Оригинал</button>
+                    <button class="btn btn-sm" id="btnBootanimPreview" type="button">▶ Тест 5 сек</button>
+                  </div>
+                  <div class="form-row toggle-row" style="margin-top:10px;">
+                    <label>Синхронизировать заставку при OTA</label>
                     <input type="checkbox" id="otaSyncBootanim" checked />
                   </div>
+                </div>
+              </details>
+
+              <details class="adv-details">
+                <summary>Репозиторий OTA</summary>
+                <div class="adv-details-body">
                   <div class="grid-2-tight">
                     <div class="form-row">
                       <label>GitHub репозиторий</label>

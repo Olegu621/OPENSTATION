@@ -77,9 +77,9 @@ namespace OpenStationFlasher
             MinWidth = 800;
             MinHeight = 650;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            Background = new SolidColorBrush(Color.FromRgb(13, 17, 23)); // #0d1117
-            Foreground = new SolidColorBrush(Color.FromRgb(230, 237, 243));
-            FontFamily = new FontFamily("Segoe UI, Segoe UI Variable, sans-serif");
+            Background = new SolidColorBrush(Color.FromRgb(8, 10, 16)); // Apple deep glass
+            Foreground = new SolidColorBrush(Color.FromRgb(240, 243, 248));
+            FontFamily = new FontFamily("Segoe UI Variable, Segoe UI, sans-serif");
         }
 
         private void InitUI()
@@ -121,9 +121,9 @@ namespace OpenStationFlasher
                 Background = new SolidColorBrush(Color.FromArgb(40, 0, 212, 255)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(0, 212, 255)),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(4),
+                CornerRadius = new CornerRadius(999),
                 Margin = new Thickness(12, 3, 0, 3),
-                Padding = new Thickness(8, 2, 8, 2)
+                Padding = new Thickness(12, 3, 12, 3)
             };
             verBadge.Child = new TextBlock
             {
@@ -149,12 +149,12 @@ namespace OpenStationFlasher
             // 1. Device Status Card
             _statusBadge = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(22, 27, 34)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(48, 54, 61)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(16, 12, 16, 12),
-                Margin = new Thickness(0, 0, 0, 10)
+                Background = new SolidColorBrush(Color.FromArgb(200, 18, 24, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                BorderThickness = new Thickness(1.2),
+                CornerRadius = new CornerRadius(22),
+                Padding = new Thickness(18, 14, 18, 14),
+                Margin = new Thickness(0, 0, 0, 12)
             };
 
             var statusGrid = new Grid();
@@ -198,12 +198,12 @@ namespace OpenStationFlasher
             // 2. Pinout Helper (Initially Collapsed)
             _pinoutCard = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(19, 23, 30)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(56, 139, 253)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(14),
-                Margin = new Thickness(0, 0, 0, 10),
+                Background = new SolidColorBrush(Color.FromArgb(220, 15, 20, 32)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(90, 0, 212, 255)),
+                BorderThickness = new Thickness(1.2),
+                CornerRadius = new CornerRadius(22),
+                Padding = new Thickness(16),
+                Margin = new Thickness(0, 0, 0, 12),
                 Visibility = Visibility.Collapsed
             };
 
@@ -238,12 +238,12 @@ namespace OpenStationFlasher
             // 3. Revision Selector & Fast Action Bar
             var revBar = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(18, 22, 29)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(48, 54, 61)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(12, 8, 12, 8),
-                Margin = new Thickness(0, 0, 0, 10)
+                Background = new SolidColorBrush(Color.FromArgb(200, 18, 24, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)),
+                BorderThickness = new Thickness(1.2),
+                CornerRadius = new CornerRadius(22),
+                Padding = new Thickness(16, 10, 16, 10),
+                Margin = new Thickness(0, 0, 0, 12)
             };
 
             var revBarGrid = new Grid();
@@ -432,16 +432,48 @@ namespace OpenStationFlasher
             return (item != null && item.Tag != null) ? item.Tag.ToString() : "auto";
         }
 
+        private static Style CreateAppleGlassButtonStyle(Color bg, Color fg, int cornerRadius, bool isAccent)
+        {
+            var style = new Style(typeof(Button));
+            var template = new ControlTemplate(typeof(Button));
+            var borderFactory = new FrameworkElementFactory(typeof(Border));
+            borderFactory.Name = "border";
+            borderFactory.SetValue(Border.CornerRadiusProperty, new CornerRadius(cornerRadius));
+            borderFactory.SetValue(Border.BackgroundProperty, new SolidColorBrush(bg));
+            borderFactory.SetValue(Border.BorderBrushProperty, new SolidColorBrush(isAccent ? Color.FromArgb(140, 255, 255, 255) : Color.FromArgb(45, 255, 255, 255)));
+            borderFactory.SetValue(Border.BorderThicknessProperty, new Thickness(1.2));
+
+            var contentPresenter = new FrameworkElementFactory(typeof(ContentPresenter));
+            contentPresenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            contentPresenter.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            borderFactory.AppendChild(contentPresenter);
+
+            template.VisualTree = borderFactory;
+
+            var hoverTrigger = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+            Color hoverBg = Color.FromArgb(
+                (byte)Math.Min(255, bg.A + 45),
+                (byte)Math.Min(255, bg.R + 25),
+                (byte)Math.Min(255, bg.G + 25),
+                (byte)Math.Min(255, bg.B + 25));
+            hoverTrigger.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(hoverBg), "border"));
+            hoverTrigger.Setters.Add(new Setter(Border.BorderBrushProperty, new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)), "border"));
+            template.Triggers.Add(hoverTrigger);
+
+            style.Setters.Add(new Setter(Button.TemplateProperty, template));
+            style.Setters.Add(new Setter(Control.ForegroundProperty, new SolidColorBrush(fg)));
+            style.Setters.Add(new Setter(FrameworkElement.CursorProperty, Cursors.Hand));
+            return style;
+        }
+
         private Button CreateButton(string text, Color bg, Color fg)
         {
             var btn = new Button
             {
                 Content = text,
-                Background = new SolidColorBrush(bg),
-                Foreground = new SolidColorBrush(fg),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(48, 54, 61)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand
+                Padding = new Thickness(14, 7, 14, 7),
+                Cursor = Cursors.Hand,
+                Style = CreateAppleGlassButtonStyle(bg, fg, 999, false)
             };
             return btn;
         }
@@ -450,12 +482,10 @@ namespace OpenStationFlasher
         {
             var btn = new Button
             {
-                Background = new SolidColorBrush(bgColor),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(140, accentColor.R, accentColor.G, accentColor.B)),
-                BorderThickness = new Thickness(1.5),
                 Cursor = Cursors.Hand,
-                Padding = new Thickness(12, 12, 12, 12),
-                HorizontalContentAlignment = HorizontalAlignment.Left
+                Padding = new Thickness(16, 14, 16, 14),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Style = CreateAppleGlassButtonStyle(bgColor, Color.FromRgb(255, 255, 255), 24, true)
             };
 
             var stack = new StackPanel();
@@ -472,9 +502,9 @@ namespace OpenStationFlasher
             {
                 Text = subtitle,
                 FontSize = 11,
-                Foreground = new SolidColorBrush(Color.FromRgb(139, 148, 158)),
+                Foreground = new SolidColorBrush(Color.FromRgb(150, 160, 175)),
                 TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 4, 0, 0)
+                Margin = new Thickness(0, 5, 0, 0)
             };
             stack.Children.Add(sBlock);
 

@@ -352,10 +352,10 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             float mic_f = 0.0f;
             if (tracked_ch == 1) {
                 mic_f = samp[0];
-            } else if (cfg_copy.primary_mic_channel >= 0 && cfg_copy.primary_mic_channel < tracked_ch) {
+            } else if (cfg_copy.primary_mic_channel > 1 && cfg_copy.primary_mic_channel < tracked_ch) {
                 mic_f = samp[cfg_copy.primary_mic_channel];
             } else {
-                // Delay-and-sum average over all 7 physical PDM mic channels (ch 0..6; ch 7 is duplicate of ch 6)
+                // Delay-and-sum omni beamforming over all 7 physical PDM mic channels (ch 0..6; 360-deg far-field pickup)
                 int cnt = 0;
                 int max_m = std::min(tracked_ch, 7);
                 for (int c = 0; c < max_m; ++c) {
@@ -364,6 +364,7 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
                     ++cnt;
                 }
                 if (cnt > 0) mic_f /= static_cast<float>(cnt);
+                else mic_f = samp[0];
             }
 
             // NLMS Acoustic Echo Cancellation using hardware loopback reference
@@ -455,10 +456,10 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         } else {
             const float sens_norm = std::clamp(cfg_copy.mic_sensitivity, 10, 100) / 100.0f;
             const bool is_raw_multi = (tracked_ch >= 8);
-            const float min_gain = 0.35f;
-            const float max_gain = is_raw_multi ? (6.0f + sens_norm * 26.0f) : (1.5f + sens_norm * 4.5f);
-            const float target_rms = 2200.0f + sens_norm * 2600.0f; // ~4410 @ 85% sensitivity
-            const float idle_noise_cap = 240.0f + sens_norm * 220.0f; // ~427 (~0.013 FS) pre-armed ready ceiling
+            const float min_gain = 0.50f;
+            const float max_gain = is_raw_multi ? (10.0f + sens_norm * 35.0f) : (2.5f + sens_norm * 7.5f);
+            const float target_rms = 3200.0f + sens_norm * 2800.0f; // ~5580 @ 85% sensitivity
+            const float idle_noise_cap = 280.0f + sens_norm * 260.0f; // ~500 pre-armed ready ceiling
 
             // Track idle ambient room floor slowly (never chase active speech upward)
             if (raw_rms < agc_noise_floor_ * 2.2f + 15.0f) {
@@ -470,10 +471,10 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
 
             float ready_gain = std::clamp(
                 idle_noise_cap / std::max(agc_noise_floor_, 18.0f),
-                is_raw_multi ? 3.2f : 1.0f,
-                max_gain * 0.72f);
+                is_raw_multi ? 4.5f : 1.2f,
+                max_gain * 0.75f);
 
-            float speech_trig = agc_noise_floor_ * (1.70f - sens_norm * 0.25f) + 18.0f;
+            float speech_trig = agc_noise_floor_ * (1.30f - sens_norm * 0.18f) + 8.0f;
             bool speech_present = (raw_rms > speech_trig);
 
             float prev_gain = agc_gain_;
