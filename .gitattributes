@@ -11,6 +11,8 @@
 *.css text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+*.py text eol=lf
+*.inf text eol=crlf
 openstationd binary
 *.apk binary
 *.so binary
@@ -19,3 +21,8 @@ openstationd binary
 *.png binary
 *.jpg binary
 *.webp binary
+*.img binary
+*.dll binary
+*.exe binary
+*.sys binary
+*.cat binary

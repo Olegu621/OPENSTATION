@@ -168,6 +168,47 @@
 
 ---
 
+## 🔌 Полная прошивка через сервисный порт (`FLASH_SERVICE_PORT.bat`)
+
+> Нужно для **чистой установки с нуля**, восстановления из **кирпича (unbrick)** или при отсутствии ADB. Оболочка (`OpenStationLauncher`, `OpenStationIME`, `openstationd`, модели KWS/VAD и Яндекс Музыка) полностью **вшивается внутрь разделов `system` и `vendor`** — работает даже после полного сброса `/data`. Загрузчик и уникальные разделы платы (`bootloader`, `boot`, `cri_data`) **не перезаписываются**.
+
+### Схема 7-пинового сервисного разъёма
+
+Разъём расположен на нижней стороне Станции Макс **под резиновой заглушкой возле радиатора**. Нумерация `1..7` идёт **со стороны разъёма AUX**:
+
+```text
+  [AUX]    1   2   3   4   5   6   7
+           ■   ■   ■   ■   ■   ■   ■
+           │   │   │           │
+         DATA+ │  GND ─────────┘   <-- замкнуть 6 пин на 3 (GND)
+             DATA-                     при подключении USB и питания!
+```
+
+1. Подключите USB-кабель от ПК к пинам **1 (`DATA+`)**, **2 (`DATA-`)**, **3 (`GND`)** *(линию питания +5V от USB НЕ подключать)*.
+2. Замкните **6 пин** на **3 пин (`GND`)** для активации режима **Amlogic USB Boot (`VID_1B8E&PID_C003`)**.
+3. Вставьте USB в ПК, подключите блок питания 19V к колонке и запустите **[`FLASH_SERVICE_PORT.bat`](FLASH_SERVICE_PORT.bat)**:
+   - **`[1]`** — прошить `vbmeta` + `vendor` + `system` и очистить `/data` и `/cache` *(рекомендуется с нуля / после сбоя)*;
+   - **`[2]`** — прошить системные разделы **без очистки `/data`** *(сохранить API-ключ и токены)*;
+   - **`[3]`** — предварительно установить USB-драйвер **WorldCup (`service_flash\Drivers\`)** и прошить;
+   - **`[4]`** — указать локальный архив `OpenStationMax-ROM-*.zip` вручную.
+4. Скрипт сам проверит драйвер, при отсутствии скачает/найдёт **`OpenStationMax-ROM-v1.2.0.zip`** (с проверкой SHA-256 по [`rom/rom_manifest.json`](rom/rom_manifest.json)), загрузит U-Boot (`boot-g12.py -> aml.img`) и запишет разделы через `update.exe`.
+5. **После завершения обязательно снимите перемычку 6↔3**, переподключите питание и подождите 60–90 секунд — сразу запустится OpenStation Max и **Мастер настройки ТВ ↔ телефон**.
+
+<details>
+<summary><b>🧱 Пересборка сервисных образов (`vbmeta.img`, `vendor.img`, `system.img`)</b></summary>
+
+Для сборки своего релиза `OpenStationMax-ROM-vX.Y.Z.zip` (без WSL на Windows):
+1. Поместите чистые разблокированные `vbmeta.img`, `vendor.img`, `system.img` от YAOSX 1.99 в папку `base_rom/` *(либо скрипт сам найдёт `Desktop\YAOSX\1.99`)*.
+2. Подключите любую рабочую станцию с root ADB и выполните:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_service_images.ps1
+   ```
+3. Скрипт проверит SHA-256 `firmware/`, удалит блоатварь Яндекса из образов, вошьёт OpenStation (`OpenStationLauncher`, `OpenStationIME`, `/system/openstation/` с чистым шаблоном `config.default.json` без секретов, обновлённый `/vendor/bin/rc_local.sh`), выполнит `e2fsck -fy/-fn`, обнулит пустые блоки и соберёт архив в `dist/OpenStationMax-ROM-vX.Y.Z.zip` + `rom/rom_manifest.json`.
+
+</details>
+
+---
+
 ## ✨ Мастер настройки (на ТВ и на телефоне)
 
 При первом включении (или в любой момент по кнопке **«✨ Мастер»** на вкладке **«Станция»** и в шапке веб-пульта) доступен пошаговый мастер из 5 этапов:
@@ -286,13 +327,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\rollback.ps1 -UninstallApps
 ## 📁 Структура репозитория
 
 ```text
-├── FLASH_OPENSTATION.bat  # Прошивка в 1 клик (авто-ADB, SHA-256 проверка firmware/, USB/Wi-Fi)
+├── FLASH_OPENSTATION.bat  # Прошивка по ADB в 1 клик (SHA-256 проверка firmware/, USB/Wi-Fi)
+├── FLASH_SERVICE_PORT.bat # Полная прошивка системных разделов через 7-пин сервисный порт / Unbrick
 ├── ROLLBACK_STOCK.bat     # Возврат на стоковую прошивку Яндекса в 1 клик
-├── firmware/              # Готовые бинарники openstationd, OpenStationLauncher.apk, OpenStationIME.apk + manifest.json
+├── firmware/              # Бинарники для ADB/OTA (openstationd, Launcher/IME APK + manifest.json)
+├── rom/                   # Манифест сервисных образов rom_manifest.json (+ распакованные .img локально)
+├── service_flash/         # Инструменты Amlogic USB Boot: boot-g12.py, aml.img, update.exe, драйвер WorldCup
 ├── assets/                # Модели sherpa-onnx/Silero VAD (KWS), cacert.pem и пакет Яндекс Музыки (ym_app.tar.gz)
 ├── daemon/                # C++17 системный демон + автономный веб-сервер (LED, Audio, KWS, Gemini Live, Wyoming, MQTT)
 ├── docs/images/           # Скриншоты интерфейса ТВ, Яндекс Музыки и веб-пульта
 ├── ime/                   # Android TV клавиатура OpenStationIME (RU/EN + приём текста по UDP :8085)
 ├── launcher/              # Android TV лаунчер OpenStationLauncher (Мастер настройки, Сфера, оверлей, Музыка)
-└── scripts/               # Установщик deploy.ps1, сборщик пакета build_firmware.ps1 и откат rollback.ps1
+└── scripts/               # Установщики (deploy.ps1, flash_service_port.ps1), сборщики и откат
 ```

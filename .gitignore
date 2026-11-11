@@ -21,6 +21,14 @@ tools/
 platform-tools/
 *.zip
 
+# Service port ROM images & release archives (distributed via GitHub Releases)
+rom/*.img
+rom/*.zip
+dist/
+base_rom/
+*.img
+!service_flash/aml.img
+
 # IDE & OS metadata
 .idea/
 *.iml
