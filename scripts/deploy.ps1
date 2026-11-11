@@ -2,18 +2,105 @@
 .SYNOPSIS
   Деплой OpenStation Max (openstationd + OpenStationLauncher + OpenStationIME)
   и обратимое отключение сервисов Яндекса на Яндекс Станцию Макс (yandexstation_2).
+.EXAMPLE
+  .\scripts\deploy.ps1 -GeminiApiKey "ВАШ_GEMINI_API_KEY"
+.EXAMPLE
+  .\scripts\deploy.ps1 -UsePrebuilt -DeviceSerial 192.168.0.20 -GeminiApiKey "ВАШ_GEMINI_API_KEY"
 #>
 [CmdletBinding()]
 param(
-    [string]$AdbPath = "C:\Users\clash\OneDrive\Desktop\platform-tools\adb.exe",
+    [string]$AdbPath = "",
     [string]$DeviceSerial = "",
     [string]$GeminiApiKey = $env:GEMINI_API_KEY,
+    [string]$PrivateDnsHost = "dns.comss.one",
+    [string]$ReleaseRepo = "Olegu621/OPENSTATION",
+    [switch]$UsePrebuilt,
     [switch]$SkipBuild,
     [switch]$NoReboot
 )
 
 $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $PSScriptRoot
+
+function Resolve-AdbExecutable {
+    param([string]$Requested)
+    if ($Requested) {
+        if (Test-Path $Requested) { return (Resolve-Path $Requested).Path }
+        $cmd = Get-Command $Requested -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+        throw "Указанный adb.exe не найден: $Requested"
+    }
+    $cmdPath = (Get-Command adb.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $cmdPath) { $cmdPath = (Get-Command adb -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+    $candidates = @(
+        $cmdPath,
+        $(if ($env:ANDROID_HOME) { Join-Path $env:ANDROID_HOME "platform-tools\adb.exe" }),
+        $(if ($env:ANDROID_SDK_ROOT) { Join-Path $env:ANDROID_SDK_ROOT "platform-tools\adb.exe" }),
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" }),
+        "C:\Android\platform-tools\adb.exe",
+        (Join-Path $RootDir "platform-tools\adb.exe"),
+        (Join-Path $HOME "OneDrive\Desktop\platform-tools\adb.exe"),
+        (Join-Path $HOME "Desktop\platform-tools\adb.exe")
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
+    }
+    throw "adb.exe не найден. Установите Platform Tools (winget install Google.PlatformTools) или передайте -AdbPath `"путь\к\adb.exe`"."
+}
+
+function Resolve-AndroidSdkRoot {
+    $candidates = @(
+        $env:ANDROID_HOME,
+        $env:ANDROID_SDK_ROOT,
+        "C:\Android",
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk" }),
+        "C:\Android\Sdk"
+    )
+    foreach ($c in $candidates) {
+        if ($c -and ((Test-Path (Join-Path $c "platforms")) -or (Test-Path (Join-Path $c "ndk")) -or (Test-Path (Join-Path $c "build-tools")))) {
+            return (Resolve-Path $c).Path
+        }
+    }
+    throw "Android SDK не найден. Установите Android Studio / commandlinetools и задайте ANDROID_HOME (либо установите SDK в %LOCALAPPDATA%\Android\Sdk или C:\Android)."
+}
+
+function Resolve-Java17Home {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:JAVA_HOME) { $candidates.Add($env:JAVA_HOME) }
+    $candidates.Add("C:\Android\jdk17")
+    foreach ($dir in @("C:\Program Files\Eclipse Adoptium", "C:\Program Files\Java", "C:\Program Files\Microsoft")) {
+        if (Test-Path $dir) {
+            Get-ChildItem $dir -Directory -Filter "*17*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { $candidates.Add($_.FullName) }
+        }
+    }
+    $candidates.Add("C:\Program Files\Android\Android Studio\jbr")
+    $javaCmd = Get-Command java.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($javaCmd) {
+        $candidates.Add((Split-Path -Parent (Split-Path -Parent $javaCmd.Source)))
+    }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path (Join-Path $c "bin\java.exe"))) {
+            return (Resolve-Path $c).Path
+        }
+    }
+    throw "JDK 17 не найден. Установите: winget install EclipseAdoptium.Temurin.17.JDK"
+}
+
+function Resolve-FirstTool {
+    param([string[]]$Paths, [string]$CommandName, [string]$HelpMsg)
+    foreach ($p in $Paths) {
+        if ($p -and (Test-Path $p)) { return (Resolve-Path $p).Path }
+    }
+    if ($CommandName) {
+        $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+    }
+    throw $HelpMsg
+}
+
+if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+$') {
+    $DeviceSerial = "${DeviceSerial}:5555"
+}
 
 function Connect-TcpAdbIfNeeded {
     if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+(:\d+)?$') {
@@ -83,20 +170,56 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
 }
 
 Write-Host "=== OpenStation Max Deploy ===" -ForegroundColor Cyan
-if (-not (Test-Path $AdbPath)) {
-    throw "adb.exe не найден по пути: $AdbPath"
+$AdbPath = Resolve-AdbExecutable -Requested $AdbPath
+Write-Host "ADB: $AdbPath" -ForegroundColor Gray
+
+if (-not $GeminiApiKey) {
+    Write-Host "[!] Параметр -GeminiApiKey не передан (если ключ еще не задан на станции, добавьте его позже в http://<IP>:8080 -> Алиса)." -ForegroundColor DarkYellow
+}
+
+$DaemonBin = "$RootDir\daemon\build\openstationd"
+$ImeApk = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk"
+$LauncherApk = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk"
+
+if ($UsePrebuilt) {
+    Write-Host "[1/7] Скачивание готовых бинарников из GitHub Releases ($ReleaseRepo)..." -ForegroundColor Yellow
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DaemonBin) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ImeApk) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherApk) | Out-Null
+    $baseRelUrl = "https://github.com/$ReleaseRepo/releases/latest/download"
+    $dlSpecs = @(
+        @{ Url = "$baseRelUrl/openstationd"; Out = $DaemonBin },
+        @{ Url = "$baseRelUrl/OpenStationIME-debug.apk"; Out = $ImeApk },
+        @{ Url = "$baseRelUrl/OpenStationLauncher-debug.apk"; Out = $LauncherApk }
+    )
+    foreach ($ds in $dlSpecs) {
+        Write-Host "  -> $($ds.Url)" -ForegroundColor Gray
+        Invoke-WebRequest -Uri $ds.Url -OutFile $ds.Out -UseBasicParsing
+    }
+    $SkipBuild = $true
 }
 
 if (-not $SkipBuild) {
-    Write-Host "[1/7] Сборка openstationd, OpenStationIME и OpenStationLauncher..." -ForegroundColor Yellow
-    $cmake = "C:\Android\cmake\3.22.1\bin\cmake.exe"
-    $ninja = "C:\Android\cmake\3.22.1\bin\ninja.exe"
-    $ndk = "C:\Android\ndk\26.3.11579264"
-    $gradle = "C:\Android\gradle-8.5\bin\gradle.bat"
-    if (-not (Test-Path $cmake)) { throw "CMake не найден: $cmake" }
-    if (-not (Test-Path $ninja)) { throw "Ninja не найден: $ninja" }
-    if (-not (Test-Path "$ndk\build\cmake\android.toolchain.cmake")) { throw "NDK не найден: $ndk" }
-    if (-not (Test-Path $gradle)) { throw "Gradle не найден: $gradle" }
+    Write-Host "[1/7] Поиск SDK и сборка openstationd, OpenStationIME и OpenStationLauncher..." -ForegroundColor Yellow
+    $sdkRoot = Resolve-AndroidSdkRoot
+    $javaHome = Resolve-Java17Home
+    $cmakePaths = @(Get-ChildItem "$sdkRoot\cmake\*\bin\cmake.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) + @("C:\Program Files\CMake\bin\cmake.exe")
+    $cmake = Resolve-FirstTool -Paths $cmakePaths -CommandName "cmake.exe" -HelpMsg "CMake не найден. Установите через Android Studio SDK Manager (CMake 3.22.1) или winget install Kitware.CMake"
+    $ninjaPaths = @(Get-ChildItem "$sdkRoot\cmake\*\bin\ninja.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) + @(Join-Path (Split-Path -Parent $cmake) "ninja.exe")
+    $ninja = Resolve-FirstTool -Paths $ninjaPaths -CommandName "ninja.exe" -HelpMsg "Ninja не найден. Установите через SDK Manager (CMake включает Ninja) или winget install Ninja-build.Ninja"
+    $ndkCandidates = @($env:ANDROID_NDK_HOME, $env:ANDROID_NDK_ROOT) + @(Get-ChildItem "$sdkRoot\ndk\*" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -ExpandProperty FullName)
+    $ndk = $null
+    foreach ($nc in $ndkCandidates) {
+        if ($nc -and (Test-Path "$nc\build\cmake\android.toolchain.cmake")) { $ndk = (Resolve-Path $nc).Path; break }
+    }
+    if (-not $ndk) { throw "Android NDK не найден в $sdkRoot\ndk\*. Установите NDK r26c (26.3.11579264) через SDK Manager или sdkmanager." }
+    $gradlePaths = @(Get-ChildItem "C:\Android\gradle*\bin\gradle.bat" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) +
+                   @(Get-ChildItem "C:\Gradle\*\bin\gradle.bat" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) +
+                   @("$RootDir\launcher\gradlew.bat")
+    $gradle = Resolve-FirstTool -Paths $gradlePaths -CommandName "gradle.bat" -HelpMsg "Gradle 8.5+ не найден. Установите Gradle (winget install Gradle.Gradle или распакуйте в C:\Android\gradle-8.5)."
+
+    Write-Host "SDK=$sdkRoot | JDK=$javaHome | NDK=$(Split-Path -Leaf $ndk)" -ForegroundColor Gray
 
     $buildDir = "$RootDir\daemon\build"
     $needCmakeCfg = (-not (Test-Path "$buildDir\build.ninja"))
@@ -117,7 +240,8 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
     }
 
-    if ((-not (Test-Path "$RootDir\assets\ym_app.tar.gz")) -and (Test-Path "$RootDir\scripts\prepare_ym_app.py") -and (Test-Path "C:\Users\clash\AppData\Local\Programs\YandexMusicMod-XLam\resources\app.asar")) {
+    $localXlamAsar = if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\Programs\YandexMusicMod-XLam\resources\app.asar" } else { "" }
+    if ((-not (Test-Path "$RootDir\assets\ym_app.tar.gz")) -and (Test-Path "$RootDir\scripts\prepare_ym_app.py") -and $localXlamAsar -and (Test-Path $localXlamAsar)) {
         Write-Host "Подготовка архива Яндекс Музыки (XLam Mod)..." -ForegroundColor Gray
         & python "$RootDir\scripts\prepare_ym_app.py"
         if ($LASTEXITCODE -ne 0) { throw "prepare_ym_app.py failed" }
@@ -125,11 +249,14 @@ if (-not $SkipBuild) {
 
     & $cmake --build $buildDir
     if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
-    & "$ndk\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-strip.exe" --strip-unneeded "$buildDir\openstationd"
-    if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed" }
+    $stripExe = Get-ChildItem "$ndk\toolchains\llvm\prebuilt\*\bin\llvm-strip.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($stripExe) {
+        & $stripExe.FullName --strip-unneeded "$buildDir\openstationd"
+        if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed" }
+    }
 
-    $env:JAVA_HOME = "C:\Android\jdk17"
-    $env:ANDROID_HOME = "C:\Android"
+    $env:JAVA_HOME = $javaHome
+    $env:ANDROID_HOME = $sdkRoot
     Push-Location "$RootDir\ime"
     try { & $gradle assembleDebug --no-daemon --console=plain } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "OpenStationIME Gradle build failed" }
@@ -138,12 +265,8 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "OpenStationLauncher Gradle build failed" }
 }
 
-$DaemonBin = "$RootDir\daemon\build\openstationd"
-$ImeApk = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk"
-$LauncherApk = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk"
-
 foreach ($f in @($DaemonBin, $ImeApk, $LauncherApk)) {
-    if (-not (Test-Path $f)) { throw "Отсутствует артефакт сборки: $f" }
+    if (-not (Test-Path $f)) { throw "Отсутствует артефакт сборки: $f (запустите без -SkipBuild или используйте -UsePrebuilt)" }
 }
 
 Write-Host "[2/7] Проверка подключения ADB и прав root..." -ForegroundColor Yellow
@@ -807,9 +930,21 @@ put_if_diff global device_provisioned 1
 put_if_diff secure user_setup_complete 1
 put_if_diff secure install_non_market_apps 1
 put_if_diff global install_non_market_apps 1
-put_if_diff global private_dns_mode hostname
-put_if_diff global private_dns_specifier dns.comss.one
 '@
+if (-not [string]::IsNullOrWhiteSpace($PrivateDnsHost)) {
+    if ($PrivateDnsHost -notmatch '^[A-Za-z0-9.-]+$') {
+        throw "Некорректный хост PrivateDnsHost: $PrivateDnsHost"
+    }
+    $dnsScript = @'
+set -e
+TARGET_DNS="__DNS__"
+cur_m=$(settings get global private_dns_mode 2>/dev/null | tr -d '\r\n')
+cur_s=$(settings get global private_dns_specifier 2>/dev/null | tr -d '\r\n')
+[ "$cur_m" = "hostname" ] || settings put global private_dns_mode hostname
+[ "$cur_s" = "$TARGET_DNS" ] || settings put global private_dns_specifier "$TARGET_DNS"
+'@.Replace("__DNS__", $PrivateDnsHost)
+    Invoke-AdbSh $dnsScript
+}
 
 $adbEnabledCur = (Invoke-AdbSh "settings get global adb_enabled | tr -d '\r\n'" | Out-String).Trim()
 if ($adbEnabledCur -ne "1") {

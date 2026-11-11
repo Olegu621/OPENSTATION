@@ -21,6 +21,8 @@ local.properties
 .DS_Store
 Thumbs.db
 *.log
+__pycache__/
+*.pyc
 
 # Per-device runtime backups & local secrets
 backup/

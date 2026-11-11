@@ -4,13 +4,44 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$AdbPath = "C:\Users\clash\OneDrive\Desktop\platform-tools\adb.exe",
+    [string]$AdbPath = "",
     [string]$DeviceSerial = "",
     [switch]$UninstallApps,
     [switch]$NoReboot
 )
 
 $ErrorActionPreference = "Stop"
+$RootDir = Split-Path -Parent $PSScriptRoot
+
+function Resolve-AdbExecutable {
+    param([string]$Requested)
+    if ($Requested) {
+        if (Test-Path $Requested) { return (Resolve-Path $Requested).Path }
+        $cmd = Get-Command $Requested -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+        throw "Указанный adb.exe не найден: $Requested"
+    }
+    $cmdPath = (Get-Command adb.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $cmdPath) { $cmdPath = (Get-Command adb -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+    $candidates = @(
+        $cmdPath,
+        $(if ($env:ANDROID_HOME) { Join-Path $env:ANDROID_HOME "platform-tools\adb.exe" }),
+        $(if ($env:ANDROID_SDK_ROOT) { Join-Path $env:ANDROID_SDK_ROOT "platform-tools\adb.exe" }),
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe" }),
+        "C:\Android\platform-tools\adb.exe",
+        (Join-Path $RootDir "platform-tools\adb.exe"),
+        (Join-Path $HOME "OneDrive\Desktop\platform-tools\adb.exe"),
+        (Join-Path $HOME "Desktop\platform-tools\adb.exe")
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
+    }
+    throw "adb.exe не найден. Установите Android Platform Tools (winget install Google.PlatformTools) или передайте -AdbPath `"путь\к\adb.exe`"."
+}
+
+if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+$') {
+    $DeviceSerial = "${DeviceSerial}:5555"
+}
 
 function Connect-TcpAdbIfNeeded {
     if ($DeviceSerial -match '^\d+\.\d+\.\d+\.\d+(:\d+)?$') {
@@ -80,9 +111,8 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
 }
 
 Write-Host "=== OpenStation Max Rollback ===" -ForegroundColor Cyan
-if (-not (Test-Path $AdbPath)) {
-    throw "adb.exe не найден по пути: $AdbPath"
-}
+$AdbPath = Resolve-AdbExecutable -Requested $AdbPath
+Write-Host "ADB: $AdbPath" -ForegroundColor Gray
 
 Wait-AdbReady -TimeoutSec 60
 $idOut = (Invoke-Adb @("shell", "id") | Out-String)

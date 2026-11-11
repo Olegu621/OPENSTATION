@@ -18,15 +18,21 @@ import sys
 import tarfile
 import tempfile
 
-DEFAULT_ASAR = r"C:\Users\clash\AppData\Local\Programs\YandexMusicMod-XLam\resources\app.asar"
+DEFAULT_ASAR = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""),
+    "Programs",
+    "YandexMusicMod-XLam",
+    "resources",
+    "app.asar",
+)
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_TAR_GZ = os.path.join(ROOT_DIR, "assets", "ym_app.tar.gz")
 
 ESBUILD_JS_CANDIDATES = [
-    r"C:\Users\clash\.gemini\antigravity\brain\e3990465-43ea-48b9-ad53-b1f2ec965e82\scratch\tools\node_modules\esbuild\lib\main.js",
     os.path.join(ROOT_DIR, "node_modules", "esbuild", "lib", "main.js"),
+    os.path.join(os.environ.get("APPDATA", ""), "npm", "node_modules", "esbuild", "lib", "main.js"),
 ]
-NODE_EXE = r"C:\Program Files\nodejs\node.exe"
+NODE_EXE = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
 
 YM_BRIDGE_JS = r"""(function () {
   "use strict";
