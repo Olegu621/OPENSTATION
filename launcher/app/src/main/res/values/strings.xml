@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenStation Launcher</string>
+    <string name="service_notif_channel">OpenStation Audio &amp; Hardware</string>
+    <string name="service_notif_title">OpenStation Max активен</string>
+    <string name="service_notif_text">Системный EQ, визуализатор спектра LED и HDMI-CEC</string>
+</resources>

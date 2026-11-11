@@ -1,0 +1,28 @@
+# Build outputs & Gradle caches
+daemon/build/
+build/
+*/build/
+*/*/build/
+.gradle/
+*/.gradle/
+.cxx/
+*/.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+*/local.properties
+
+# IDE & OS metadata
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+
+# Per-device runtime backups & local secrets
+backup/
+config.json
+*.local.json

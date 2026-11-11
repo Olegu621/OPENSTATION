@@ -1,0 +1,15 @@
+{
+  "frameCount": 188,
+  "tileSize": 200,
+  "cols": 8,
+  "rows": 6,
+  "perSheet": 48,
+  "sheets": [
+    "orb_sheet_0.webp",
+    "orb_sheet_1.webp",
+    "orb_sheet_2.webp",
+    "orb_sheet_3.webp"
+  ],
+  "totalDurationMs": 12540,
+  "avgFrameMs": 66.70212765957447
+}
