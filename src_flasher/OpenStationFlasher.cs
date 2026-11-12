@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Management;
+using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
@@ -53,6 +54,12 @@ namespace OpenStationFlasher
         private TextBlock _progText;
         private TextBox _logBox;
         private Button _btnCopyLog;
+        private Button _btnOpenWebUi;
+
+        // Prerequisites blocks
+        private TextBlock _valDriver;
+        private TextBlock _valUboot;
+        private TextBlock _valRom;
 
         public MainWindow()
         {
@@ -72,14 +79,75 @@ namespace OpenStationFlasher
         private void InitWindow()
         {
             Title = "OpenStation Max — Сервисный прошивальщик v1.3.1";
-            Width = 920;
-            Height = 780;
-            MinWidth = 800;
-            MinHeight = 650;
+            Width = 940;
+            Height = 840;
+            MinWidth = 820;
+            MinHeight = 680;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background = new SolidColorBrush(Color.FromRgb(8, 10, 16)); // Apple deep glass
             Foreground = new SolidColorBrush(Color.FromRgb(240, 243, 248));
             FontFamily = new FontFamily("Segoe UI Variable, Segoe UI, sans-serif");
+        }
+
+        private static bool IsAdministrator()
+        {
+            try
+            {
+                var identity = WindowsIdentity.GetCurrent();
+                var principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void RestartAsAdmin()
+        {
+            try
+            {
+                var exePath = Process.GetCurrentProcess().MainModule.FileName;
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Verb = "runas",
+                    UseShellExecute = true
+                };
+                Process.Start(psi);
+                Application.Current.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Не удалось повысить привилегии: " + ex.Message, "Ошибка UAC", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void OpenWebUi()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "http://192.168.0.20:8080",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "http://station-max.local:8080",
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Не удалось открыть браузер: " + ex.Message, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
         }
 
         private void InitUI()
@@ -87,15 +155,20 @@ namespace OpenStationFlasher
             var rootGrid = new Grid();
             rootGrid.Margin = new Thickness(20);
             rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 0: Header
-            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 1: Device Status
-            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: Pinout (collapsible)
-            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 3: Revision & Hardware Bar
-            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 4: Actions
-            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 5: Progress
-            rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 6: Logs
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 1: Prerequisites Bar
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 2: Device Status
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 3: Pinout (collapsible)
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 4: Revision & Hardware Bar
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 5: Action Cards
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 6: Progress
+            rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 7: Logs
 
             // 0. Header
-            var headerPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
+            var headerPanel = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+            headerPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            headerPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var titleLeft = new StackPanel();
             var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
 
             var logoBlock = new TextBlock
@@ -133,20 +206,85 @@ namespace OpenStationFlasher
                 Foreground = new SolidColorBrush(Color.FromRgb(0, 212, 255))
             };
             titleRow.Children.Add(verBadge);
-            headerPanel.Children.Add(titleRow);
+
+            bool isAdmin = IsAdministrator();
+            if (isAdmin)
+            {
+                var adminBadge = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromArgb(40, 46, 160, 67)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(46, 160, 67)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(999),
+                    Margin = new Thickness(10, 3, 0, 3),
+                    Padding = new Thickness(10, 3, 10, 3)
+                };
+                adminBadge.Child = new TextBlock
+                {
+                    Text = "🛡 Администратор",
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = new SolidColorBrush(Color.FromRgb(63, 185, 80))
+                };
+                titleRow.Children.Add(adminBadge);
+            }
+            else
+            {
+                var btnAdmin = CreateButton("🛡 Запуск от Администратора", Color.FromRgb(80, 50, 15), Color.FromRgb(255, 210, 100));
+                btnAdmin.Margin = new Thickness(10, 0, 0, 0);
+                btnAdmin.Padding = new Thickness(10, 4, 10, 4);
+                btnAdmin.FontSize = 11;
+                btnAdmin.ToolTip = "Перезапустить прошивальщик с правами Администратора для гарантированной установки драйверов";
+                btnAdmin.Click += (s, e) => RestartAsAdmin();
+                titleRow.Children.Add(btnAdmin);
+            }
+
+            titleLeft.Children.Add(titleRow);
 
             var subTitle = new TextBlock
             {
                 Text = "Сервисная прошивка, раскирпичивание, переход в Update и After UBT для ревизий YNDX-0008, 00052 и 00053 (Zigbee).",
-                FontSize = 13,
+                FontSize = 12,
                 Foreground = new SolidColorBrush(Color.FromRgb(139, 148, 158)),
                 Margin = new Thickness(0, 4, 0, 0)
             };
-            headerPanel.Children.Add(subTitle);
+            titleLeft.Children.Add(subTitle);
+            Grid.SetColumn(titleLeft, 0);
+            headerPanel.Children.Add(titleLeft);
+
+            _btnOpenWebUi = CreateButton("🌐 Открыть Веб-пульт", Color.FromRgb(20, 28, 42), Color.FromRgb(88, 166, 255));
+            _btnOpenWebUi.Padding = new Thickness(12, 6, 12, 6);
+            _btnOpenWebUi.FontSize = 12;
+            _btnOpenWebUi.ToolTip = "Открыть веб-интерфейс Станции Макс в браузере (http://192.168.0.20:8080)";
+            _btnOpenWebUi.Click += (s, e) => OpenWebUi();
+            Grid.SetColumn(_btnOpenWebUi, 1);
+            headerPanel.Children.Add(_btnOpenWebUi);
+
             Grid.SetRow(headerPanel, 0);
             rootGrid.Children.Add(headerPanel);
 
-            // 1. Device Status Card
+            // 1. Prerequisites Bar
+            var prereqGrid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
+            prereqGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            prereqGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            prereqGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var p1 = CreatePrereqBadge("🔧 Драйвер WorldCup", out _valDriver);
+            Grid.SetColumn(p1, 0);
+            prereqGrid.Children.Add(p1);
+
+            var p2 = CreatePrereqBadge("💾 Загрузчик U-Boot", out _valUboot);
+            Grid.SetColumn(p2, 1);
+            prereqGrid.Children.Add(p2);
+
+            var p3 = CreatePrereqBadge("📦 Образы ROM", out _valRom);
+            Grid.SetColumn(p3, 2);
+            prereqGrid.Children.Add(p3);
+
+            Grid.SetRow(prereqGrid, 1);
+            rootGrid.Children.Add(prereqGrid);
+
+            // 2. Device Status Card
             _statusBadge = new Border
             {
                 Background = new SolidColorBrush(Color.FromArgb(200, 18, 24, 38)),
@@ -154,7 +292,7 @@ namespace OpenStationFlasher
                 BorderThickness = new Thickness(1.2),
                 CornerRadius = new CornerRadius(22),
                 Padding = new Thickness(18, 14, 18, 14),
-                Margin = new Thickness(0, 0, 0, 12)
+                Margin = new Thickness(0, 0, 0, 10)
             };
 
             var statusGrid = new Grid();
@@ -192,25 +330,25 @@ namespace OpenStationFlasher
             statusGrid.Children.Add(_btnTogglePinout);
 
             _statusBadge.Child = statusGrid;
-            Grid.SetRow(_statusBadge, 1);
+            Grid.SetRow(_statusBadge, 2);
             rootGrid.Children.Add(_statusBadge);
 
-            // 2. Pinout Helper (Initially Collapsed)
+            // 3. Pinout Helper (Initially Collapsed)
             _pinoutCard = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(220, 15, 20, 32)),
+                Background = new SolidColorBrush(Color.FromArgb(235, 12, 17, 28)),
                 BorderBrush = new SolidColorBrush(Color.FromArgb(90, 0, 212, 255)),
                 BorderThickness = new Thickness(1.2),
                 CornerRadius = new CornerRadius(22),
                 Padding = new Thickness(16),
-                Margin = new Thickness(0, 0, 0, 12),
+                Margin = new Thickness(0, 0, 0, 10),
                 Visibility = Visibility.Collapsed
             };
 
             var pinoutStack = new StackPanel();
             var pinTitle = new TextBlock
             {
-                Text = "Схема подключения 7-пинового сервисного порта (все ревизии: 0008, 00052, 00053):",
+                Text = "Схема подключения 7-пинового сервисного разъёма (все ревизии: 0008, 00052, 00053):",
                 FontWeight = FontWeights.Bold,
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(88, 166, 255)),
@@ -220,22 +358,30 @@ namespace OpenStationFlasher
 
             var pinDesc = new TextBlock
             {
-                Text = "  [1] 3.3V  |  [2] USB D- (Белый)  |  [3] GND (Земля / Чёрный)  |  [4] USB D+ (Зелёный)  |  [5] UART TX  |  [6] BOOT_EN  |  [7] UART RX\n\n" +
-                       "• 1. СОЕДИНИТЕ перемычкой (скрепкой/проводом) пин [6] (BOOT) с пином [3] (GND).\n" +
-                       "• 2. Вставьте кабель Type-C в сервисный разъём колонки и в ПК.\n" +
-                       "• 3. Подключите штатный блок питания 19V к Станции.\n" +
-                       "• 4. Нажмите «Вход для апдейта» или сразу «Чистая прошивка».\n" +
-                       "• 5. ПОСЛЕ ПРОШИВКИ: обязательно СНИМИТЕ перемычку с пина 6 и перезагрузите Станцию по питанию!",
+                Text = "Разъём расположен снизу Станции Макс под резиновой заглушкой возле AUX и радиатора.\n" +
+                       "Нумерация 1..7 слева направо (от круглого аудиогнезда AUX 3.5mm):\n\n" +
+                       "  [AUX]   [1] DATA+    [2] DATA-    [3] GND      [4] NC     [5] TX     [6] BOOT_EN   [7] VCC\n" +
+                       "         (Зелёный)    (Белый)    (Чёрный)               (UART)     (Замкнуть)    (3.3V)\n" +
+                       "             |            |          |                                |\n" +
+                       "             +--- USB ----+          +---------- Перемычка -----------+\n\n" +
+                       "Пошаговая инструкция для первого подключения:\n" +
+                       "  1. Замкните пин [6] (BOOT) на пин [3] (GND) скрепкой, пинцетом или проводом.\n" +
+                       "  2. Подключите USB-кабель от ПК к пинам: 1 (DATA+), 2 (DATA-), 3 (GND). (+5V НЕ подключать!).\n" +
+                       "  3. Вставьте штатный блок питания 19V в Станцию Макс.\n" +
+                       "  4. Индикатор статуса выше станет зелёным: «Станция Макс подключена (1B8E:C003)». \n" +
+                       "  5. Нажмите «⚡ Чистая прошивка». Станция сама перейдёт в режим Update и запишет систему.\n" +
+                       "  6. ПОСЛЕ ПРОШИВКИ: обязательно снимите перемычку с пина 6 и отключите питание 19V на 3 секунды!",
                 FontSize = 12,
                 LineHeight = 18,
-                Foreground = new SolidColorBrush(Color.FromRgb(201, 209, 217))
+                Foreground = new SolidColorBrush(Color.FromRgb(201, 209, 217)),
+                FontFamily = new FontFamily("Consolas, Courier New, monospace")
             };
             pinoutStack.Children.Add(pinDesc);
             _pinoutCard.Child = pinoutStack;
-            Grid.SetRow(_pinoutCard, 2);
+            Grid.SetRow(_pinoutCard, 3);
             rootGrid.Children.Add(_pinoutCard);
 
-            // 3. Revision Selector & Fast Action Bar
+            // 4. Revision Selector & Fast Action Bar
             var revBar = new Border
             {
                 Background = new SolidColorBrush(Color.FromArgb(200, 18, 24, 38)),
@@ -243,7 +389,7 @@ namespace OpenStationFlasher
                 BorderThickness = new Thickness(1.2),
                 CornerRadius = new CornerRadius(22),
                 Padding = new Thickness(16, 10, 16, 10),
-                Margin = new Thickness(0, 0, 0, 12)
+                Margin = new Thickness(0, 0, 0, 10)
             };
 
             var revBarGrid = new Grid();
@@ -287,11 +433,11 @@ namespace OpenStationFlasher
             revBarGrid.Children.Add(_btnInstallDriver);
 
             revBar.Child = revBarGrid;
-            Grid.SetRow(revBar, 3);
+            Grid.SetRow(revBar, 4);
             rootGrid.Children.Add(revBar);
 
-            // 4. Action Cards (Clean, Distinct, 3 Main + 1 Utility)
-            var actionGrid = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+            // 5. Action Cards (Clean, Distinct, 3 Main + 1 Utility)
+            var actionGrid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
             actionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             actionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             actionGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -299,7 +445,7 @@ namespace OpenStationFlasher
             // Button 1: Flash with Wipe
             _btnFlashWipe = CreateBigActionButton(
                 "⚡ Чистая прошивка",
-                "Прошивает vbmeta, vendor, system и очищает /data. Unbrick с нуля.",
+                "Прошивает vbmeta, vendor, system и очищает /data. Полный Unbrick с нуля.",
                 Color.FromRgb(0, 212, 255), Color.FromRgb(10, 26, 36));
             _btnFlashWipe.Margin = new Thickness(0, 0, 4, 0);
             _btnFlashWipe.Click += (s, e) => StartFlash(true);
@@ -326,11 +472,11 @@ namespace OpenStationFlasher
             Grid.SetColumn(_btnAfterUbt, 2);
             actionGrid.Children.Add(_btnAfterUbt);
 
-            Grid.SetRow(actionGrid, 4);
+            Grid.SetRow(actionGrid, 5);
             rootGrid.Children.Add(actionGrid);
 
-            // 5. Progress Section
-            var progStack = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+            // 6. Progress Section
+            var progStack = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
             var progHeaderGrid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
             progHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             progHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -365,10 +511,10 @@ namespace OpenStationFlasher
                 BorderThickness = new Thickness(0)
             };
             progStack.Children.Add(_progBar);
-            Grid.SetRow(progStack, 5);
+            Grid.SetRow(progStack, 6);
             rootGrid.Children.Add(progStack);
 
-            // 6. Logs Section
+            // 7. Logs Section
             var logPanel = new Grid();
             logPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             logPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -420,10 +566,44 @@ namespace OpenStationFlasher
             Grid.SetRow(_logBox, 1);
             logPanel.Children.Add(_logBox);
 
-            Grid.SetRow(logPanel, 6);
+            Grid.SetRow(logPanel, 7);
             rootGrid.Children.Add(logPanel);
 
             Content = rootGrid;
+        }
+
+        private Border CreatePrereqBadge(string title, out TextBlock valBlock)
+        {
+            var border = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(170, 16, 22, 34)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(12, 7, 12, 7),
+                Margin = new Thickness(0, 0, 6, 0)
+            };
+            var sp = new StackPanel { Orientation = Orientation.Horizontal };
+            var lbl = new TextBlock
+            {
+                Text = title + ": ",
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(139, 148, 158)),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            sp.Children.Add(lbl);
+
+            valBlock = new TextBlock
+            {
+                Text = "Проверка...",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34)),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            sp.Children.Add(valBlock);
+            border.Child = sp;
+            return border;
         }
 
         private string GetSelectedRevision()
@@ -528,7 +708,9 @@ namespace OpenStationFlasher
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 bool connected = false;
+                bool driverError = false;
                 string deviceName = "";
+                string errDetail = "";
                 try
                 {
                     using (var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_1B8E&PID_C003%'"))
@@ -537,6 +719,14 @@ namespace OpenStationFlasher
                         {
                             connected = true;
                             deviceName = (obj["Name"] ?? obj["Caption"] ?? "Amlogic WorldCup Device").ToString();
+                            var codeObj = obj["ConfigManagerErrorCode"];
+                            int code = 0;
+                            if (codeObj != null) int.TryParse(codeObj.ToString(), out code);
+                            if (code != 0)
+                            {
+                                driverError = true;
+                                errDetail = "Код ошибки Windows " + code + " (драйвер не установлен или заблокирован)";
+                            }
                             break;
                         }
                     }
@@ -550,18 +740,29 @@ namespace OpenStationFlasher
                         _isDeviceConnected = connected;
                         if (connected)
                         {
-                            _statusText.Text = "● Станция Макс подключена (" + deviceName + ")";
-                            _statusText.Foreground = new SolidColorBrush(Color.FromRgb(46, 160, 67));
-                            _statusSubtext.Text = "Устройство готово к загрузке U-Boot или прошивке системных разделов.";
-                            _statusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(46, 160, 67));
-                            Log("[+] Обнаружено устройство Amlogic (1B8E:C003): " + deviceName);
+                            if (driverError)
+                            {
+                                _statusText.Text = "⚠️ Станция подключена, но драйвер НЕ установлен!";
+                                _statusText.Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34));
+                                _statusSubtext.Text = errDetail + ". Нажмите кнопку «🔧 Установить драйвер WorldCup» справа!";
+                                _statusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(210, 153, 34));
+                                Log("[!] Обнаружено устройство Amlogic без драйвера: " + deviceName + " (" + errDetail + ")");
+                            }
+                            else
+                            {
+                                _statusText.Text = "● Станция Макс подключена (" + deviceName + ")";
+                                _statusText.Foreground = new SolidColorBrush(Color.FromRgb(46, 160, 67));
+                                _statusSubtext.Text = "Устройство готово к загрузке U-Boot или прошивке системных разделов.";
+                                _statusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(46, 160, 67));
+                                Log("[+] Обнаружено устройство Amlogic (1B8E:C003): " + deviceName);
+                            }
                         }
                         else
                         {
                             _statusText.Text = "○ Ожидание подключения Станции Макс...";
                             _statusText.Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34));
                             _statusSubtext.Text = "Замкните пины 6 и 3 перемычкой, подключите сервисный Type-C к ПК и включите 19V питание.";
-                            _statusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(48, 54, 61));
+                            _statusBadge.BorderBrush = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255));
                         }
                     }
                 });
@@ -570,33 +771,94 @@ namespace OpenStationFlasher
 
         private void CheckPrerequisites()
         {
-            if (!Directory.Exists(_serviceFlashDir))
-            {
-                Log("[!] Каталог service_flash не найден: " + _serviceFlashDir);
-            }
-            else
+            bool amlOk = false;
+            if (Directory.Exists(_serviceFlashDir))
             {
                 bool aml8 = File.Exists(Path.Combine(_serviceFlashDir, "aml.img"));
                 bool aml53 = File.Exists(Path.Combine(_serviceFlashDir, "aml_00053.img"));
+                amlOk = aml8 && aml53;
+                if (_valUboot != null)
+                {
+                    if (amlOk)
+                    {
+                        _valUboot.Text = "Готов (0008, 00053)";
+                        _valUboot.Foreground = new SolidColorBrush(Color.FromRgb(46, 160, 67));
+                    }
+                    else if (aml8 || aml53)
+                    {
+                        _valUboot.Text = aml8 ? "0008 готов" : "00053 готов";
+                        _valUboot.Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34));
+                    }
+                    else
+                    {
+                        _valUboot.Text = "Отсутствует!";
+                        _valUboot.Foreground = new SolidColorBrush(Color.FromRgb(248, 81, 73));
+                    }
+                }
                 Log("[✓] Загрузчики в service_flash: 0008/00052=" + (aml8 ? "OK" : "НЕТ") + ", 00053=" + (aml53 ? "OK" : "НЕТ"));
             }
-
-            if (!Directory.Exists(_romDir))
-            {
-                Log("[!] Каталог rom не найден: " + _romDir);
-            }
             else
+            {
+                if (_valUboot != null)
+                {
+                    _valUboot.Text = "Каталог не найден";
+                    _valUboot.Foreground = new SolidColorBrush(Color.FromRgb(248, 81, 73));
+                }
+                Log("[!] Каталог service_flash не найден: " + _serviceFlashDir);
+            }
+
+            bool romOk = false;
+            if (Directory.Exists(_romDir))
             {
                 bool sysOk = File.Exists(Path.Combine(_romDir, "system.img"));
                 bool venOk = File.Exists(Path.Combine(_romDir, "vendor.img"));
                 bool vbOk = File.Exists(Path.Combine(_romDir, "vbmeta.img"));
-                if (sysOk && venOk && vbOk)
+                romOk = sysOk && venOk && vbOk;
+                if (_valRom != null)
+                {
+                    if (romOk)
+                    {
+                        _valRom.Text = "Готовы (2.09 ГБ)";
+                        _valRom.Foreground = new SolidColorBrush(Color.FromRgb(46, 160, 67));
+                    }
+                    else
+                    {
+                        _valRom.Text = "Неполные!";
+                        _valRom.Foreground = new SolidColorBrush(Color.FromRgb(248, 81, 73));
+                    }
+                }
+                if (romOk)
                 {
                     Log("[✓] Системные образы ROM (vbmeta, vendor, system) обнаружены в каталоге rom/");
                 }
                 else
                 {
                     Log("[!] В каталоге rom/ не хватает файлов: system=" + sysOk + ", vendor=" + venOk + ", vbmeta=" + vbOk);
+                }
+            }
+            else
+            {
+                if (_valRom != null)
+                {
+                    _valRom.Text = "Каталог не найден";
+                    _valRom.Foreground = new SolidColorBrush(Color.FromRgb(248, 81, 73));
+                }
+                Log("[!] Каталог rom не найден: " + _romDir);
+            }
+
+            // Check Driver files
+            bool drvFiles = File.Exists(Path.Combine(_serviceFlashDir, "Drivers", "WorldCup_Device.inf"));
+            if (_valDriver != null)
+            {
+                if (drvFiles)
+                {
+                    _valDriver.Text = "Файлы готовы (1B8E:C003)";
+                    _valDriver.Foreground = new SolidColorBrush(Color.FromRgb(46, 160, 67));
+                }
+                else
+                {
+                    _valDriver.Text = "Не найден в Drivers/";
+                    _valDriver.Foreground = new SolidColorBrush(Color.FromRgb(248, 81, 73));
                 }
             }
         }
@@ -663,7 +925,8 @@ namespace OpenStationFlasher
                             "ВАЖНО:\n" +
                             "1) Снимите сервисную перемычку с 6 пина!\n" +
                             "2) Перезагрузите Станцию по питанию (отключите 19V на 3 сек).\n" +
-                            "3) Колонка запустится в OpenStation Max v1.3.0.",
+                            "3) Колонка запустится в OpenStation Max v1.3.1.\n" +
+                            "4) Нажмите «🌐 Открыть Веб-пульт» для быстрой настройки.",
                             "Успех!",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
@@ -847,6 +1110,7 @@ namespace OpenStationFlasher
                         _progBar.Value = 100;
                         _progText.Text = "Драйвер WorldCup успешно установлен!";
                         Log("[+] Драйвер установлен в систему. Проверяем статус устройства...");
+                        CheckPrerequisites();
                         CheckDeviceStatus();
                     });
                 }
