@@ -140,9 +140,105 @@ namespace OpenStationFlasher
         private Button _btnToggleLog;
         private bool _isLogVisible = false;
 
+        private string ResolveBaseDirectory()
+        {
+            string current = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+
+            // 1. Direct check
+            if (File.Exists(Path.Combine(current, "scripts", "flash_service_port.ps1")))
+                return current;
+
+            // 2. Subfolders
+            string[] subfolders = new string[]
+            {
+                Path.Combine(current, "OPENSTATION-main"),
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.5"),
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.4"),
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.3"),
+                Path.Combine(current, "OpenStationMax_Flasher"),
+                Path.Combine(current, "OPENSTATION")
+            };
+            foreach (var sub in subfolders)
+            {
+                if (File.Exists(Path.Combine(sub, "scripts", "flash_service_port.ps1")))
+                    return sub;
+            }
+
+            // 3. Parent directory
+            try
+            {
+                var parent = Directory.GetParent(current);
+                if (parent != null && File.Exists(Path.Combine(parent.FullName, "scripts", "flash_service_port.ps1")))
+                    return parent.FullName;
+            }
+            catch { }
+
+            // 4. Fallback to known development workspace
+            string devWorkspace = @"C:\Users\admin\.gemini\antigravity\scratch\OPENSTATION";
+            if (File.Exists(Path.Combine(devWorkspace, "scripts", "flash_service_port.ps1")))
+                return devWorkspace;
+
+            // 5. Look for ZIP archive in current dir, Desktop or Downloads, and auto-extract!
+            string[] zipCandidates = new string[]
+            {
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.5.zip"),
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.4.zip"),
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.3.zip"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OpenStationMax_Flasher_v1.3.5.zip"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OpenStationMax_Flasher_v1.3.4.zip"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "OPENSTATION-main.zip"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "OpenStationMax_Flasher_v1.3.4.zip")
+            };
+
+            foreach (var zip in zipCandidates)
+            {
+                if (File.Exists(zip))
+                {
+                    try
+                    {
+                        string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenStationMax");
+                        if (!File.Exists(Path.Combine(targetDir, "scripts", "flash_service_port.ps1")))
+                        {
+                            System.IO.Compression.ZipFile.ExtractToDirectory(zip, targetDir);
+                        }
+                        if (File.Exists(Path.Combine(targetDir, "scripts", "flash_service_port.ps1")))
+                            return targetDir;
+                    }
+                    catch { }
+                }
+            }
+
+            return current;
+        }
+
+        private string GetScriptPath(string scriptName)
+        {
+            string ps1 = Path.Combine(_baseDir, "scripts", scriptName);
+            if (File.Exists(ps1)) return ps1;
+
+            string resolved = ResolveBaseDirectory();
+            if (File.Exists(Path.Combine(resolved, "scripts", scriptName)))
+            {
+                _baseDir = resolved;
+                _serviceFlashDir = Path.Combine(_baseDir, "service_flash");
+                _romDir = Path.Combine(_baseDir, "rom");
+                return Path.Combine(_baseDir, "scripts", scriptName);
+            }
+
+            throw new FileNotFoundException(
+                "Файл скрипта не найден: scripts\\" + scriptName + "\n\n" +
+                "Каталог поиска: " + _baseDir + "\n\n" +
+                "ПРИЧИНА ОШИБКИ (-196608):\n" +
+                "Программа запущена отдельно от папки с файлами прошивки.\n\n" +
+                "КАК ИСПРАВИТЬ:\n" +
+                "1. Распакуйте архив OpenStationMax_Flasher полностью в отдельную папку.\n" +
+                "2. Убедитесь, что рядом с OpenStationFlasher.exe лежат папки 'scripts' и 'service_flash'.\n" +
+                "3. Запустите OpenStationFlasher.exe внутри распакованной папки.");
+        }
+
         public MainWindow()
         {
-            _baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+            _baseDir = ResolveBaseDirectory();
             _serviceFlashDir = Path.Combine(_baseDir, "service_flash");
             _romDir = Path.Combine(_baseDir, "rom");
 
@@ -151,7 +247,7 @@ namespace OpenStationFlasher
             StartDevicePolling();
 
             Log("================================================================================");
-            Log(" OpenStation Max Flasher v1.3.4 — Мастер пошаговой прошивки и разблокировки");
+            Log(" OpenStation Max Flasher v1.3.5 — Мастер пошаговой прошивки и разблокировки");
             Log(" Поддержка всех ревизий: YNDX-0008, YNDX-00052, YNDX-00053 (Zigbee 2023+)");
             Log(" Защита от бутлупа: автоматический обход AVB2, запись правильного misc и uboot-command");
             Log(" Каталог программы: " + _baseDir);
@@ -163,7 +259,7 @@ namespace OpenStationFlasher
 
         private void InitWindow()
         {
-            Title = "OpenStation Max — Мастер прошивки v1.3.4 [0008 / 00052 / 00053 Zigbee]";
+            Title = "OpenStation Max — Мастер прошивки v1.3.5 [0008 / 00052 / 00053 Zigbee]";
             Width = 990;
             Height = 770;
             MinWidth = 880;
@@ -312,7 +408,7 @@ namespace OpenStationFlasher
             };
             verBadge.Child = new TextBlock
             {
-                Text = "v1.3.4 Мастер Установки",
+                Text = "v1.3.5 Мастер Установки",
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(0, 212, 255))
@@ -361,7 +457,7 @@ namespace OpenStationFlasher
 
             var btnBootloopInfo = CreateSmallButton("🛡 Защита от бутлупа", Color.FromRgb(16, 42, 32), Color.FromRgb(74, 222, 128));
             btnBootloopInfo.Margin = new Thickness(0, 0, 8, 0);
-            btnBootloopInfo.Click += (s, e) => ShowModal("🛡 Как решена проблема бутлупа в v1.3.4", GetBootloopHelpText());
+            btnBootloopInfo.Click += (s, e) => ShowModal("🛡 Как решена проблема бутлупа в v1.3.5", GetBootloopHelpText());
             rightStack.Children.Add(btnBootloopInfo);
 
             var btnWeb = CreateSmallButton("🌐 Веб-пульт", Color.FromRgb(18, 30, 48), Color.FromRgb(88, 166, 255));
@@ -1907,7 +2003,7 @@ namespace OpenStationFlasher
                 "     В результате команды 'setenv avb2 0' и 'saveenv' даже не выполнялись!\n" +
                 "  2. Отсутствие записи раздела misc: стоковый загрузчик требовал AVB dm-verity и SELinux enforcing.\n" +
                 "     При попытке загрузить сторонний system/vendor ядро аварийно перезагружалось.\n\n" +
-                "• КАК ЭТО ИСПРАВЛЕНО В ВЕРСИИ 1.3.4:\n" +
+                "• КАК ЭТО ИСПРАВЛЕНО В ВЕРСИИ 1.3.5:\n" +
                 "  ✓ 'amlmmc enc' полностью удалена из всех скриптов и командного конвейера.\n" +
                 "  ✓ В раздел misc прошивается uboot-command с аргументами:\n" +
                 "    androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.vbmeta.skip=1\n" +
@@ -2075,6 +2171,19 @@ namespace OpenStationFlasher
             {
                 try
                 {
+                    bool scriptReady = File.Exists(Path.Combine(_baseDir, "scripts", "flash_service_port.ps1"));
+                    if (!scriptReady)
+                    {
+                        string recheckBase = ResolveBaseDirectory();
+                        if (recheckBase != _baseDir && File.Exists(Path.Combine(recheckBase, "scripts", "flash_service_port.ps1")))
+                        {
+                            _baseDir = recheckBase;
+                            _serviceFlashDir = Path.Combine(_baseDir, "service_flash");
+                            _romDir = Path.Combine(_baseDir, "rom");
+                            scriptReady = true;
+                        }
+                    }
+
                     // 1. U-Boot loaders
                     bool aml8 = File.Exists(Path.Combine(_serviceFlashDir, "aml.img"));
                     bool aml53 = File.Exists(Path.Combine(_serviceFlashDir, "aml_00053.img"));
@@ -2114,7 +2223,7 @@ namespace OpenStationFlasher
                             }
                             else
                             {
-                                _valUboot.Text = "Отсутствует!";
+                                _valUboot.Text = scriptReady ? "В папке service_flash" : "Архив не распакован!";
                                 _valUboot.Foreground = new SolidColorBrush(Color.FromRgb(239, 68, 68));
                             }
                         }
@@ -2125,6 +2234,11 @@ namespace OpenStationFlasher
                             {
                                 _valRom.Text = "Готовы (4 раздела)";
                                 _valRom.Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153));
+                            }
+                            else if (!scriptReady)
+                            {
+                                _valRom.Text = "Архив не распакован!";
+                                _valRom.Foreground = new SolidColorBrush(Color.FromRgb(239, 68, 68));
                             }
                             else
                             {
@@ -2216,7 +2330,7 @@ namespace OpenStationFlasher
             {
                 try
                 {
-                    string ps1 = Path.Combine(_baseDir, "scripts", "flash_service_port.ps1");
+                    string ps1 = GetScriptPath("flash_service_port.ps1");
                     string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\" -Revision \"" + rev + "\" -NoPause";
                     if (wipeData) args += " -WipeData";
                     else args += " -KeepData";
@@ -2304,7 +2418,7 @@ namespace OpenStationFlasher
             {
                 try
                 {
-                    string ps1 = Path.Combine(_baseDir, "scripts", "flash_service_port.ps1");
+                    string ps1 = GetScriptPath("flash_service_port.ps1");
                     string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\" -Revision \"" + rev + "\" -AfterUbt -NoPause";
 
                     RunProcess("powershell.exe", args, (pct, msg) =>
@@ -2359,7 +2473,7 @@ namespace OpenStationFlasher
             var res = MessageBox.Show(
                 "Запустить быструю установку OpenStation Max по ADB?\n\n" +
                 "Этот способ подходит для работающих станций:\n" +
-                "• Устанавливает системный демон openstationd v1.3.4;\n" +
+                "• Устанавливает системный демон openstationd v1.3.5;\n" +
                 "• Устанавливает ТВ-лаунчер OpenStationLauncher и клавиатуру OpenStationIME;\n" +
                 "• Настраивает плеер Яндекс Музыки (Моя волна) и голосовой ассистент;\n" +
                 "• Не требует разборки колонки и перемычек.",
@@ -2381,7 +2495,7 @@ namespace OpenStationFlasher
             {
                 try
                 {
-                    string ps1 = Path.Combine(_baseDir, "scripts", "deploy.ps1");
+                    string ps1 = GetScriptPath("deploy.ps1");
                     string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + ps1 + "\" -UseFirmware -Interactive";
 
                     RunProcess("powershell.exe", args, (pct, msg) =>
@@ -2575,7 +2689,7 @@ namespace OpenStationFlasher
             {
                 try
                 {
-                    string script = Path.Combine(_baseDir, "scripts", "install_driver.ps1");
+                    string script = GetScriptPath("install_driver.ps1");
                     string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -NoPause";
 
                     var psi = new ProcessStartInfo
@@ -2822,6 +2936,8 @@ namespace OpenStationFlasher
                 StandardErrorEncoding = Encoding.UTF8
             };
 
+            var errBuilder = new StringBuilder();
+
             using (var proc = new Process { StartInfo = psi })
             {
                 proc.OutputDataReceived += (s, e) =>
@@ -2847,6 +2963,7 @@ namespace OpenStationFlasher
                     if (e.Data != null)
                     {
                         Log("[ERR] " + e.Data);
+                        errBuilder.AppendLine(e.Data);
                     }
                 };
 
@@ -2857,7 +2974,21 @@ namespace OpenStationFlasher
 
                 if (proc.ExitCode != 0)
                 {
-                    throw new Exception("Процесс завершился с кодом ошибки " + proc.ExitCode);
+                    string errStr = errBuilder.ToString().Trim();
+                    if (proc.ExitCode == -196608 || errStr.Contains("does not exist") || errStr.Contains("не существует"))
+                    {
+                        throw new Exception(
+                            "Файл скрипта не найден (ошибка -196608).\n\n" +
+                            "Каталог запуска: " + _baseDir + "\n\n" +
+                            "Пожалуйста, убедитесь, что архив OpenStationMax_Flasher распакован полностью в отдельную папку, и запускайте OpenStationFlasher.exe из неё.");
+                    }
+
+                    string failMsg = "Процесс завершился с кодом ошибки " + proc.ExitCode;
+                    if (!string.IsNullOrEmpty(errStr))
+                    {
+                        failMsg += "\n\nДетали ошибки:\n" + errStr;
+                    }
+                    throw new Exception(failMsg);
                 }
             }
         }
