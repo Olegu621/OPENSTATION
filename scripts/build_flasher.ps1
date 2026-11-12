@@ -21,6 +21,7 @@ Write-Host "Compiling OpenStationFlasher.exe..." -ForegroundColor Cyan
     "/r:$net\System.Management.dll" `
     "/r:$net\System.dll" `
     "/r:$net\System.Core.dll" `
+    "/r:$net\System.IO.Compression.FileSystem.dll" `
     "$src"
 
 if ($LASTEXITCODE -ne 0) {

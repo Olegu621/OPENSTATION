@@ -30,7 +30,6 @@ if errorlevel 1 (
     if exist "%~dp0service_flash\update.exe" (
         pushd "%~dp0service_flash"
         update.exe bulkcmd "store init"
-        update.exe bulkcmd "amlmmc enc"
         update.exe bulkcmd "setenv silent 0"
         update.exe bulkcmd "setenv lock 10000000"
         update.exe bulkcmd "setenv avb2 0"

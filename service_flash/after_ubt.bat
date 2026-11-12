@@ -14,7 +14,6 @@ echo.
 pause
 
 update.exe bulkcmd "store init"
-update.exe bulkcmd "amlmmc enc"
 update.exe bulkcmd "setenv silent 0"
 update.exe bulkcmd "setenv lock 10000000"
 update.exe bulkcmd "setenv avb2 0"

@@ -468,9 +468,27 @@ if ($KeepData -or $SkipWipe) {
 
 if ($AfterUbt) {
     Write-Host "[*] Режим 'After UBT': применение параметров U-Boot для предотвращения бутлупа..." -ForegroundColor Yellow
+
+    # Выбор подходящего misc.img для ревизии
+    $miscCands = if ($Revision -eq "00053") {
+        @(Join-Path $ServiceFlashDir "misc_00053.img", Join-Path $RepoRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc.img")
+    } else {
+        @(Join-Path $ServiceFlashDir "misc.img", Join-Path $RepoRomDir "misc.img", Join-Path $ServiceFlashDir "misc_00053.img")
+    }
+    $targetMisc = $miscCands | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if ($targetMisc) {
+        try {
+            Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
+            Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов"
+            Invoke-UpdateExe @("mwrite", $targetMisc, "store", "misc", "normal") "Запись misc (uboot-command: отключение AVB / permissive bootargs)"
+        } catch {
+            Write-Host "  [!] Ошибка записи misc: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+
     $afterUbtCmds = @(
         "store init",
-        "amlmmc enc",
         "setenv silent 0",
         "setenv lock 10000000",
         "setenv avb2 0",
@@ -498,11 +516,21 @@ $vbmetaPath = Join-Path $ResolvedRomDir "vbmeta.img"
 $vendorPath = Join-Path $ResolvedRomDir "vendor.img"
 $systemPath = Join-Path $ResolvedRomDir "system.img"
 
+$miscCandidates = if ($Revision -eq "00053") {
+    @(Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img", Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img")
+} else {
+    @(Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img", Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img")
+}
+$miscPath = $miscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
 Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
 Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов (store disprotect key)"
 Invoke-UpdateExe @("mwrite", $vbmetaPath, "store", "vbmeta", "normal") "Запись vbmeta (2 МБ)"
 Invoke-UpdateExe @("mwrite", $vendorPath, "store", "vendor", "normal") "Запись vendor (512 МБ)"
 Invoke-UpdateExe @("mwrite", $systemPath, "store", "system", "normal") "Запись system (~1.44 ГБ, подождите 1-2 минуты)"
+if ($miscPath -and (Test-Path $miscPath)) {
+    Invoke-UpdateExe @("mwrite", $miscPath, "store", "misc", "normal") "Запись misc (uboot-command: обход AVB / permissive bootargs)"
+}
 
 if ($DoWipeData) {
     Write-Host "[4/4] Очистка пользовательских разделов (/data и /cache)..." -ForegroundColor Yellow
@@ -512,10 +540,9 @@ if ($DoWipeData) {
     Write-Host "[4/4] Завершение (/data сохранён)..." -ForegroundColor Yellow
 }
 
-Write-Host "  -> Финализация U-Boot (after_ubt: снятие lock=10000000, avb2=0, silent=0, saveenv)..." -ForegroundColor Yellow
+Write-Host "  -> Финализация U-Boot (After UBT: снятие lock=10000000, avb2=0, silent=0, saveenv)..." -ForegroundColor Yellow
 $afterUbtCmds = @(
     "store init",
-    "amlmmc enc",
     "setenv silent 0",
     "setenv lock 10000000",
     "setenv avb2 0",
