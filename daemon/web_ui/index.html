@@ -452,6 +452,21 @@
                 </div>
               </div>
             </details>
+
+            <details class="adv-details" id="detailsSpeakerTest">
+              <summary>🔊 Проверка динамиков (Тестовые тоны)</summary>
+              <div class="adv-details-body">
+                <p class="hint">Проверка работоспособности каждого усилителя и динамика станции (сабвуфер, СЧ-динамики, твитеры).</p>
+                <div class="btn-row" style="margin-top: 8px;">
+                  <button class="btn btn-sm" id="btnTestSub" type="button">НЧ Сабвуфер (60 Гц)</button>
+                  <button class="btn btn-sm" id="btnTestSpeech" type="button">СЧ Речь (1000 Гц)</button>
+                  <button class="btn btn-sm" id="btnTestHigh" type="button">ВЧ Твитеры (8000 Гц)</button>
+                  <button class="btn btn-sm" id="btnTestSweep" type="button">Свип (20-15k Гц)</button>
+                  <button class="btn btn-sm btn-accent" id="btnTestChime" type="button">🔔 Чайм Алисы</button>
+                </div>
+                <div class="hint" id="toneStatusText" style="margin-top:6px;"></div>
+              </div>
+            </details>
           </div>
 
           <div class="stack">
@@ -569,7 +584,11 @@
 
               <div class="form-row">
                 <label>Текст для бегущей строки</label>
-                <input type="text" id="scrText" maxlength="80" value="OPEN STATION MAX" />
+                <div class="input-send-row">
+                  <input type="text" id="scrText" maxlength="80" value="OPEN STATION MAX" />
+                  <button class="btn btn-sm btn-accent" id="btnFlashScreenText" type="button">Показать</button>
+                  <button class="btn btn-sm" id="btnScreenPixelTest" type="button" title="Залить весь экран для проверки диодов">Тест диодов</button>
+                </div>
               </div>
 
               <div class="grid-2-tight">
@@ -820,7 +839,7 @@
           <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.3.0</span>
+          <span class="badge ok" id="wizFwBadge">v1.3.1</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>

@@ -4,12 +4,12 @@
     "version":  "1.3.1",
     "autonomous":  true,
     "changelog":  "OpenStation Max v1.3.1: Нативный стек захвата звука (Yandex VQE DSP libyandexvqe.so) с многомикрофонным формированием луча и аппаратным эхоподавлением; строгое распознавание только русского и английского языков; 3D визуализатор Nexus Anomaly на Three.js с реакцией на басы; стиль Apple Liquid Glass для плеера и веб-интерфейса; поддержка ревизий 0008, 00052 и 00053 (Zigbee 2023+).",
-    "buildTimeUtc":  "2026-11-12T03:35:13Z",
+    "buildTimeUtc":  "2026-11-12T03:59:25Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  2301824,
-                                 "sha256":  "91515977d90840c569b68f7b387c143f97805e7651c632ba3e42c8d270508420"
+                                 "size":  2305904,
+                                 "sha256":  "c172a13e65ea6e815fa9c80865acd7d276729339ff4fe245701057d098e4cf3a"
                              },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",

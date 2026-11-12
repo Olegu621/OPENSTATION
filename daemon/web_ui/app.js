@@ -1334,6 +1334,67 @@
     });
   }
 
+  // Speaker diagnostic tones
+  async function playTone(freq, duration, sweep, label) {
+    const stat = $("toneStatusText");
+    if (stat) stat.textContent = `Воспроизведение: ${label}...`;
+    try {
+      await api("/api/audio/test_tone", "POST", { freq, duration, sweep: !!sweep });
+      showToast(`Тест: ${label}`);
+      if (stat) setTimeout(() => { if (stat.textContent && stat.textContent.includes(label)) stat.textContent = ""; }, duration + 500);
+    } catch (e) {
+      showToast("Ошибка теста тона: " + e.message, true);
+      if (stat) stat.textContent = "Ошибка воспроизведения";
+    }
+  }
+
+  if ($("btnTestSub")) $("btnTestSub").addEventListener("click", () => playTone(60, 900, false, "Сабвуфер 60 Гц"));
+  if ($("btnTestSpeech")) $("btnTestSpeech").addEventListener("click", () => playTone(1000, 700, false, "Голосовой СЧ 1000 Гц"));
+  if ($("btnTestHigh")) $("btnTestHigh").addEventListener("click", () => playTone(8000, 700, false, "ВЧ Твитеры 8000 Гц"));
+  if ($("btnTestSweep")) $("btnTestSweep").addEventListener("click", () => playTone(1000, 1600, true, "Свип-тон 20-15k Гц"));
+  if ($("btnTestChime")) {
+    $("btnTestChime").addEventListener("click", async () => {
+      try {
+        await api("/api/assistant/trigger", "POST", { reason: "test_chime" });
+        showToast("Воспроизведён звуковой гонг Алисы");
+      } catch (e) {
+        showToast("Ошибка: " + e.message, true);
+      }
+    });
+  }
+
+  // LED Screen text & pixel test
+  function hexToRgb(hex) {
+    let c = (hex || "#ffffff").replace("#", "");
+    if (c.length === 3) c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+    const num = parseInt(c, 16) || 0xffffff;
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+  }
+
+  if ($("btnFlashScreenText")) {
+    $("btnFlashScreenText").addEventListener("click", async () => {
+      const txt = $("scrText")?.value.trim() || "OPEN STATION";
+      const rgb = hexToRgb($("scrColor")?.value || "#ffffff");
+      try {
+        await api("/api/screen/text", "POST", { text: txt, durationMs: 4500, r: rgb.r, g: rgb.g, b: rgb.b });
+        showToast(`Текст «${txt}» отправлен на экран станции`);
+      } catch (e) {
+        showToast("Ошибка экрана: " + e.message, true);
+      }
+    });
+  }
+
+  if ($("btnScreenPixelTest")) {
+    $("btnScreenPixelTest").addEventListener("click", async () => {
+      try {
+        await api("/api/screen/text", "POST", { text: "█████████████████████████", durationMs: 3500, r: 255, g: 255, b: 255 });
+        showToast("Тест матричных светодиодов запущен (3.5 сек)");
+      } catch (e) {
+        showToast("Ошибка теста: " + e.message, true);
+      }
+    });
+  }
+
   // Bootanimation actions
   async function setBootanimBusy(busy) {
     bootanimBusy = busy;
