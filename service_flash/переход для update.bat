@@ -31,24 +31,24 @@ goto RUN_AUTO
 :RUN_AUTO
 echo.
 echo [*] Запуск boot-g12 в режиме автоопределения...
-python "%~dp0service_flash\boot-g12.py" --revision auto
+python "%~dp0boot-g12.py" --revision auto
 goto AFTER_BOOT
 
 :RUN_0008
 echo.
 echo [*] Загрузка загрузчика для ревизий 0008 / 00052...
-python "%~dp0service_flash\boot-g12.py" --revision 0008
+python "%~dp0boot-g12.py" --revision 0008
 goto AFTER_BOOT
 
 :RUN_00053
 echo.
 echo [*] Загрузка загрузчика для ревизии 00053 (Zigbee)...
-python "%~dp0service_flash\boot-g12.py" --revision 00053
+python "%~dp0boot-g12.py" --revision 00053
 goto AFTER_BOOT
 
 :RUN_DRV
 echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install_driver.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\install_driver.ps1"
 pause
 goto :EOF
 
@@ -57,12 +57,12 @@ set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
     echo ========================================================================
-    echo   [!] Ошибка входа в режим Update (код %RC%).
+    echo   [!] Ошибка входа в режим Update ^(код %RC%^).
     echo   Проверьте:
-    echo     1) Сервисный Type-C подключен к ПК
-    echo     2) Перемычка соединяет пин 6 (BOOT) и пин 3 (GND)
-    echo     3) Питание 19V подключено
-    echo     4) Установлен ли драйвер WorldCup (пункт 4 меню)
+    echo     1^) Сервисный Type-C подключен к ПК
+    echo     2^) Перемычка соединяет пин 6 ^(BOOT^) и пин 3 ^(GND^)
+    echo     3^) Питание 19V подключено
+    echo     4^) Установлен ли драйвер WorldCup ^(пункт 4 меню^)
     echo ========================================================================
     pause
     exit /b %RC%

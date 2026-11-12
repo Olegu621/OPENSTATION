@@ -18,7 +18,7 @@ def main():
 
     web_dir = sys.argv[1]
     out_hdr = sys.argv[2]
-    os.makedirs(os.path.dirname(out_hdr), exist_ok=True)
+    os.makedirs(os.path.dirname(out_hdr) or ".", exist_ok=True)
 
     files = []
     for root, _, names in os.walk(web_dir):
