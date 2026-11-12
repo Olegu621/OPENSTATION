@@ -848,7 +848,8 @@
         <button class="wiz-step-pill active" data-step="1" type="button">1. Станция и сеть</button>
         <button class="wiz-step-pill" data-step="2" type="button">2. Алиса</button>
         <button class="wiz-step-pill" data-step="3" type="button">3. Музыка и Звук</button>
-        <button class="wiz-step-pill" data-step="4" type="button">4. Подсветка и Финиш</button>
+        <button class="wiz-step-pill" data-step="4" type="button">4. Подсветка и Кнопки</button>
+        <button class="wiz-step-pill" data-step="5" type="button">5. Готовность</button>
       </div>
 
       <div class="wizard-body">
@@ -998,8 +999,14 @@
           <div class="btn-row" style="margin-bottom:12px;">
             <button class="btn btn-sm" id="btnWizCecWake" type="button">📺 Включить ТВ (HDMI)</button>
           </div>
-          <h3>Готовность OpenStation Max</h3>
+        </div>
+
+        <!-- STEP 5 -->
+        <div class="wiz-pane" id="wizStep5">
+          <div class="status-banner ok" id="wizStep5Banner">✨ Все ключевые компоненты настроены и готовы к работе.</div>
+          <h3>Готовность компонентов OpenStation Max</h3>
           <div class="wiz-checklist" id="wizChecklist"></div>
+          <p class="hint" style="margin-top:12px;">Нажмите «Завершить настройку» — станция зафиксирует готовность и переключится в основной режим управления.</p>
         </div>
       </div>
 

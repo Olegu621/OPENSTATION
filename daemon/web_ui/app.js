@@ -1651,18 +1651,18 @@
   }
 
   function setWizardStep(step) {
-    wizStep = Math.max(1, Math.min(4, step));
+    wizStep = Math.max(1, Math.min(5, step));
     document.querySelectorAll(".wiz-step-pill").forEach((b) => {
       b.classList.toggle("active", parseInt(b.dataset.step, 10) === wizStep);
     });
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= 5; i++) {
       const p = $("wizStep" + i);
       if (p) p.classList.toggle("active", i === wizStep);
     }
     if ($("btnWizPrev")) $("btnWizPrev").style.visibility = wizStep > 1 ? "visible" : "hidden";
-    if ($("btnWizNext")) $("btnWizNext").style.display = wizStep < 4 ? "inline-flex" : "none";
-    if ($("btnWizFinish")) $("btnWizFinish").style.display = wizStep === 4 ? "inline-flex" : "none";
-    if ($("wizProgressText")) $("wizProgressText").textContent = `Шаг ${wizStep} из 4`;
+    if ($("btnWizNext")) $("btnWizNext").style.display = wizStep < 5 ? "inline-flex" : "none";
+    if ($("btnWizFinish")) $("btnWizFinish").style.display = wizStep === 5 ? "inline-flex" : "none";
+    if ($("wizProgressText")) $("wizProgressText").textContent = `Шаг ${wizStep} из 5`;
     if (state) syncWizardTelemetry(state, false);
   }
 
