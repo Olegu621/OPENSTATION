@@ -48,6 +48,9 @@ namespace OpenStationFlasher
         private Button _btnUpdateEntry;
         private Button _btnAfterUbt;
         private Button _btnInstallDriver;
+        private Button _btnAdbReboot;
+        private Button _btnAdbScreen;
+        private bool _isAdbConnected = false;
         private Button _btnTogglePinout;
         private Border _pinoutCard;
         private ProgressBar _progBar;
@@ -425,12 +428,33 @@ namespace OpenStationFlasher
             Grid.SetColumn(_comboRev, 1);
             revBarGrid.Children.Add(_comboRev);
 
+            var rightActions = new StackPanel { Orientation = Orientation.Horizontal };
+
+            _btnAdbReboot = CreateButton("🔄 В режим прошивки (ADB)", Color.FromRgb(15, 60, 110), Color.FromRgb(125, 211, 252));
+            _btnAdbReboot.Padding = new Thickness(10, 6, 10, 6);
+            _btnAdbReboot.FontWeight = FontWeights.SemiBold;
+            _btnAdbReboot.Margin = new Thickness(0, 0, 8, 0);
+            _btnAdbReboot.Visibility = Visibility.Collapsed;
+            _btnAdbReboot.ToolTip = "Перезагрузить Станцию Макс из рабочего режима Android в режим прошивки WorldCup (adb reboot update)";
+            _btnAdbReboot.Click += (s, e) => RebootToBootloader();
+            rightActions.Children.Add(_btnAdbReboot);
+
+            _btnAdbScreen = CreateButton("📺 Скриншот ТВ", Color.FromRgb(30, 41, 59), Color.FromRgb(226, 232, 240));
+            _btnAdbScreen.Padding = new Thickness(10, 6, 10, 6);
+            _btnAdbScreen.Margin = new Thickness(0, 0, 8, 0);
+            _btnAdbScreen.Visibility = Visibility.Collapsed;
+            _btnAdbScreen.ToolTip = "Снять скриншот с экрана телевизора через ADB и открыть его";
+            _btnAdbScreen.Click += (s, e) => CaptureTvScreenshot();
+            rightActions.Children.Add(_btnAdbScreen);
+
             _btnInstallDriver = CreateButton("🔧 Установить драйвер WorldCup", Color.FromRgb(35, 134, 54), Color.FromRgb(255, 255, 255));
             _btnInstallDriver.Padding = new Thickness(12, 6, 12, 6);
             _btnInstallDriver.FontWeight = FontWeights.SemiBold;
             _btnInstallDriver.Click += (s, e) => RunInstallDriver();
-            Grid.SetColumn(_btnInstallDriver, 2);
-            revBarGrid.Children.Add(_btnInstallDriver);
+            rightActions.Children.Add(_btnInstallDriver);
+
+            Grid.SetColumn(rightActions, 2);
+            revBarGrid.Children.Add(rightActions);
 
             revBar.Child = revBarGrid;
             Grid.SetRow(revBar, 4);
@@ -701,6 +725,148 @@ namespace OpenStationFlasher
             CheckDeviceStatus();
         }
 
+        private string FindAdbExe()
+        {
+            string[] candidates = new string[]
+            {
+                Path.Combine(_serviceFlashDir, "adb", "adb.exe"),
+                Path.Combine(_baseDir, "service_flash", "adb", "adb.exe"),
+                @"C:\Android\platform-tools\adb.exe",
+                "adb.exe"
+            };
+            foreach (var path in candidates)
+            {
+                if (File.Exists(path)) return path;
+            }
+            return "adb.exe";
+        }
+
+        private string FindPythonExe()
+        {
+            string[] testCommands = new string[] { "python.exe", "py.exe", "python3.exe" };
+            foreach (var cmd in testCommands)
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo(cmd, "--version")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        p.WaitForExit(1000);
+                        if (p.ExitCode == 0) return cmd;
+                    }
+                }
+                catch { }
+            }
+
+            try
+            {
+                string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string pyPrograms = Path.Combine(localApp, "Programs", "Python");
+                if (Directory.Exists(pyPrograms))
+                {
+                    foreach (var dir in Directory.GetDirectories(pyPrograms, "Python3*"))
+                    {
+                        string pxe = Path.Combine(dir, "python.exe");
+                        if (File.Exists(pxe)) return pxe;
+                    }
+                }
+                string progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                if (Directory.Exists(progFiles))
+                {
+                    foreach (var dir in Directory.GetDirectories(progFiles, "Python3*"))
+                    {
+                        string pxe = Path.Combine(dir, "python.exe");
+                        if (File.Exists(pxe)) return pxe;
+                    }
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        private void RebootToBootloader()
+        {
+            string adb = FindAdbExe();
+            Log("[*] Отправка команды перезагрузки в режим прошивки (adb reboot update)...");
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo(adb, "reboot update")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        p.WaitForExit(6000);
+                    }
+                    Dispatcher.Invoke(() =>
+                    {
+                        Log("[+] Команда reboot update успешно отправлена! Станция перезагружается в режим WorldCup...");
+                        _statusText.Text = "○ Станция перезагружается в режим прошивки...";
+                        _statusText.Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34));
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.Invoke(() => Log("[!] Ошибка adb reboot: " + ex.Message));
+                }
+            });
+        }
+
+        private void CaptureTvScreenshot()
+        {
+            string adb = FindAdbExe();
+            Log("[*] Запрос скриншота экрана ТВ через ADB...");
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    string savePath = Path.Combine(Path.GetTempPath(), "openstation_tv.png");
+                    var psiCap = new ProcessStartInfo(adb, "shell screencap -p /sdcard/openstation_flasher.png")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using (var p = Process.Start(psiCap)) { p.WaitForExit(6000); }
+
+                    var psiPull = new ProcessStartInfo(adb, "pull /sdcard/openstation_flasher.png \"" + savePath + "\"")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using (var p = Process.Start(psiPull)) { p.WaitForExit(6000); }
+
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (File.Exists(savePath))
+                        {
+                            Log("[+] Скриншот экрана ТВ получен: " + savePath);
+                            Process.Start(new ProcessStartInfo { FileName = savePath, UseShellExecute = true });
+                        }
+                        else
+                        {
+                            Log("[!] Не удалось загрузить скриншот ТВ.");
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.Invoke(() => Log("[!] Ошибка снятия скриншота: " + ex.Message));
+                }
+            });
+        }
+
         private void CheckDeviceStatus()
         {
             if (_isFlashing) return;
@@ -733,16 +899,54 @@ namespace OpenStationFlasher
                 }
                 catch { }
 
+                bool adbConnected = false;
+                string adbSerial = "";
+                if (!connected)
+                {
+                    try
+                    {
+                        string adb = FindAdbExe();
+                        var psi = new ProcessStartInfo(adb, "devices")
+                        {
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardOutput = true
+                        };
+                        using (var p = Process.Start(psi))
+                        {
+                            string outStr = p.StandardOutput.ReadToEnd();
+                            p.WaitForExit(600);
+                            var lines = outStr.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var line in lines)
+                            {
+                                if (line.StartsWith("List") || line.StartsWith("*")) continue;
+                                if (line.Contains("\tdevice") || line.EndsWith("device"))
+                                {
+                                    adbConnected = true;
+                                    adbSerial = line.Split('\t', ' ')[0].Trim();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
                 Dispatcher.Invoke(() =>
                 {
-                    if (connected != _isDeviceConnected)
+                    if (connected != _isDeviceConnected || adbConnected != _isAdbConnected)
                     {
                         _isDeviceConnected = connected;
+                        _isAdbConnected = adbConnected;
+
                         if (connected)
                         {
+                            _btnAdbReboot.Visibility = Visibility.Collapsed;
+                            _btnAdbScreen.Visibility = Visibility.Collapsed;
+
                             if (driverError)
                             {
-                                _statusText.Text = "⚠️ Станция подключена, но драйвер НЕ установлен!";
+                                _statusText.Text = "⚠️ Станция подключена, но драйвер WorldCup НЕ установлен!";
                                 _statusText.Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34));
                                 _statusSubtext.Text = errDetail + ". Нажмите кнопку «🔧 Установить драйвер WorldCup» справа!";
                                 _statusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(210, 153, 34));
@@ -757,8 +961,22 @@ namespace OpenStationFlasher
                                 Log("[+] Обнаружено устройство Amlogic (1B8E:C003): " + deviceName);
                             }
                         }
+                        else if (adbConnected)
+                        {
+                            _btnAdbReboot.Visibility = Visibility.Visible;
+                            _btnAdbScreen.Visibility = Visibility.Visible;
+
+                            _statusText.Text = "● Станция Макс на связи по ADB (" + adbSerial + ")";
+                            _statusText.Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+                            _statusSubtext.Text = "Станция загружена в Android. Нажмите «🔄 В режим прошивки (ADB)» для входа в WorldCup без перемычки!";
+                            _statusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+                            Log("[+] Обнаружено Android-устройство ADB: " + adbSerial);
+                        }
                         else
                         {
+                            _btnAdbReboot.Visibility = Visibility.Collapsed;
+                            _btnAdbScreen.Visibility = Visibility.Collapsed;
+
                             _statusText.Text = "○ Ожидание подключения Станции Макс...";
                             _statusText.Foreground = new SolidColorBrush(Color.FromRgb(210, 153, 34));
                             _statusSubtext.Text = "Замкните пины 6 и 3 перемычкой, подключите сервисный Type-C к ПК и включите 19V питание.";
@@ -957,13 +1175,31 @@ namespace OpenStationFlasher
         {
             if (_isFlashing) return;
 
+            string py = FindPythonExe();
+            if (string.IsNullOrEmpty(py))
+            {
+                var ask = MessageBox.Show(
+                    "Python 3 не найден на вашем компьютере!\n\n" +
+                    "Для передачи U-Boot загрузчика по USB требуется Python 3.\n\n" +
+                    "Открыть официальный сайт python.org для загрузки?\n" +
+                    "(При установке обязательно отметьте галочку 'Add python.exe to PATH')",
+                    "Python 3 не найден",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (ask == MessageBoxResult.Yes)
+                {
+                    try { Process.Start(new ProcessStartInfo { FileName = "https://www.python.org/downloads/", UseShellExecute = true }); } catch { }
+                }
+                return;
+            }
+
             string rev = GetSelectedRevision();
             _isFlashing = true;
             SetControlsEnabled(false);
             _progBar.Value = 25;
             _progText.Text = "Вход в режим Update (boot-g12, ревизия: " + rev + ")...";
             Log("==================================================");
-            Log(">>> ВХОД ДЛЯ АПДЕЙТА: Запуск boot-g12.py (Ревизия: " + rev + ")");
+            Log(">>> ВХОД ДЛЯ АПДЕЙТА: Запуск boot-g12.py (Python: " + py + ", Ревизия: " + rev + ")");
 
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -972,7 +1208,7 @@ namespace OpenStationFlasher
                     string script = Path.Combine(_serviceFlashDir, "boot-g12.py");
                     string args = "\"" + script + "\" --revision " + rev;
 
-                    RunProcess("python.exe", args, (pct, msg) =>
+                    RunProcess(py, args, (pct, msg) =>
                     {
                         Dispatcher.Invoke(() =>
                         {
