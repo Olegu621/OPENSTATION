@@ -117,11 +117,11 @@ private:
     float hp1_y_ = 0.0f;
     float hp2_x_ = 0.0f;
     float hp2_y_ = 0.0f;
-    float agc_gain_ = 8.0f;
+    float agc_gain_ = 1.0f;
     float agc_noise_floor_ = 55.0f;
     int agc_hold_frames_ = 0;
     int cap_warmup_frames_ = 24;
-    std::atomic<float> last_agc_gain_{8.0f};
+    std::atomic<float> last_agc_gain_{1.0f};
     std::atomic<float> last_noise_floor_{55.0f};
     bool mic_spec_zero_sent_ = false;
 

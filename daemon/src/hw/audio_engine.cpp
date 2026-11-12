@@ -198,7 +198,7 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
     hp1_y_ = 0.0f;
     hp2_x_ = 0.0f;
     hp2_y_ = 0.0f;
-    agc_gain_ = 8.0f;
+    agc_gain_ = 1.0f;
     agc_noise_floor_ = 55.0f;
     agc_hold_frames_ = 0;
     cap_warmup_frames_ = 24;
@@ -466,10 +466,15 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         } else {
             const float sens_norm = std::clamp(cfg_copy.mic_sensitivity, 10, 100) / 100.0f;
             const bool is_raw_multi = (tracked_ch >= 8);
+            const bool is_vqe = (tracked_ch <= 2);
             const float min_gain = 0.50f;
-            const float max_gain = is_raw_multi ? (8.0f + sens_norm * 24.0f) : (1.8f + sens_norm * 5.0f);
-            const float target_rms = 1800.0f + sens_norm * 800.0f; // ~2480 @ 85% sensitivity - natural speech, zero clipping
-            const float idle_noise_cap = 120.0f + sens_norm * 100.0f; // ~205 pre-armed ready ceiling
+            const float max_gain = is_raw_multi ? (8.0f + sens_norm * 24.0f) :
+                                   is_vqe       ? (0.90f + sens_norm * 0.90f) :
+                                                  (1.8f + sens_norm * 5.0f);
+            const float target_rms = is_vqe ? (850.0f + sens_norm * 350.0f) :
+                                              (1800.0f + sens_norm * 800.0f);
+            const float idle_noise_cap = is_vqe ? (60.0f + sens_norm * 40.0f) :
+                                                  (120.0f + sens_norm * 100.0f);
 
             // Track idle ambient room floor slowly (never chase active speech upward)
             if (raw_rms < agc_noise_floor_ * 2.2f + 15.0f) {
@@ -481,7 +486,7 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
 
             float ready_gain = std::clamp(
                 idle_noise_cap / std::max(agc_noise_floor_, 18.0f),
-                is_raw_multi ? 2.5f : 1.2f,
+                is_raw_multi ? 2.5f : (is_vqe ? 0.85f : 1.2f),
                 max_gain * 0.75f);
 
             float speech_trig = agc_noise_floor_ * (1.18f - sens_norm * 0.12f) + 5.0f;
@@ -511,8 +516,8 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             const float start_g = prev_gain * ns_mul;
             const float end_g = agc_gain_ * ns_mul;
             const float dg = (n16 > 0) ? ((end_g - start_g) / static_cast<float>(n16)) : 0.0f;
-            constexpr float kKnee = 24000.0f;
-            constexpr float kHead = 8767.0f;
+            constexpr float kKnee = 28000.0f;
+            constexpr float kHead = 4767.0f;
             for (size_t i = 0; i < n16; ++i) {
                 float g = start_g + dg * static_cast<float>(i);
                 float y = f16_batch_buf_[i] * g;
@@ -740,7 +745,7 @@ void AudioEngine::run_alsa_capture_session() {
     hp1_y_ = 0.0f;
     hp2_x_ = 0.0f;
     hp2_y_ = 0.0f;
-    agc_gain_ = 8.0f;
+    agc_gain_ = 1.0f;
     agc_noise_floor_ = 55.0f;
     agc_hold_frames_ = 0;
     cap_warmup_frames_ = 24;
@@ -846,7 +851,7 @@ void AudioEngine::capture_loop() {
         hp1_y_ = 0.0f;
         hp2_x_ = 0.0f;
         hp2_y_ = 0.0f;
-        agc_gain_ = 1.8f;
+        agc_gain_ = 1.0f;
         agc_noise_floor_ = 120.0f;
         agc_hold_frames_ = 0;
         cap_warmup_frames_ = 0;
