@@ -1106,11 +1106,13 @@ void OtaManager::run_install_sync(bool force) {
     }
 
     if (!force && (!avail || to_update.empty())) {
-        std::lock_guard<std::mutex> lk(mu_);
-        state_ = "up_to_date";
-        progress_pct_ = 100;
-        progress_text_ = "Обновление не требуется — уже v" + installed_version_;
-        emit_status();
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            state_ = "up_to_date";
+            progress_pct_ = 100;
+            progress_text_ = "Обновление не требуется — уже v" + installed_version_;
+        }
+        emit_status(); // must not hold mu_: emit_status() locks it
         return;
     }
 
@@ -1372,7 +1374,8 @@ void OtaManager::run_install_sync(bool force) {
     std::string script;
     script += "#!/system/bin/sh\n";
     script += "exec >/data/local/openstation/ota.log 2>&1\n";
-    script += "echo \"=== OpenStation OTA Apply v" + target_ver + " ===\"\n";
+    // target_ver comes from the remote manifest; quote it so $(...) / backticks are not executed.
+    script += "echo " + escape_sh_single("=== OpenStation OTA Apply v" + target_ver + " ===") + "\n";
     script += "sleep 1\n";
     script += "killall openstationd 2>/dev/null || true\n";
     script += "i=0\n";

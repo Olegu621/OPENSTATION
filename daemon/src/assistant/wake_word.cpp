@@ -46,7 +46,8 @@ struct SherpaApi {
         if (!ort_handle && access(kLibOrTPath, R_OK) == 0) {
             ort_handle = dlopen(kLibOrTPath, RTLD_NOW | RTLD_GLOBAL);
             if (!ort_handle) {
-                err = std::string("dlopen libonnxruntime.so: ") + (dlerror() ? dlerror() : "unknown");
+                const char* de = dlerror(); // dlerror() clears itself; a second call returns NULL
+                err = std::string("dlopen libonnxruntime.so: ") + (de ? de : "unknown");
                 return false;
             }
         }
@@ -54,7 +55,8 @@ struct SherpaApi {
         const char* sherpa_cand = access(kLibSherpaPath, R_OK) == 0 ? kLibSherpaPath : "libsherpa-onnx-c-api.so";
         sherpa_handle = dlopen(sherpa_cand, RTLD_NOW | RTLD_LOCAL);
         if (!sherpa_handle) {
-            err = std::string("dlopen sherpa-onnx: ") + (dlerror() ? dlerror() : "missing .so");
+            const char* de = dlerror();
+            err = std::string("dlopen sherpa-onnx: ") + (de ? de : "missing .so");
             return false;
         }
 
