@@ -428,6 +428,8 @@ bool AssistantManager::start_session_internal(TriggerSource src,
     }
 
     std::lock_guard<std::mutex> ctrl_lk(session_ctrl_mu_);
+    // stop() may have joined the session thread while we waited for the lock; don't spawn an unjoined one.
+    if (!running_.load()) return false;
     abort_active_session_locked();
 
     wake_word_.set_paused(true);

@@ -70,11 +70,8 @@ void WyomingServer::stop() {
     }
     {
         std::lock_guard<std::mutex> lk(client_mu_);
-        if (client_fd_ >= 0) {
-            shutdown(client_fd_, SHUT_RDWR);
-            ::close(client_fd_);
-            client_fd_ = -1;
-        }
+        // Only shut down: the accept thread still reads this fd and closes it on exit.
+        if (client_fd_ >= 0) shutdown(client_fd_, SHUT_RDWR);
     }
     if (accept_thread_.joinable()) accept_thread_.join();
 }
@@ -191,7 +188,11 @@ bool WyomingServer::send_raw(int fd, const void* buf, size_t len) {
     size_t sent = 0;
     while (sent < len) {
         ssize_t n = send(fd, p + sent, len - sent, MSG_NOSIGNAL);
-        if (n <= 0) return false;
+        if (n <= 0) {
+            // A partial event leaves the stream unframed; drop the connection so the reader exits.
+            shutdown(fd, SHUT_RDWR);
+            return false;
+        }
         sent += static_cast<size_t>(n);
     }
     return true;
@@ -227,6 +228,9 @@ void WyomingServer::accept_loop() {
         }
         int nodelay = 1;
         setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+        // Sends happen on the mic capture thread; a stalled peer must not block it forever.
+        struct timeval stv {2, 0};
+        setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
 
         char ip[INET_ADDRSTRLEN] = {0};
         inet_ntop(AF_INET, &caddr.sin_addr, ip, sizeof(ip));
@@ -295,7 +299,9 @@ void WyomingServer::handle_client(int cfd) {
         if (hdr.get("data") && hdr.get("data")->is_obj()) {
             data_obj = *hdr.get("data");
         }
-        if (data_len > 0 && data_len < 1048576) {
+        // Oversized sections can't be skipped safely; drop the client rather than desync the stream.
+        if (data_len >= 1048576 || payload_len >= 4194304) break;
+        if (data_len > 0) {
             std::string dstr(data_len, '\0');
             if (!read_exact(reinterpret_cast<uint8_t*>(&dstr[0]), data_len)) break;
             json::Value parsed;
@@ -304,7 +310,7 @@ void WyomingServer::handle_client(int cfd) {
             }
         }
         std::vector<uint8_t> payload;
-        if (payload_len > 0 && payload_len < 4194304) {
+        if (payload_len > 0) {
             payload.resize(payload_len);
             if (!read_exact(payload.data(), payload_len)) break;
         }
@@ -364,6 +370,9 @@ void WyomingServer::handle_client(int cfd) {
         } else if (type == "audio-chunk") {
             int rate = data_obj.get("rate") ? data_obj.get("rate")->as_int(tts_rate_) : tts_rate_;
             int ch = data_obj.get("channels") ? data_obj.get("channels")->as_int(tts_channels_) : tts_channels_;
+            // Reject absurd network-supplied formats: tiny rates blow up the 48 kHz resample buffer,
+            // huge channel counts overflow the frame-size math.
+            if (rate < 8000 || rate > 96000 || ch < 1 || ch > 8) continue;
             if (!payload.empty() && tts_cb_) {
                 size_t frames = payload.size() / (2 * std::max(1, ch));
                 tts_cb_(reinterpret_cast<const int16_t*>(payload.data()), frames, rate, std::max(1, ch));
