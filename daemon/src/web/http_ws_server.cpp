@@ -224,14 +224,22 @@ void HttpWsServer::accept_loop() {
 }
 
 void HttpWsServer::remove_ws_client(int cfd) {
-    std::lock_guard<std::mutex> lk(ws_mu_);
-    for (auto it = ws_clients_.begin(); it != ws_clients_.end(); ++it) {
-        if ((*it)->fd == cfd) {
-            (*it)->dead = true;
-            ws_clients_.erase(it);
-            ws_client_count_.store(ws_clients_.size(), std::memory_order_relaxed);
-            break;
+    std::shared_ptr<WsClient> removed;
+    {
+        std::lock_guard<std::mutex> lk(ws_mu_);
+        for (auto it = ws_clients_.begin(); it != ws_clients_.end(); ++it) {
+            if ((*it)->fd == cfd) {
+                removed = *it;
+                ws_clients_.erase(it);
+                ws_client_count_.store(ws_clients_.size(), std::memory_order_relaxed);
+                break;
+            }
         }
+    }
+    if (removed) {
+        // Wait out any in-flight broadcast so it cannot write to cfd after it is closed and reused.
+        std::lock_guard<std::mutex> slk(removed->send_mu);
+        removed->dead = true;
     }
 }
 
