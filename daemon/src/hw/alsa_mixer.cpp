@@ -114,7 +114,7 @@ bool AlsaMixer::get_int(const std::string& name, long& out, int idx) {
     struct snd_ctl_elem_value val {};
     val.id.numid = it->second.numid;
     if (ioctl(fd_, SNDRV_CTL_IOCTL_ELEM_READ, &val) < 0) return false;
-    if (idx < 0 || static_cast<unsigned int>(idx) >= it->second.count) return false;
+    if (idx < 0 || static_cast<unsigned int>(idx) >= it->second.count || idx >= 128) return false;
     out = val.value.integer.value[idx];
     return true;
 }
