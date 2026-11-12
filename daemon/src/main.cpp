@@ -45,7 +45,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.3.2";
+constexpr const char* kFirmwareVersion = "1.3.6";
 
 std::atomic<bool> g_stop{false};
 
@@ -338,21 +338,6 @@ std::string get_query_param(const std::string& query, const std::string& key) {
     return "";
 }
 
-std::string b64_encode_str(const std::string& s) {
-    static const char* kTbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    for (size_t i = 0; i < s.size(); i += 3) {
-        uint32_t v = static_cast<uint8_t>(s[i]) << 16;
-        if (i + 1 < s.size()) v |= static_cast<uint8_t>(s[i + 1]) << 8;
-        if (i + 2 < s.size()) v |= static_cast<uint8_t>(s[i + 2]);
-        out.push_back(kTbl[(v >> 18) & 0x3F]);
-        out.push_back(kTbl[(v >> 12) & 0x3F]);
-        out.push_back(i + 1 < s.size() ? kTbl[(v >> 6) & 0x3F] : '=');
-        out.push_back(i + 2 < s.size() ? kTbl[v & 0x3F] : '=');
-    }
-    return out;
-}
-
 bool is_valid_eq_preset(const std::string& p) {
     return p == "balanced" || p == "flat" || p == "bass_boost" || p == "vocal" ||
            p == "night" || p == "rock" || p == "electronic" || p == "custom";
@@ -484,16 +469,6 @@ void dispatch_remote_text(const std::string& txt) {
     payload["seq"] = openstation::json::Value::make_str(seq);
     payload["text"] = openstation::json::Value::make_str(txt);
     send_udp_json(8085, payload.dump(-1));
-    if (!is_udp_port_bound(8085)) {
-        // Broadcast fallback only if IME service isn't bound to UDP 8085 yet
-        std::string b64 = b64_encode_str(txt);
-        spawn_detached({
-            "/system/bin/am", "broadcast",
-            "-a", "com.openstation.ime.COMMIT_TEXT",
-            "--es", "seq", seq,
-            "--es", "b64", b64
-        });
-    }
 }
 
 std::string read_first_line(const char* path) {
@@ -1162,6 +1137,69 @@ int main(int argc, char** argv) {
     OtaManager ota;
     HttpWsServer http;
 
+    std::atomic<bool> bluetooth_enabled{false};
+    std::atomic<bool> bluetooth_discoverable{false};
+    std::atomic<int64_t> bt_discoverable_until_ms{0};
+
+    auto apply_bluetooth_mode = [&](bool enable, bool discoverable, int duration_sec = 300) {
+        bluetooth_enabled.store(enable);
+        bluetooth_discoverable.store(enable && discoverable);
+        if (enable && discoverable) {
+            bt_discoverable_until_ms.store(steady_ms_now() + duration_sec * 1000);
+        } else {
+            bt_discoverable_until_ms.store(0);
+        }
+
+        if (enable) {
+            LOGI("Main", "Enabling Bluetooth (A2DP Sink discoverable=%d, duration=%ds)...", discoverable, duration_sec);
+            spawn_detached({"/system/bin/cmd", "bluetooth_manager", "enable"});
+            spawn_detached({"/system/bin/svc", "bluetooth", "enable"});
+            spawn_detached({"/system/bin/settings", "put", "global", "bluetooth_on", "1"});
+            if (discoverable) {
+                spawn_detached({"/system/bin/settings", "put", "global", "bluetooth_discoverable", "1"});
+                spawn_detached({"/system/bin/settings", "put", "global", "bluetooth_discoverable_timeout", std::to_string(duration_sec)});
+                spawn_detached({"/system/bin/am", "broadcast", "-a", "android.bluetooth.adapter.action.REQUEST_DISCOVERABLE",
+                                "--ei", "android.bluetooth.adapter.extra.DISCOVERABLE_DURATION", std::to_string(duration_sec)});
+            }
+            if (is_udp_port_bound(8086)) {
+                json::Value bcmd = json::Value::make_obj();
+                bcmd["cmd"] = json::Value::make_str("bluetooth");
+                bcmd["action"] = json::Value::make_str(discoverable ? "discoverable" : "enable");
+                bcmd["duration"] = json::Value::make_int(duration_sec);
+                bcmd["name"] = json::Value::make_str("OpenStation Max");
+                send_udp_json(8086, bcmd.dump(-1));
+            }
+            leds.trigger_screen_text("BT", 0, 180, 255, 6000);
+            leds.trigger_flash(0, 140, 255, 1200);
+
+            audio.play_test_tone(587, 120);
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            audio.play_test_tone(880, 220);
+        } else {
+            LOGI("Main", "Disabling Bluetooth...");
+            spawn_detached({"/system/bin/cmd", "bluetooth_manager", "disable"});
+            spawn_detached({"/system/bin/svc", "bluetooth", "disable"});
+            spawn_detached({"/system/bin/settings", "put", "global", "bluetooth_on", "0"});
+            spawn_detached({"/system/bin/settings", "put", "global", "bluetooth_discoverable", "0"});
+            if (is_udp_port_bound(8086)) {
+                json::Value bcmd = json::Value::make_obj();
+                bcmd["cmd"] = json::Value::make_str("bluetooth");
+                bcmd["action"] = json::Value::make_str("disable");
+                send_udp_json(8086, bcmd.dump(-1));
+            }
+            leds.trigger_screen_text("BT OFF", 255, 100, 100, 3000);
+            leds.trigger_flash(255, 80, 80, 800);
+            audio.play_test_tone(880, 120);
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            audio.play_test_tone(587, 220);
+        }
+    };
+
+    auto toggle_bluetooth_mode = [&]() {
+        bool current = bluetooth_enabled.load();
+        apply_bluetooth_mode(!current, !current, 300);
+    };
+
     for (int attempt = 0; attempt < 5 && !g_stop.load(); ++attempt) {
         if (mixer.init(0)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -1432,6 +1470,7 @@ int main(int argc, char** argv) {
         }
     };
 
+    std::mutex config_apply_mu;
     auto apply_hw_config = [&](const DaemonConfig& c, bool /*hp_plugged*/) {
         leds.update_config(c.led_ring, c.led_screen);
         leds.set_mic_muted(c.audio.mic_muted);
@@ -1593,6 +1632,11 @@ int main(int argc, char** argv) {
                 LOGI("Main", "Mic mute toggled -> %s", next_c.audio.mic_muted ? "MUTED" : "LIVE");
                 break;
             }
+            case HwEventType::BluetoothToggle: {
+                LOGI("Main", "Hardware Mute button 5-tap -> toggling Bluetooth (A2DP Sink)!");
+                toggle_bluetooth_mode();
+                break;
+            }
             case HwEventType::ActionShort:
             case HwEventType::ActionLong: {
                 const std::string& act = (ev == HwEventType::ActionShort)
@@ -1647,7 +1691,10 @@ int main(int argc, char** argv) {
     });
 
     // Apply loaded hardware configuration right away
-    apply_hw_config(cfg, inputs.headphone_plugged());
+    {
+        std::lock_guard<std::mutex> apply_lk(config_apply_mu);
+        apply_hw_config(cfg, inputs.headphone_plugged());
+    }
 
     std::thread geo_thread([&]() {
         bool need_geo = false;
@@ -2044,18 +2091,8 @@ int main(int argc, char** argv) {
         }
 
         if (name == "shell_exec") {
-            std::string cmd = args.get("command") ? args.get("command")->as_str() : "";
-            if (cmd.empty()) {
-                res["ok"] = Value::make_bool(false);
-                res["error"] = Value::make_str("command is required");
-                return res;
-            }
-            int tsec = args.get("timeout_sec") ? std::clamp(args.get("timeout_sec")->as_int(10), 1, 30) : 10;
-            ShellResult sr = run_shell_with_timeout(cmd, tsec, 8192);
-            res["ok"] = Value::make_bool(!sr.timed_out && sr.exit_code == 0);
-            res["exitCode"] = Value::make_int(sr.exit_code);
-            res["timedOut"] = Value::make_bool(sr.timed_out);
-            res["output"] = Value::make_str(sr.output);
+            res["ok"] = Value::make_bool(false);
+            res["error"] = Value::make_str("shell_exec is disabled; arbitrary root commands are not accepted from assistant tools");
             return res;
         }
 
@@ -2092,13 +2129,8 @@ int main(int argc, char** argv) {
                 return res;
             }
             if (act == "reboot") {
-                bool spawned = spawn_detached({
-                    "/system/bin/sh", "-c",
-                    "sleep 4; /system/bin/svc power reboot || /system/bin/reboot"
-                });
-                res["ok"] = Value::make_bool(spawned);
-                res["action"] = Value::make_str(act);
-                if (spawned) res["stopSession"] = Value::make_bool(true);
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str("reboot requires direct user action and is disabled for assistant tools");
                 return res;
             }
             res["ok"] = Value::make_bool(false);
@@ -2448,6 +2480,37 @@ int main(int argc, char** argv) {
             res["ok"] = Value::make_bool(true);
             res["route"] = Value::make_str(route);
             return res;
+        }
+
+        if (name == "bluetooth_control") {
+            std::string act = args.get("action") ? args.get("action")->as_str() : "discoverable";
+            int dur = args.get("duration_sec") ? args.get("duration_sec")->as_int(300) : 300;
+            if (act == "enable" || act == "discoverable" || act == "on") {
+                apply_bluetooth_mode(true, true, dur);
+                res["ok"] = Value::make_bool(true);
+                res["status"] = Value::make_str("discoverable");
+                res["message"] = Value::make_str("Режим Bluetooth включён. Колонка видна для подключения как OpenStation Max.");
+                return res;
+            } else if (act == "disable" || act == "off") {
+                apply_bluetooth_mode(false, false, 0);
+                res["ok"] = Value::make_bool(true);
+                res["status"] = Value::make_str("disabled");
+                res["message"] = Value::make_str("Bluetooth выключен.");
+                return res;
+            } else if (act == "toggle") {
+                toggle_bluetooth_mode();
+                bool now_on = bluetooth_enabled.load();
+                res["ok"] = Value::make_bool(true);
+                res["status"] = Value::make_str(now_on ? "discoverable" : "disabled");
+                res["message"] = Value::make_str(now_on ? "Bluetooth включён" : "Bluetooth выключен");
+                return res;
+            } else {
+                res["ok"] = Value::make_bool(true);
+                res["enabled"] = Value::make_bool(bluetooth_enabled.load());
+                res["discoverable"] = Value::make_bool(bluetooth_discoverable.load());
+                res["deviceName"] = Value::make_str("OpenStation Max");
+                return res;
+            }
         }
 
         if (name == "play_sound") {
@@ -3171,6 +3234,11 @@ int main(int argc, char** argv) {
             }
         }
         if (dirty) {
+            std::lock_guard<std::mutex> apply_lk(config_apply_mu);
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                next_c = cfg;
+            }
             apply_hw_config(next_c, inputs.headphone_plugged());
             save_cfg(next_c);
         }
@@ -3216,13 +3284,28 @@ int main(int argc, char** argv) {
         root["ota"] = ota.get_status_json();
         root["bootanim"] = ota.get_bootanim_status_json();
         root["wifiAdb"] = adb_mgr.get_status_json(local_ip, c.device_hostname);
+
+        Value bt = Value::make_obj();
+        bt["enabled"] = Value::make_bool(bluetooth_enabled.load());
+        bt["discoverable"] = Value::make_bool(bluetooth_discoverable.load());
+        bt["discoverableRemainingSec"] = Value::make_int(
+            std::max<int64_t>(0, (bt_discoverable_until_ms.load() - steady_ms_now()) / 1000)
+        );
+        bt["deviceName"] = Value::make_str("OpenStation Max");
+        root["bluetooth"] = std::move(bt);
+
         {
             std::lock_guard<std::mutex> lk(last_weather_mu);
             if (has_last_weather) {
                 root["lastWeather"] = last_weather_json;
             }
         }
-        root["config"] = c.to_json();
+        Value public_config = c.to_json();
+        public_config["assistant"]["geminiApiKey"] = Value::make_str("");
+        public_config["assistant"]["geminiApiKeySet"] = Value::make_bool(!c.assistant.gemini_api_key.empty());
+        public_config["mqtt"]["password"] = Value::make_str("");
+        public_config["mqtt"]["passwordConfigured"] = Value::make_bool(!c.mqtt.password.empty());
+        root["config"] = std::move(public_config);
         return root;
     };
 
@@ -3246,6 +3329,7 @@ int main(int argc, char** argv) {
                 if (!json::Parser::parse(req.body, v)) {
                     return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
                 }
+                std::lock_guard<std::mutex> apply_lk(config_apply_mu);
                 DaemonConfig c;
                 {
                     std::lock_guard<std::mutex> lk(cfg_mu);
@@ -3268,6 +3352,46 @@ int main(int argc, char** argv) {
                 }
                 leds.trigger_calibration(mode, 4500);
                 return HttpResponse::json("{\"ok\":true}");
+            }
+            if (req.method == "POST" && req.path == "/api/bluetooth/toggle") {
+                toggle_bluetooth_mode();
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["enabled"] = json::Value::make_bool(bluetooth_enabled.load());
+                resp["discoverable"] = json::Value::make_bool(bluetooth_discoverable.load());
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/bluetooth/discoverable") {
+                int dur = 300;
+                json::Value v;
+                if (json::Parser::parse(req.body, v) && v.is_obj() && v.get("durationSec")) {
+                    dur = v.get("durationSec")->as_int(300);
+                }
+                apply_bluetooth_mode(true, true, dur);
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["enabled"] = json::Value::make_bool(true);
+                resp["discoverable"] = json::Value::make_bool(true);
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/bluetooth/disable") {
+                apply_bluetooth_mode(false, false, 0);
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["enabled"] = json::Value::make_bool(false);
+                resp["discoverable"] = json::Value::make_bool(false);
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/bluetooth/status") {
+                json::Value bt = json::Value::make_obj();
+                bt["ok"] = json::Value::make_bool(true);
+                bt["enabled"] = json::Value::make_bool(bluetooth_enabled.load());
+                bt["discoverable"] = json::Value::make_bool(bluetooth_discoverable.load());
+                bt["discoverableRemainingSec"] = json::Value::make_int(
+                    std::max<int64_t>(0, (bt_discoverable_until_ms.load() - steady_ms_now()) / 1000)
+                );
+                bt["deviceName"] = json::Value::make_str("OpenStation Max");
+                return HttpResponse::json(bt.dump(-1));
             }
             if (req.method == "GET" && req.path == "/api/weather") {
                 std::string city = url_decode_str(get_query_param(req.query, "city"));

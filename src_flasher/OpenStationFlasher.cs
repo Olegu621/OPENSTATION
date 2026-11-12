@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Management;
 using System.Net;
 using System.Reflection;
@@ -152,6 +153,7 @@ namespace OpenStationFlasher
             string[] subfolders = new string[]
             {
                 Path.Combine(current, "OPENSTATION-main"),
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.6"),
                 Path.Combine(current, "OpenStationMax_Flasher_v1.3.5"),
                 Path.Combine(current, "OpenStationMax_Flasher_v1.3.4"),
                 Path.Combine(current, "OpenStationMax_Flasher_v1.3.3"),
@@ -181,9 +183,11 @@ namespace OpenStationFlasher
             // 5. Look for ZIP archive in current dir, Desktop or Downloads, and auto-extract!
             string[] zipCandidates = new string[]
             {
+                Path.Combine(current, "OpenStationMax_Flasher_v1.3.6.zip"),
                 Path.Combine(current, "OpenStationMax_Flasher_v1.3.5.zip"),
                 Path.Combine(current, "OpenStationMax_Flasher_v1.3.4.zip"),
                 Path.Combine(current, "OpenStationMax_Flasher_v1.3.3.zip"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OpenStationMax_Flasher_v1.3.6.zip"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OpenStationMax_Flasher_v1.3.5.zip"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "OpenStationMax_Flasher_v1.3.4.zip"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "OPENSTATION-main.zip"),
@@ -247,7 +251,7 @@ namespace OpenStationFlasher
             StartDevicePolling();
 
             Log("================================================================================");
-            Log(" OpenStation Max Flasher v1.3.5 — Мастер пошаговой прошивки и разблокировки");
+            Log(" OpenStation Max Flasher v1.3.6 — Мастер пошаговой прошивки и разблокировки");
             Log(" Поддержка всех ревизий: YNDX-0008, YNDX-00052, YNDX-00053 (Zigbee 2023+)");
             Log(" Защита от бутлупа: автоматический обход AVB2, запись правильного misc и uboot-command");
             Log(" Каталог программы: " + _baseDir);
@@ -259,7 +263,7 @@ namespace OpenStationFlasher
 
         private void InitWindow()
         {
-            Title = "OpenStation Max — Мастер прошивки v1.3.5 [0008 / 00052 / 00053 Zigbee]";
+            Title = "OpenStation Max — Мастер прошивки v1.3.6 [0008 / 00052 / 00053 Zigbee]";
             Width = 990;
             Height = 770;
             MinWidth = 880;
@@ -408,7 +412,7 @@ namespace OpenStationFlasher
             };
             verBadge.Child = new TextBlock
             {
-                Text = "v1.3.5 Мастер Установки",
+                Text = "v1.3.6 Мастер Установки",
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(0, 212, 255))
@@ -457,7 +461,7 @@ namespace OpenStationFlasher
 
             var btnBootloopInfo = CreateSmallButton("🛡 Защита от бутлупа", Color.FromRgb(16, 42, 32), Color.FromRgb(74, 222, 128));
             btnBootloopInfo.Margin = new Thickness(0, 0, 8, 0);
-            btnBootloopInfo.Click += (s, e) => ShowModal("🛡 Как решена проблема бутлупа в v1.3.5", GetBootloopHelpText());
+            btnBootloopInfo.Click += (s, e) => ShowModal("🛡 Как решена проблема бутлупа в v1.3.6", GetBootloopHelpText());
             rightStack.Children.Add(btnBootloopInfo);
 
             var btnWeb = CreateSmallButton("🌐 Веб-пульт", Color.FromRgb(18, 30, 48), Color.FromRgb(88, 166, 255));
@@ -2003,7 +2007,7 @@ namespace OpenStationFlasher
                 "     В результате команды 'setenv avb2 0' и 'saveenv' даже не выполнялись!\n" +
                 "  2. Отсутствие записи раздела misc: стоковый загрузчик требовал AVB dm-verity и SELinux enforcing.\n" +
                 "     При попытке загрузить сторонний system/vendor ядро аварийно перезагружалось.\n\n" +
-                "• КАК ЭТО ИСПРАВЛЕНО В ВЕРСИИ 1.3.5:\n" +
+                "• КАК ЭТО ИСПРАВЛЕНО В ВЕРСИИ 1.3.6:\n" +
                 "  ✓ 'amlmmc enc' полностью удалена из всех скриптов и командного конвейера.\n" +
                 "  ✓ В раздел misc прошивается uboot-command с аргументами:\n" +
                 "    androidboot.selinux=permissive androidboot.verifiedbootstate=orange androidboot.vbmeta.skip=1\n" +
@@ -2301,6 +2305,28 @@ namespace OpenStationFlasher
         {
             if (_isFlashing) return;
 
+            string romDir = Path.Combine(_baseDir, "rom");
+            string systemImg = Path.Combine(romDir, "system.img");
+            string vbmetaImg = Path.Combine(romDir, "vbmeta.img");
+            bool hasFullRom = File.Exists(systemImg) && File.Exists(vbmetaImg);
+
+            if (!hasFullRom)
+            {
+                var promptRes = MessageBox.Show(
+                    "Файл полной сервисной прошивки (system.img ~1.4 ГБ) не найден в папке rom/.\n\n" +
+                    "• Если вы прошили станцию через USB Burning Tool и она висит на белом логотипе Яндекса — вам НЕ требуется полная перезапись! Выберите режим «Снятие бутлупа (After UBT)».\n\n" +
+                    "Запустить «Снятие бутлупа (After UBT)» прямо сейчас?",
+                    "Требуется образ system.img",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Information);
+
+                if (promptRes == MessageBoxResult.Yes)
+                {
+                    RunAfterUbt();
+                }
+                return;
+            }
+
             string rev = _selectedRevision;
             string modeName = wipeData ? "Чистая сервисная прошивка (Wipe + Unbrick)" : "Обновление системы (/data сохранён)";
             var res = MessageBox.Show(
@@ -2473,7 +2499,7 @@ namespace OpenStationFlasher
             var res = MessageBox.Show(
                 "Запустить быструю установку OpenStation Max по ADB?\n\n" +
                 "Этот способ подходит для работающих станций:\n" +
-                "• Устанавливает системный демон openstationd v1.3.5;\n" +
+                "• Устанавливает системный демон openstationd v1.3.6;\n" +
                 "• Устанавливает ТВ-лаунчер OpenStationLauncher и клавиатуру OpenStationIME;\n" +
                 "• Настраивает плеер Яндекс Музыки (Моя волна) и голосовой ассистент;\n" +
                 "• Не требует разборки колонки и перемычек.",
@@ -2701,7 +2727,9 @@ namespace OpenStationFlasher
                     };
 
                     var p = Process.Start(psi);
+                    if (p == null) throw new InvalidOperationException("Не удалось запустить установщик драйвера.");
                     p.WaitForExit();
+                    if (p.ExitCode != 0) throw new InvalidOperationException("Установщик драйвера завершился с кодом " + p.ExitCode + ".");
 
                     Dispatcher.Invoke(() =>
                     {
@@ -2937,6 +2965,7 @@ namespace OpenStationFlasher
             };
 
             var errBuilder = new StringBuilder();
+            var recentLines = new List<string>();
 
             using (var proc = new Process { StartInfo = psi })
             {
@@ -2945,6 +2974,11 @@ namespace OpenStationFlasher
                     if (e.Data != null)
                     {
                         string line = e.Data;
+                        lock (recentLines)
+                        {
+                            recentLines.Add(line);
+                            if (recentLines.Count > 40) recentLines.RemoveAt(0);
+                        }
                         Log(line);
 
                         // Parse realistic progress
@@ -2975,12 +3009,33 @@ namespace OpenStationFlasher
                 if (proc.ExitCode != 0)
                 {
                     string errStr = errBuilder.ToString().Trim();
+                    if (string.IsNullOrEmpty(errStr))
+                    {
+                        lock (recentLines)
+                        {
+                            var filtered = recentLines.Where(l => !string.IsNullOrWhiteSpace(l) && !l.StartsWith("===")).ToList();
+                            if (filtered.Count > 0)
+                            {
+                                int takeCount = Math.Min(6, filtered.Count);
+                                errStr = string.Join("\n", filtered.GetRange(filtered.Count - takeCount, takeCount));
+                            }
+                        }
+                    }
+
                     if (proc.ExitCode == -196608 || errStr.Contains("does not exist") || errStr.Contains("не существует"))
                     {
                         throw new Exception(
                             "Файл скрипта не найден (ошибка -196608).\n\n" +
                             "Каталог запуска: " + _baseDir + "\n\n" +
                             "Пожалуйста, убедитесь, что архив OpenStationMax_Flasher распакован полностью в отдельную папку, и запускайте OpenStationFlasher.exe из неё.");
+                    }
+
+                    if (errStr.Contains("system.img") || errStr.Contains("OpenStationMax-ROM"))
+                    {
+                        throw new Exception(
+                            "Образ system.img не найден в папке rom/ (код ошибки " + proc.ExitCode + ").\n\n" +
+                            "• Для восстановления после USB Burning Tool (зависание на логотипе Яндекса) используйте режим «Снятие бутлупа (After UBT)»!\n\n" +
+                            "Детали:\n" + errStr);
                     }
 
                     string failMsg = "Процесс завершился с кодом ошибки " + proc.ExitCode;

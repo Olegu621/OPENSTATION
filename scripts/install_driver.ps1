@@ -42,6 +42,16 @@ if (-not (Test-Path $InfPath)) {
     exit 1
 }
 
+if (-not (Test-Path $CatPath)) { throw "Каталог подписи не найден: $CatPath" }
+$expectedCatHash = "1F7B39F42EFCB89A6A116F67FDFCC73D18F19FC5329919882A59927F272760B3"
+$expectedSigner = "D8665F0DE4B56802C627B851F9A4BE57C8DBF7E0"
+$actualCatHash = (Get-FileHash -Path $CatPath -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($actualCatHash -ne $expectedCatHash) { throw "Каталог драйвера не совпадает с проверенной версией; импорт доверия отменён." }
+$sigCheck = Get-AuthenticodeSignature $CatPath
+if (-not $sigCheck.SignerCertificate -or $sigCheck.SignerCertificate.Thumbprint.ToUpperInvariant() -ne $expectedSigner) {
+    throw "Thumbprint издателя не совпадает с закреплённым издателем WorldCup; установка отменена."
+}
+
 # Шаг 1: Добавление сертификата в Доверенные издатели и Доверенные корневые центры
 Write-Host "[1/4] Проверка и импорт цифрового сертификата драйвера..." -ForegroundColor Yellow
 try {
@@ -83,23 +93,12 @@ try {
 
 # Шаг 2: Установка драйвера через pnputil
 Write-Host "[2/4] Регистрация драйвера в Windows DriverStore (pnputil)..." -ForegroundColor Yellow
-try {
-    $pnpOut = (& pnputil.exe /add-driver $InfPath /install 2>&1 | Out-String)
-    Write-Host $pnpOut.Trim() -ForegroundColor Gray
-} catch {
-    Write-Host "  [!] pnputil: $($_.Exception.Message)" -ForegroundColor DarkYellow
-}
+$pnpOut = (& pnputil.exe /add-driver $InfPath /install 2>&1 | Out-String)
+$pnpRc = $LASTEXITCODE
+Write-Host $pnpOut.Trim() -ForegroundColor Gray
+if ($pnpRc -ne 0) { throw "pnputil завершился с кодом $pnpRc" }
 
-# Шаг 3: Запуск InstallDriver.exe (Travis Robinson SFX/dpscat)
-if (Test-Path $InstallExe) {
-    Write-Host "[3/4] Запуск нативного инсталлятора InstallDriver.exe..." -ForegroundColor Yellow
-    try {
-        $proc = Start-Process -FilePath $InstallExe -WorkingDirectory $DrvDir -PassThru -Wait
-        Write-Host "  InstallDriver завершён (код $($proc.ExitCode))." -ForegroundColor Gray
-    } catch {
-        Write-Host "  [!] InstallDriver.exe: $($_.Exception.Message)" -ForegroundColor DarkYellow
-    }
-}
+# InstallDriver.exe is intentionally not executed; only the pinned driver catalog is installed via pnputil.
 
 # Шаг 4: Проверка текущего статуса устройства
 Write-Host "[4/4] Проверка подключения и статуса устройства..." -ForegroundColor Yellow

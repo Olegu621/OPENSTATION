@@ -194,7 +194,7 @@ class MainActivity : Activity() {
     private var latestMusicSnap = YmPlayerSnapshot()
 
     // Live daemon state
-    private var fwVer = "1.3.1"
+    private var fwVer = "1.3.6"
     private var ringMode = "music"
     private var micMuted = false
     private var outputRoute = "auto"

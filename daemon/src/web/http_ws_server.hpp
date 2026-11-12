@@ -58,7 +58,7 @@ private:
     struct WsClient {
         int fd = -1;
         bool want_audio = false;
-        bool dead = false;
+        std::atomic<bool> dead{false};
         std::mutex send_mu;
     };
 
@@ -76,6 +76,7 @@ private:
 
     int port_ = 8080;
     int listen_fd_ = -1;
+    std::string auth_token_;
     ApiHandler api_cb_;
     WsCmdHandler ws_cb_;
 

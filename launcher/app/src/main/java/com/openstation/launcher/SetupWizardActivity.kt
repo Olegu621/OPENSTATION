@@ -1198,7 +1198,8 @@ class SetupWizardActivity : Activity() {
                         curFb5 = hw?.optBoolean("fb5Present", false) ?: false
                         curDnsMode = dnsMode
                         curDnsHost = dnsHost
-                        curHasKey = !(astCfg?.optString("geminiApiKey", "") ?: "").isBlank()
+                        curHasKey = astCfg?.optBoolean("geminiApiKeySet", false) == true ||
+                            !(astCfg?.optString("geminiApiKey", "") ?: "").isBlank()
                         curVoice = astCfg?.optString("voiceName", "Aoede") ?: "Aoede"
                         curProxyHost = astCfg?.optString("geminiProxyHost", "ai-pool.comss.one") ?: "ai-pool.comss.one"
                         curWakeEn = astCfg?.optBoolean("wakeWordEnabled", true) ?: true

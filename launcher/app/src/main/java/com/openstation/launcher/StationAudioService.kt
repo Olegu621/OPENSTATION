@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -19,6 +20,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -329,7 +331,7 @@ class StationAudioService : Service() {
                 try {
                     sock = DatagramSocket(null).apply {
                         reuseAddress = true
-                        bind(InetSocketAddress(8086))
+                        bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 8086))
                     }
                     udpSocket = sock
                     val buf = ByteArray(4096)
@@ -418,6 +420,11 @@ class StationAudioService : Service() {
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx, flags)
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                 }
+                "bluetooth" -> {
+                    val act = obj.optString("action", "discoverable")
+                    val duration = obj.optInt("duration", 300)
+                    handleBluetoothCommand(act, duration)
+                }
                 "launch_music" -> {
                     openYandexMusicActivity(obj.optString("tab", ""))
                 }
@@ -468,6 +475,70 @@ class StationAudioService : Service() {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "Bad UDP command: ${t.message}")
+        }
+    }
+
+    private fun handleBluetoothCommand(action: String, durationSec: Int) {
+        try {
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            if (adapter == null) {
+                Log.w(TAG, "BluetoothAdapter is null on this device")
+                return
+            }
+
+            when (action.lowercase()) {
+                "enable", "discoverable", "on" -> {
+                    if (!adapter.isEnabled) {
+                        adapter.enable()
+                        Log.i(TAG, "Bluetooth adapter enabling...")
+                    }
+                    try {
+                        if (adapter.name != "OpenStation Max") {
+                            adapter.name = "OpenStation Max"
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Failed to set BT adapter name: ${e.message}")
+                    }
+
+                    // Set SCAN_MODE_CONNECTABLE_DISCOVERABLE via reflection
+                    try {
+                        val setScanMode = adapter.javaClass.getMethod(
+                            "setScanMode",
+                            Int::class.javaPrimitiveType,
+                            Int::class.javaPrimitiveType
+                        )
+                        setScanMode.invoke(adapter, BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE, durationSec)
+                        Log.i(TAG, "Bluetooth set to DISCOVERABLE for $durationSec sec")
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Reflection setScanMode failed: ${e.message}")
+                    }
+
+                    handler.post {
+                        try {
+                            Toast.makeText(this, "Bluetooth: колонка готова к подключению (OpenStation Max)", Toast.LENGTH_LONG).show()
+                        } catch (_: Throwable) {}
+                    }
+                }
+                "disable", "off" -> {
+                    try {
+                        val setScanMode = adapter.javaClass.getMethod(
+                            "setScanMode",
+                            Int::class.javaPrimitiveType,
+                            Int::class.javaPrimitiveType
+                        )
+                        setScanMode.invoke(adapter, BluetoothAdapter.SCAN_MODE_NONE, 0)
+                    } catch (_: Throwable) {}
+                    adapter.disable()
+                    Log.i(TAG, "Bluetooth adapter disabled")
+                    handler.post {
+                        try {
+                            Toast.makeText(this, "Bluetooth выключен", Toast.LENGTH_SHORT).show()
+                        } catch (_: Throwable) {}
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "handleBluetoothCommand error", t)
         }
     }
 

@@ -82,6 +82,39 @@ bool contains_ci(const std::string& hay, const std::string& needle) {
     return it != hay.end();
 }
 
+static std::string utf8_to_lower_ru(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c >= 'A' && c <= 'Z') {
+            out.push_back(static_cast<char>(c + 32));
+        } else if (c == 0xD0 && i + 1 < s.size()) {
+            unsigned char c2 = static_cast<unsigned char>(s[i + 1]);
+            if (c2 >= 0x90 && c2 <= 0xAF) {
+                if (c2 <= 0x9F) {
+                    out.push_back(static_cast<char>(0xD0));
+                    out.push_back(static_cast<char>(c2 + 0x20));
+                } else {
+                    out.push_back(static_cast<char>(0xD1));
+                    out.push_back(static_cast<char>(c2 - 0x20));
+                }
+                i++;
+                continue;
+            } else if (c2 == 0x81) {
+                out.push_back(static_cast<char>(0xD1));
+                out.push_back(static_cast<char>(0x91));
+                i++;
+                continue;
+            }
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    return out;
+}
+
 std::string trim_str(std::string s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
@@ -640,18 +673,21 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "set_audio_route, play_sound, set_mic_mute), LED-кольцо и экран-матрица (set_led_ring, set_led_screen, show_screen_banner), "
               "таймеры/будильники (manage_timer), HDMI-CEC и пульт ТВ (tv_hdmi_cec, remote_control, type_text), встроенный нативный плеер "
               "Яндекс Музыка (music_control), приложения и ссылки (manage_apps), умный дом MQTT/HTTP (mqtt_publish, http_request), "
-              "диагностика и питание (system_info, device_power) и произвольные root-команды (shell_exec).\n"
+              "диагностика и ограниченное управление питанием (system_info, device_power).\n"
               "- Музыка (music_control): на команды «включи музыку», «поставь музыку», «давай музыку», «включи мою волну» (без конкретного названия) "
               "ВСЕГДА сразу вызывай music_control(action=\"play_my_wave\"). Если назван исполнитель/песня/жанр — вызывай music_control(action=\"play_query\", query=\"...\"); "
               "если попросили настроение волны («бодрую/весёлую/спокойную/грустную волну») — action=\"play_my_wave\" с mood. "
               "Для «дальше/следующий» -> next, «назад/предыдущий» -> prev, «лайк/нравится» -> like, «дизлайк/не нравится» -> dislike, "
               "«мои лайки/избранное» -> play_liked, «пауза/стоп» -> pause/stop, «открой яндекс музыку» -> open.\n"
+              "- Блютуз (bluetooth_control): на команды «включи блютуз», «включить блютуз», «подключи телефон по блютуз», «режим блютуз», «вруби блютуз» "
+              "ВСЕГДА сразу вызывай bluetooth_control(action=\"discoverable\"). Колонка станет видимой на телефоне как OpenStation Max, и пользователь сможет "
+              "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
               "- Ты — полноценный ИИ-агент колонки: можешь менять свой голос (set_assistant_voice — при запросе поменять голос сразу вызывай инструмент, сессия мгновенно переключится на новый голос), "
               "менять стили часов и визуализатора (set_styles), детально настраивать 10-полосный эквалайзер и бас (set_eq_preset), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
-              "Не отказывайся от системных или веб-задач, если их можно выполнить через инструменты или shell_exec.";
+              "Не отказывайся от задач, если их можно безопасно выполнить через разрешённые инструменты.";
         if (cb_.get_runtime_context) {
             std::string rt = cb_.get_runtime_context();
             if (!rt.empty()) {
@@ -733,6 +769,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
         {},
         nb));
 
+    // --- System & Speaker Control ---
     decls.push(make_func_decl(
         "system_info",
         "Get detailed Android/Linux telemetry: OS version, uptime, CPU load, RAM, disk free, Wi-Fi RSSI/DNS, Bluetooth, foreground TV app, active timers.",
@@ -742,22 +779,23 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 
     {
         Value p = Value::make_obj();
-        p["command"] = make_prop("STRING", "Root Android/Linux shell command passed to /system/bin/sh -c");
-        p["timeout_sec"] = make_prop("INTEGER", "Execution timeout in seconds (1..30, default 10)");
+        p["action"] = make_enum_prop("Screen or daemon lifecycle action", {"screen_wake", "screen_sleep", "restart_daemon"});
         decls.push(make_func_decl(
-            "shell_exec",
-            "Execute any root shell command on the speaker for full Linux/Android control (settings, files, dumpsys, Wi-Fi, Bluetooth, processes, diagnostics).",
+            "device_power",
+            "Wake/sleep the TV/display or restart openstationd daemon (delayed slightly so speech finishes).",
             std::move(p),
-            {"command"},
+            {"action"},
             nb));
     }
 
+    // --- Bluetooth A2DP Sink & Connectivity ---
     {
         Value p = Value::make_obj();
-        p["action"] = make_enum_prop("Power or lifecycle action", {"screen_wake", "screen_sleep", "restart_daemon", "reboot"});
+        p["action"] = make_enum_prop("Bluetooth action", {"discoverable", "enable", "disable", "toggle", "status"});
+        p["duration_sec"] = make_prop("INTEGER", "Discovery timeout in seconds (default 300)");
         decls.push(make_func_decl(
-            "device_power",
-            "Wake/sleep the TV/display, restart openstationd daemon, or reboot the speaker (delayed slightly so speech finishes).",
+            "bluetooth_control",
+            "Turn Bluetooth on or off, make speaker discoverable for phones and tablets to stream music over Bluetooth A2DP Sink, or check status.",
             std::move(p),
             {"action"},
             nb));
@@ -1197,6 +1235,29 @@ void AssistantManager::session_worker(uint64_t sid,
         if (!u.empty()) {
             append_history("user", u);
             emit_event("message", "user", u);
+
+            // Fast local Bluetooth intent trigger
+            std::string ul = utf8_to_lower_ru(u);
+            if (ul.find("включи блютуз") != std::string::npos ||
+                ul.find("включить блютуз") != std::string::npos ||
+                ul.find("подключи телефон") != std::string::npos ||
+                ul.find("режим блютуз") != std::string::npos ||
+                ul.find("вруби блютуз") != std::string::npos ||
+                ul == "блютуз" || ul == "bluetooth") {
+                if (cb_.execute_tool) {
+                    json::Value bargs = json::Value::make_obj();
+                    bargs["action"] = json::Value::make_str("discoverable");
+                    cb_.execute_tool("bluetooth_control", bargs);
+                }
+            } else if (ul.find("выключи блютуз") != std::string::npos ||
+                       ul.find("отключи блютуз") != std::string::npos ||
+                       ul.find("выруби блютуз") != std::string::npos) {
+                if (cb_.execute_tool) {
+                    json::Value bargs = json::Value::make_obj();
+                    bargs["action"] = json::Value::make_str("disable");
+                    cb_.execute_tool("bluetooth_control", bargs);
+                }
+            }
         }
     };
 

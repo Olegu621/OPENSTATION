@@ -1517,6 +1517,9 @@ def main():
                 rel = path_rel[4:]  # strip "app/"
                 if not rel or rel.endswith(".map"):
                     continue
+                rel = os.path.normpath(rel.replace("\\", "/"))
+                if os.path.isabs(rel) or rel == ".." or rel.startswith(".." + os.sep):
+                    raise ValueError(f"Unsafe path in ASAR archive: {path_rel!r}")
                 if unpacked:
                     continue
                 fp.seek(base_off + offset)
@@ -1529,7 +1532,10 @@ def main():
                     raw = inject_html_bridge(raw.decode("utf-8", "replace")).encode("utf-8")
                     html_cnt += 1
 
-                dst = os.path.join(stage_dir, rel.replace("/", os.sep))
+                dst = os.path.realpath(os.path.join(stage_dir, rel))
+                stage_root = os.path.realpath(stage_dir)
+                if os.path.commonpath((stage_root, dst)) != stage_root:
+                    raise ValueError(f"ASAR entry escapes staging directory: {path_rel!r}")
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with open(dst, "wb") as out_f:
                     out_f.write(raw)

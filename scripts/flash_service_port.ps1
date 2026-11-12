@@ -131,10 +131,7 @@ function Install-WorldCupDriver {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript -NoPause
         return
     }
-    $drvDir = Join-Path $ServiceFlashDir "Drivers"
-    $infPath = Join-Path $drvDir "WorldCup_Device.inf"
-    Write-Host "[*] Регистрация драйвера через pnputil..." -ForegroundColor Yellow
-    & pnputil.exe /add-driver $infPath /install
+    throw "Закреплённый установщик драйвера не найден: $installScript"
 }
 
 function Test-RomDirValid {
@@ -149,10 +146,10 @@ function Test-RomDirValid {
 function Verify-RomImages {
     param([string]$Dir)
     $mfPath = Join-Path $Dir "rom_manifest.json"
-    $mf = $null
-    if (Test-Path $mfPath) {
-        try { $mf = Get-Content -Raw $mfPath -Encoding UTF8 | ConvertFrom-Json } catch {}
-    }
+    if (-not (Test-Path $mfPath)) { throw "Обязательный rom_manifest.json не найден: $mfPath" }
+    try { $mf = Get-Content -Raw $mfPath -Encoding UTF8 | ConvertFrom-Json }
+    catch { throw "rom_manifest.json повреждён или имеет неверный формат: $($_.Exception.Message)" }
+    if (-not $mf.files) { throw "В rom_manifest.json отсутствует объект files" }
 
     foreach ($spec in @(
         @{ Key = "vbmeta"; Name = "vbmeta.img" },
@@ -163,20 +160,31 @@ function Verify-RomImages {
         if (-not (Test-Path $p)) { throw "Отсутствует образ $p" }
         $fi = Get-Item $p
         $maxSz = $MaxPartitionBytes[$spec.Name]
-        if ($fi.Length -le 0 -or $fi.Length -gt $maxSz) {
+        if ($fi.Length -lt 4096 -or $fi.Length -gt $maxSz) {
             throw "Некорректный размер $($spec.Name): $($fi.Length) байт (макс $maxSz)"
         }
         $actualSha = (Get-FileHash -Path $p -Algorithm SHA256).Hash.ToLowerInvariant()
-        $expectedSha = $null
-        if ($mf -and $mf.files -and $mf.files.($spec.Key) -and $mf.files.($spec.Key).sha256) {
-            $expectedSha = ([string]$mf.files.($spec.Key).sha256).ToLowerInvariant()
-            $expectedSz = [int64]$mf.files.($spec.Key).size
-            if ($fi.Length -ne $expectedSz) {
-                throw "Размер $($spec.Name) не совпадает с rom_manifest.json ($($fi.Length) != $expectedSz)"
+        $entry = $mf.files.($spec.Key)
+        if (-not $entry -or [string]$entry.fileName -ne $spec.Name -or
+            [string]$entry.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+            $null -eq $entry.size) {
+            throw "В rom_manifest.json отсутствуют корректные fileName/size/SHA-256 для $($spec.Name)"
+        }
+        $expectedSha = ([string]$entry.sha256).ToLowerInvariant()
+        $expectedSz = [int64]$entry.size
+        if ($RepoManifest -and $RepoManifest.files) {
+            $trustedEntry = $RepoManifest.files.($spec.Key)
+            if (-not $trustedEntry -or [string]$trustedEntry.fileName -ne $spec.Name -or
+                ([string]$trustedEntry.sha256).ToLowerInvariant() -ne $expectedSha -or
+                [int64]$trustedEntry.size -ne $expectedSz) {
+                throw "ROM-манифест не совпадает с доверенной версией из репозитория для $($spec.Name)"
             }
-            if ($actualSha -ne $expectedSha) {
-                throw "SHA-256 не совпадает для $($spec.Name)! Ожидалось $expectedSha, получено $actualSha"
-            }
+        }
+        if ($fi.Length -ne $expectedSz) {
+            throw "Размер $($spec.Name) не совпадает с rom_manifest.json ($($fi.Length) != $expectedSz)"
+        }
+        if ($actualSha -ne $expectedSha) {
+            throw "SHA-256 не совпадает для $($spec.Name)! Ожидалось $expectedSha, получено $actualSha"
         }
         Write-Host ("  OK: {0,-11} {1,12:N0} байт  sha256:{2}..." -f $spec.Name, $fi.Length, $actualSha.Substring(0, 16)) -ForegroundColor DarkGreen
     }
@@ -323,6 +331,8 @@ Write-Host "Python : $PythonExe" -ForegroundColor Gray
 
 if ($InstallDriver) {
     Install-WorldCupDriver
+    if ($LASTEXITCODE -ne 0) { throw "Установка USB-драйвера завершилась с кодом $LASTEXITCODE" }
+    exit 0
 } elseif (-not $SkipDriverCheck -and -not (Test-WorldCupDriverInstalled)) {
     Write-Host "[!] USB-драйвер WorldCup (1B8E:C003) ещё не установлен в Windows." -ForegroundColor DarkYellow
     if (-not $ForceWipe) {
@@ -337,10 +347,11 @@ if ($InstallDriver) {
 
 $RepoRomDir = Join-Path $RootDir "rom"
 $RepoDistDir = Join-Path $RootDir "dist"
-$RepoManifest = $null
-if (Test-Path (Join-Path $RepoRomDir "rom_manifest.json")) {
-    try { $RepoManifest = Get-Content -Raw (Join-Path $RepoRomDir "rom_manifest.json") -Encoding UTF8 | ConvertFrom-Json } catch {}
-}
+$repoManifestPath = Join-Path $RepoRomDir "rom_manifest.json"
+if (-not (Test-Path $repoManifestPath)) { throw "Доверенный rom_manifest.json отсутствует: $repoManifestPath" }
+try { $RepoManifest = Get-Content -Raw $repoManifestPath -Encoding UTF8 | ConvertFrom-Json }
+catch { throw "Доверенный rom_manifest.json повреждён: $($_.Exception.Message)" }
+if (-not $RepoManifest.files) { throw "В доверенном rom_manifest.json отсутствует files" }
 
 Write-Host "[1/4] Поиск и проверка образов OpenStation Max (vbmeta, vendor, system)..." -ForegroundColor Yellow
 
@@ -478,13 +489,9 @@ if ($AfterUbt) {
     $targetMisc = $miscCands | Where-Object { Test-Path $_ } | Select-Object -First 1
 
     if ($targetMisc) {
-        try {
-            Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
-            Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов"
-            Invoke-UpdateExe @("mwrite", $targetMisc, "store", "misc", "normal") "Запись misc (uboot-command: отключение AVB / permissive bootargs)"
-        } catch {
-            Write-Host "  [!] Ошибка записи misc: $($_.Exception.Message)" -ForegroundColor DarkYellow
-        }
+        Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
+        Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов"
+        Invoke-UpdateExe @("mwrite", $targetMisc, "store", "misc", "normal") "Запись misc (uboot-command: отключение AVB / permissive bootargs)"
     }
 
     $afterUbtCmds = @(
@@ -495,11 +502,7 @@ if ($AfterUbt) {
         "saveenv"
     )
     foreach ($cmd in $afterUbtCmds) {
-        try {
-            Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
-        } catch {
-            Write-Host "  [!] $cmd : $($_.Exception.Message)" -ForegroundColor DarkYellow
-        }
+        Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
     }
     Write-Host ""
     Write-Host "========================================================================" -ForegroundColor Green
@@ -511,6 +514,7 @@ if ($AfterUbt) {
 }
 
 Write-Host "[3/4] Прошивка системных разделов OpenStation Max..." -ForegroundColor Yellow
+Write-Host "[!] Запись разделов не имеет автоматического rollback. Не отключайте питание." -ForegroundColor Red
 
 $vbmetaPath = Join-Path $ResolvedRomDir "vbmeta.img"
 $vendorPath = Join-Path $ResolvedRomDir "vendor.img"
@@ -549,11 +553,7 @@ $afterUbtCmds = @(
     "saveenv"
 )
 foreach ($cmd in $afterUbtCmds) {
-    try {
-        Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
-    } catch {
-        Write-Host "    [!] $cmd : $($_.Exception.Message)" -ForegroundColor DarkYellow
-    }
+    Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
 }
 
 Write-Host ""

@@ -1,9 +1,5 @@
 package com.openstation.ime
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -11,7 +7,6 @@ import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -68,37 +63,14 @@ class OpenStationImeService : InputMethodService() {
         listOf("АБВ", "ABC", ",", "Пробел", ".", "-", "⏎")
     )
 
-    private val commitReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != ACTION_COMMIT_TEXT) return
-            val seq = intent.getStringExtra("seq") ?: ""
-            if (!markSeqNew(seq)) return
-            val b64 = intent.getStringExtra("b64")
-            val text = if (!b64.isNullOrEmpty()) {
-                try {
-                    String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
-                } catch (_: Exception) {
-                    ""
-                }
-            } else {
-                intent.getStringExtra("text") ?: ""
-            }
-            if (text.isNotEmpty()) {
-                commitRemoteText(text)
-            }
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         running = true
-        registerReceiver(commitReceiver, IntentFilter(ACTION_COMMIT_TEXT))
         startUdpListener()
     }
 
     override fun onDestroy() {
         running = false
-        try { unregisterReceiver(commitReceiver) } catch (_: Exception) {}
         try { udpSocket?.close() } catch (_: Exception) {}
         super.onDestroy()
     }
@@ -434,6 +406,5 @@ class OpenStationImeService : InputMethodService() {
 
     companion object {
         const val UDP_PORT = 8085
-        const val ACTION_COMMIT_TEXT = "com.openstation.ime.COMMIT_TEXT"
     }
 }

@@ -761,6 +761,24 @@ HttpClientResponse http_perform(const HttpClientRequest& req) {
                 ParsedUrl base = parse_url(cur.url);
                 std::string next_url = resolve_redirect_url(base, loc_it->second);
                 if (!next_url.empty()) {
+                    ParsedUrl target = parse_url(next_url);
+                    const bool same_origin = target.valid && base.valid &&
+                        to_lower_ascii(target.scheme) == to_lower_ascii(base.scheme) &&
+                        to_lower_ascii(target.host) == to_lower_ascii(base.host) &&
+                        target.port == base.port;
+                    if (!same_origin) {
+                        for (auto it = cur.headers.begin(); it != cur.headers.end();) {
+                            std::string name = to_lower_ascii(it->first);
+                            if (name == "authorization" || name == "proxy-authorization" ||
+                                name == "cookie" || name == "cookie2" || name == "host" ||
+                                name == "x-api-key" || name == "x-auth-token" ||
+                                name.rfind("x-auth-", 0) == 0) {
+                                it = cur.headers.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
                     cur.url = next_url;
                     if (r.status_code == 301 || r.status_code == 302 || r.status_code == 303) {
                         std::string lm = to_lower_ascii(cur.method);

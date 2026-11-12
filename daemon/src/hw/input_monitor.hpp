@@ -15,7 +15,8 @@ enum class HwEventType {
     ActionShort,
     ActionLong,
     JackPlugged,
-    JackUnplugged
+    JackUnplugged,
+    BluetoothToggle
 };
 
 class InputMonitor {

@@ -34,15 +34,15 @@ if "%CHOICE%"=="4" goto MODE_UPDATE_ENTRY
 if "%CHOICE%"=="5" goto MODE_AFTER_UBT
 if "%CHOICE%"=="6" goto MODE_ZIP
 if "%CHOICE%"=="7" exit /b 0
-goto MODE_GUI
+goto CANCEL
 
 :MODE_GUI
 if exist "%~dp0OpenStationFlasher.exe" (
     start "" "%~dp0OpenStationFlasher.exe"
     exit /b 0
 ) else (
-    echo [!] OpenStationFlasher.exe не найден, продолжаем в консольном режиме...
-    goto MODE_WIPE
+    echo [!] OpenStationFlasher.exe не найден. Прошивка отменена во избежание случайной очистки.
+    goto CANCEL
 )
 
 :MODE_UPDATE_ENTRY
@@ -93,7 +93,7 @@ goto CHECK_RC
 echo.
 set "ZIP_PATH="
 set /p "ZIP_PATH=Перетащите сюда файл OpenStationMax-ROM-*.zip и нажмите Enter: "
-if "%ZIP_PATH%"=="" goto MODE_WIPE
+if "%ZIP_PATH%"=="" goto CANCEL
 set "ZIP_PATH=%ZIP_PATH:"=%"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\flash_service_port.ps1" -RomZip "%ZIP_PATH%"
 goto CHECK_RC
@@ -110,5 +110,11 @@ if not "%RC%"=="0" (
     exit /b %RC%
 )
 
+pause
+exit /b 0
+
+:CANCEL
+echo.
+echo [*] Операция отменена. Разделы станции не изменялись.
 pause
 exit /b 0

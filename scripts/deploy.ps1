@@ -222,7 +222,7 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
     throw "Таймаут ожидания готовности Android (sys.boot_completed=1, system_server, settings, pm) ($TimeoutSec сек)"
 }
 
-Write-Host "=== OpenStation Max v1.3.0 Deploy ===" -ForegroundColor Cyan
+Write-Host "=== OpenStation Max v1.3.6 Deploy ===" -ForegroundColor Cyan
 $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
 Write-Host "ADB: $AdbPath" -ForegroundColor Gray
 
@@ -578,12 +578,19 @@ $probeLines = @(
 foreach ($sp in $assetSpecs) {
     $r = $sp.Remote
     $probeLines += "if [ -f `"$r`" ]; then echo `"$r=`$(wc -c < `"$r`" | tr -d ' \r\n')`"; else echo `"$r=-1`"; fi"
+    $probeLines += "if [ -f `"$r`" ]; then echo `"HASH:$r=`$(sha256sum `"$r`" | cut -d ' ' -f1)`"; else echo `"HASH:$r=missing`"; fi"
 }
 $probeLines += 'if [ -f /data/local/openstation/ym_app/.ym_stamp ] && [ -f /data/local/openstation/ym_app/index.html ]; then echo "YM_STAMP=$(cat /data/local/openstation/ym_app/.ym_stamp | tr -d ''\r\n '')"; else echo "YM_STAMP=-1"; fi'
 $probeOut = (Invoke-AdbSh ($probeLines -join "`n") | Out-String) -split "\r?\n"
 $remoteSizes = @{}
+$remoteHashes = @{}
+$ymStamp = "missing"
 foreach ($ln in $probeOut) {
-    if ($ln -match '^(.+)=(-?\d+)$') {
+    if ($ln -match '^HASH:(.+)=([0-9a-fA-F]{64}|missing)$') {
+        $remoteHashes[$Matches[1].Trim()] = $Matches[2].ToLowerInvariant()
+    } elseif ($ln -match '^YM_STAMP=([0-9a-fA-F]{64})$') {
+        $ymStamp = $Matches[1].ToLowerInvariant()
+    } elseif ($ln -match '^(.+)=(-?\d+)$') {
         $remoteSizes[$Matches[1].Trim()] = [int64]$Matches[2]
     }
 }
@@ -596,7 +603,9 @@ foreach ($sp in $assetSpecs) {
     }
     $locSize = (Get-Item $sp.Local).Length
     $remSize = if ($remoteSizes.ContainsKey($sp.Remote)) { $remoteSizes[$sp.Remote] } else { -1 }
-    if ($locSize -ne $remSize) {
+    $locHash = (Get-FileHash -Path $sp.Local -Algorithm SHA256).Hash.ToLowerInvariant()
+    $remHash = if ($remoteHashes.ContainsKey($sp.Remote)) { $remoteHashes[$sp.Remote] } else { "missing" }
+    if ($locSize -ne $remSize -or $locHash -ne $remHash) {
         Write-Host "  -> push $(Split-Path -Leaf $sp.Local) ($locSize bytes)" -ForegroundColor Gray
         Invoke-Adb @("push", $sp.Local, $sp.Remote)
         Invoke-AdbSh "chmod $($sp.Mode) `"$($sp.Remote)`""
@@ -605,9 +614,8 @@ foreach ($sp in $assetSpecs) {
 }
 
 if (Test-Path "$RootDir\assets\ym_app.tar.gz") {
-    $ymTgzSize = (Get-Item "$RootDir\assets\ym_app.tar.gz").Length
-    $ymStamp = if ($remoteSizes.ContainsKey("YM_STAMP")) { $remoteSizes["YM_STAMP"] } else { -1 }
-    if ($ymTgzChanged -or ($ymStamp -ne $ymTgzSize)) {
+    $ymTgzHash = (Get-FileHash "$RootDir\assets\ym_app.tar.gz" -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ymTgzChanged -or ($ymStamp -ne $ymTgzHash)) {
         Write-Host "Распаковка плеера Яндекс Музыки на устройстве..." -ForegroundColor Gray
         Invoke-AdbSh @"
 set -e
@@ -616,10 +624,19 @@ mkdir -p /data/local/openstation/ym_app.new
 if ! tar -xzf /data/local/openstation/ym_app.tar.gz -C /data/local/openstation/ym_app.new 2>/dev/null; then
     gzip -dc /data/local/openstation/ym_app.tar.gz | tar -xf - -C /data/local/openstation/ym_app.new
 fi
-echo "$ymTgzSize" > /data/local/openstation/ym_app.new/.ym_stamp
+echo "$ymTgzHash" > /data/local/openstation/ym_app.new/.ym_stamp
 chmod -R a+rX /data/local/openstation/ym_app.new
-rm -rf /data/local/openstation/ym_app
-mv /data/local/openstation/ym_app.new /data/local/openstation/ym_app
+rm -rf /data/local/openstation/ym_app.prev
+if [ -d /data/local/openstation/ym_app ]; then
+    mv /data/local/openstation/ym_app /data/local/openstation/ym_app.prev
+fi
+if ! mv /data/local/openstation/ym_app.new /data/local/openstation/ym_app; then
+    if [ -d /data/local/openstation/ym_app.prev ]; then
+        mv /data/local/openstation/ym_app.prev /data/local/openstation/ym_app
+    fi
+    exit 1
+fi
+rm -rf /data/local/openstation/ym_app.prev
 "@
     }
 }
@@ -1064,10 +1081,11 @@ for p in $PKGS_DISABLE; do
         echo "Fallback rename APK: $apk_path -> ${apk_path}.yandex_disabled"
         mount -o rw,remount / 2>/dev/null || mount -o remount,rw / || true
         mount -o rw,remount /vendor 2>/dev/null || mount -o remount,rw /vendor || true
-        mv "$apk_path" "${apk_path}.yandex_disabled"
         if ! grep -qx "$apk_path" /data/local/openstation/backup/disabled_apks.list; then
-            echo "$apk_path" >> /data/local/openstation/backup/disabled_apks.list
+            printf '%s\n' "$apk_path" >> /data/local/openstation/backup/disabled_apks.list
         fi
+        sync
+        mv "$apk_path" "${apk_path}.yandex_disabled"
         sync
         mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
         mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
@@ -1435,7 +1453,7 @@ if (-not $manifestPushed) {
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.3.0"
+        version      = "1.3.6"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = $genFiles
@@ -1511,7 +1529,7 @@ if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "  OpenStation Max v1.3.0 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.3.6 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
 Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
 Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
 Write-Host "  Wi-Fi ADB: adb connect ${stationIp}:5555" -ForegroundColor Cyan

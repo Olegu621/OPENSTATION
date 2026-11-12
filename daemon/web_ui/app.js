@@ -14,6 +14,22 @@
   let otaPendingRestart = false;
   let bootanimBusy = false;
   let wifiAdbBusy = false;
+  const AUTH_TOKEN_KEY = "openstation.webui.token";
+
+  function isLoopbackHost() {
+    return ["localhost", "127.0.0.1", "::1"].includes((location.hostname || "").toLowerCase());
+  }
+
+  function getAuthToken() {
+    if (isLoopbackHost()) return "";
+    let token = localStorage.getItem(AUTH_TOKEN_KEY) || "";
+    if (!/^[0-9a-f]{64}$/.test(token)) {
+      token = (window.prompt("Введите ключ веб-пульта. На ПК выполните: adb shell su -c cat /data/local/openstation/webui.token") || "").trim();
+      if (!/^[0-9a-f]{64}$/.test(token)) throw new Error("Нужен 64-символьный ключ веб-пульта из /data/local/openstation/webui.token");
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    }
+    return token;
+  }
 
   const COMPONENT_RU = {
     daemon: "Система",
@@ -80,6 +96,8 @@
 
   async function api(path, method = "GET", body = null) {
     const opts = { method, headers: {} };
+    const authToken = getAuthToken();
+    if (authToken) opts.headers.Authorization = "Bearer " + authToken;
     if (body !== null) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
@@ -161,11 +179,12 @@
       const ast = {
         enabled: $("astEnabled").checked,
         voiceName: $("astVoice")?.value || "Aoede",
-        geminiApiKey: $("astApiKey")?.value.trim() || "",
         systemPrompt: $("astPrompt")?.value || "",
         wakeWordEnabled: $("astWakeEn") ? $("astWakeEn").checked : true,
         chimeEnabled: $("astChime") ? $("astChime").checked : true
       };
+      const newGeminiKey = $("astApiKey")?.value.trim() || "";
+      if (newGeminiKey) ast.geminiApiKey = newGeminiKey;
       if ($("astMode")) ast.mode = $("astMode").value;
       if ($("astModel")) ast.geminiModel = $("astModel").value.trim() || "gemini-3.8-live";
       if ($("astProxyHost")) ast.geminiProxyHost = $("astProxyHost").value.trim();
@@ -192,9 +211,10 @@
         host: $("mqttHost")?.value.trim() || "",
         port: parseInt($("mqttPort")?.value ?? "1883", 10) || 1883,
         username: $("mqttUser")?.value || "",
-        password: $("mqttPass")?.value || "",
         baseTopic: $("mqttTopic")?.value.trim() || "openstation/station_max"
       };
+      const newMqttPassword = $("mqttPass")?.value || "";
+      if (newMqttPassword) payload.mqtt.password = newMqttPassword;
     }
 
     if ($("otaAutoCheck") || $("otaSyncBootanim")) {
@@ -568,7 +588,7 @@
       if (ast?.lastError) {
         ban.textContent = `Ошибка: ${ast.lastError}`;
         ban.className = "status-banner err";
-      } else if (cfgAst && !cfgAst.geminiApiKey && cfgAst.mode === "gemini") {
+      } else if (cfgAst && !cfgAst.geminiApiKeySet && !cfgAst.geminiApiKey && cfgAst.mode === "gemini") {
         ban.textContent = "Укажите Gemini API Key справа и нажмите «Применить и сохранить»";
         ban.className = "status-banner warn";
       } else if (ast?.active) {
@@ -632,6 +652,23 @@
     if ($("btnQuickMute")) {
       $("btnQuickMute").textContent = muted ? "Микрофон: ВЫКЛ" : "Микрофон: ВКЛ";
       $("btnQuickMute").className = "btn btn-sm btn-danger" + (muted ? " active" : "");
+    }
+
+    const bt = data.bluetooth;
+    if ($("btnQuickBt")) {
+      const btOn = !!(bt?.enabled);
+      const btDisc = !!(bt?.discoverable);
+      if (btDisc) {
+        const rem = bt.discoverableRemainingSec;
+        $("btnQuickBt").textContent = `ᛒ BT: Виден (${rem}с)`;
+        $("btnQuickBt").className = "btn btn-sm btn-accent active";
+      } else if (btOn) {
+        $("btnQuickBt").textContent = "ᛒ BT: ВКЛ";
+        $("btnQuickBt").className = "btn btn-sm btn-accent";
+      } else {
+        $("btnQuickBt").textContent = "ᛒ BT: ВЫКЛ";
+        $("btnQuickBt").className = "btn btn-sm";
+      }
     }
 
     // Mic & VQE DSP monitor
@@ -781,7 +818,10 @@
       if (cfg.assistant) {
         if ($("astEnabled")) $("astEnabled").checked = !!cfg.assistant.enabled;
         if ($("astMode")) $("astMode").value = cfg.assistant.mode || "gemini";
-        if ($("astApiKey")) $("astApiKey").value = cfg.assistant.geminiApiKey || "";
+        if ($("astApiKey")) {
+          $("astApiKey").value = "";
+          $("astApiKey").placeholder = cfg.assistant.geminiApiKeySet ? "Ключ уже сохранён; пустое поле оставляет его без изменений" : "Вставьте Gemini API key";
+        }
         if ($("astModel")) $("astModel").value = cfg.assistant.geminiModel || "gemini-3.8-live";
         if ($("astProxyHost")) {
           $("astProxyHost").value =
@@ -810,7 +850,10 @@
       if ($("mqttHost")) $("mqttHost").value = cfg.mqtt?.host || "";
       if ($("mqttPort")) $("mqttPort").value = cfg.mqtt?.port ?? 1883;
       if ($("mqttUser")) $("mqttUser").value = cfg.mqtt?.username || "";
-      if ($("mqttPass")) $("mqttPass").value = cfg.mqtt?.password || "";
+      if ($("mqttPass")) {
+        $("mqttPass").value = "";
+        $("mqttPass").placeholder = cfg.mqtt?.passwordConfigured ? "Пароль сохранён; пустое поле оставляет его без изменений" : "Пароль MQTT";
+      }
       if ($("mqttTopic")) $("mqttTopic").value = cfg.mqtt?.baseTopic || "openstation/station_max";
       if ($("otaRepo")) $("otaRepo").value = cfg.ota?.repo || "Olegu621/OPENSTATION";
       if ($("otaBranch")) $("otaBranch").value = cfg.ota?.branch || "main";
@@ -1316,6 +1359,21 @@
     });
   }
 
+  if ($("btnQuickBt")) {
+    $("btnQuickBt").addEventListener("click", async () => {
+      try {
+        const res = await api("/api/bluetooth/toggle", "POST");
+        if (res.enabled) {
+          showToast(res.discoverable ? "Режим Bluetooth (A2DP) включён, колонка видна для подключения" : "Bluetooth включён");
+        } else {
+          showToast("Bluetooth выключен");
+        }
+      } catch (e) {
+        showToast("Ошибка Bluetooth: " + e.message, true);
+      }
+    });
+  }
+
   if ($("btnResetAudioTrim")) {
     $("btnResetAudioTrim").addEventListener("click", async () => {
       try {
@@ -1436,9 +1494,12 @@
       setBootanimBusy(true);
       showToast("Загрузка заставки на станцию...");
       try {
+        const headers = { "Content-Type": "application/zip" };
+        const authToken = getAuthToken();
+        if (authToken) headers.Authorization = "Bearer " + authToken;
         const res = await fetch("/api/bootanim/upload", {
           method: "POST",
-          headers: { "Content-Type": "application/zip" },
+          headers,
           body: file
         });
         let data = null;
@@ -1568,7 +1629,11 @@
       ws = null;
     }
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    ws = new WebSocket(proto + location.host + "/ws");
+    let authToken;
+    try { authToken = getAuthToken(); } catch (e) { showToast(e.message, true); return; }
+    ws = authToken
+      ? new WebSocket(proto + location.host + "/ws", [authToken])
+      : new WebSocket(proto + location.host + "/ws");
     ws.binaryType = "arraybuffer";
     ws.onerror = () => {
       try { ws?.close(); } catch {}
@@ -1727,7 +1792,7 @@
     }
 
     if ($("wizChecklist")) {
-      const hasKey = !!(cfg.assistant?.geminiApiKey);
+      const hasKey = !!(cfg.assistant?.geminiApiKeySet || cfg.assistant?.geminiApiKey);
       const checks = [
         { ok: true, txt: "Станция в сети и готова" },
         { ok: hasKey, txt: hasKey ? "Ключ Алисы (Gemini) задан" : "Ключ Алисы не задан (Шаг 2)" },

@@ -8,6 +8,8 @@
 #include <cstring>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -99,10 +101,77 @@ bool send_all(int fd, const void* buf, size_t len) {
     return true;
 }
 
+bool valid_hex_token(const std::string& token) {
+    if (token.size() != 64) return false;
+    for (unsigned char c : token) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+bool load_web_auth_token(std::string& token) {
+    constexpr const char* kTokenPath = "/data/local/openstation/webui.token";
+    mkdir("/data/local", 0700);
+    mkdir("/data/local/openstation", 0700);
+    auto read_existing = [&]() -> bool {
+        int fd = open(kTokenPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) return false;
+        char buf[128] = {};
+        ssize_t n = read(fd, buf, sizeof(buf));
+        fchmod(fd, 0600);
+        close(fd);
+        if (n <= 0) return false;
+        token.assign(buf, static_cast<size_t>(n));
+        while (!token.empty() && (token.back() == '\n' || token.back() == '\r' || token.back() == ' ')) token.pop_back();
+        return valid_hex_token(token);
+    };
+    if (read_existing()) return true;
+    if (access(kTokenPath, F_OK) == 0) return false;
+
+    uint8_t bytes[32];
+    int rng = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (rng < 0) return false;
+    size_t got = 0;
+    while (got < sizeof(bytes)) {
+        ssize_t n = read(rng, bytes + got, sizeof(bytes) - got);
+        if (n <= 0) { close(rng); return false; }
+        got += static_cast<size_t>(n);
+    }
+    close(rng);
+    static const char* kHex = "0123456789abcdef";
+    token.clear();
+    token.reserve(64);
+    for (uint8_t b : bytes) {
+        token.push_back(kHex[b >> 4]);
+        token.push_back(kHex[b & 0x0f]);
+    }
+    int fd = open(kTokenPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return read_existing();
+    const std::string contents = token + "\n";
+    size_t written = 0;
+    while (written < contents.size()) {
+        ssize_t n = write(fd, contents.data() + written, contents.size() - written);
+        if (n <= 0) { close(fd); unlink(kTokenPath); token.clear(); return false; }
+        written += static_cast<size_t>(n);
+    }
+    bool ok = fsync(fd) == 0;
+    close(fd);
+    if (!ok) { unlink(kTokenPath); token.clear(); }
+    return ok;
+}
+
+bool constant_time_equal(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    uint8_t diff = 0;
+    for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<uint8_t>(a[i] ^ b[i]);
+    return diff == 0;
+}
+
 const char* status_text(int code) {
     switch (code) {
         case 200: return "OK";
         case 204: return "No Content";
+        case 401: return "Unauthorized";
         case 400: return "Bad Request";
         case 404: return "Not Found";
         case 413: return "Payload Too Large";
@@ -119,6 +188,10 @@ HttpWsServer::~HttpWsServer() {
 
 bool HttpWsServer::start(int port, ApiHandler api_cb, WsCmdHandler ws_cb) {
     if (running_.load()) stop();
+    if (!load_web_auth_token(auth_token_)) {
+        LOGE("HttpServer", "Cannot load/create protected web API token; refusing to start");
+        return false;
+    }
     port_ = port;
     api_cb_ = std::move(api_cb);
     ws_cb_ = std::move(ws_cb);
@@ -208,7 +281,7 @@ void HttpWsServer::accept_loop() {
                     ++it;
                 }
             }
-            if (!running_.load()) {
+            if (!running_.load() || conns_.size() >= 64) {
                 ::close(cfd);
             } else {
                 auto slot = std::make_shared<ConnSlot>();
@@ -314,11 +387,18 @@ size_t HttpWsServer::ws_client_count() const {
 
 void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
     int cfd = slot->fd;
+    std::shared_ptr<WsClient> ws_client;
     struct ConnGuard {
         HttpWsServer* srv;
         std::shared_ptr<ConnSlot> slot;
+        std::shared_ptr<WsClient>* ws_client;
         int cfd;
         ~ConnGuard() {
+            std::unique_lock<std::mutex> ws_lock;
+            if (ws_client && *ws_client) {
+                ws_lock = std::unique_lock<std::mutex>((*ws_client)->send_mu);
+                (*ws_client)->dead = true;
+            }
             {
                 std::lock_guard<std::mutex> lk(srv->conn_mu_);
                 slot->fd = -1;
@@ -326,7 +406,7 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
             ::close(cfd);
             slot->finished.store(true);
         }
-    } guard{this, slot, cfd};
+    } guard{this, slot, &ws_client, cfd};
 
     struct timeval tv {10, 0};
     setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -371,6 +451,8 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
     size_t content_length = 0;
     bool is_ws = false;
     std::string ws_key;
+    std::string ws_protocol;
+    std::string authorization;
     size_t pos = line_end == std::string::npos ? hdr_block.size() : line_end + 2;
     while (pos < hdr_block.size()) {
         size_t next = hdr_block.find("\r\n", pos);
@@ -389,13 +471,42 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
                 if (v.find("websocket") != std::string::npos) is_ws = true;
             } else if (k == "sec-websocket-key") {
                 ws_key = v;
+            } else if (k == "sec-websocket-protocol") {
+                ws_protocol = v;
+            } else if (k == "authorization") {
+                authorization = v;
             }
         }
         pos = next + 2;
     }
 
+    sockaddr_in peer_addr{};
+    socklen_t peer_len = sizeof(peer_addr);
+    bool loopback = getpeername(cfd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len) == 0 &&
+                    peer_addr.sin_family == AF_INET && ntohl(peer_addr.sin_addr.s_addr) == INADDR_LOOPBACK;
+    bool bearer_ok = authorization.size() > 7 && authorization.compare(0, 7, "Bearer ") == 0 &&
+                     constant_time_equal(authorization.substr(7), auth_token_);
+    auto send_unauthorized = [&]() {
+        const std::string body = "{\"error\":\"authentication required\"}";
+        char hbuf[256];
+        int hlen = snprintf(hbuf, sizeof(hbuf),
+                            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json; charset=utf-8\r\n"
+                            "Content-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                            body.size());
+        send_all(cfd, hbuf, static_cast<size_t>(hlen));
+        send_all(cfd, body.data(), body.size());
+    };
+    if (!loopback && req.path.rfind("/api/", 0) == 0 && !bearer_ok) {
+        send_unauthorized();
+        return;
+    }
+
     // WebSocket upgrade path
     if (is_ws && req.path == "/ws" && !ws_key.empty()) {
+        if (!loopback && !constant_time_equal(ws_protocol, auth_token_)) {
+            send_unauthorized();
+            return;
+        }
         static const char* kGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         uint8_t digest[20];
         sha1_digest(ws_key + kGuid, digest);
@@ -404,13 +515,17 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Accept: " + accept_key + "\r\n\r\n";
+            "Sec-WebSocket-Accept: " + accept_key + "\r\n";
+        if (!ws_protocol.empty() && constant_time_equal(ws_protocol, auth_token_)) {
+            resp += "Sec-WebSocket-Protocol: " + ws_protocol + "\r\n";
+        }
+        resp += "\r\n";
         if (!send_all(cfd, resp.data(), resp.size())) return;
         // Clear strict timeout for long-lived WebSocket
         struct timeval notv {0, 0};
         setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &notv, sizeof(notv));
 
-        auto ws_client = std::make_shared<WsClient>();
+        ws_client = std::make_shared<WsClient>();
         ws_client->fd = cfd;
         {
             std::lock_guard<std::mutex> lk(ws_mu_);
@@ -488,9 +603,6 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
                             "HTTP/1.1 %d %s\r\n"
                             "Content-Type: %s\r\n"
                             "Content-Length: %zu\r\n"
-                            "Access-Control-Allow-Origin: *\r\n"
-                            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                            "Access-Control-Allow-Headers: Content-Type\r\n"
                             "Cache-Control: no-store\r\n"
                             "Connection: close\r\n\r\n",
                             too_big.status, status_text(too_big.status),
@@ -535,9 +647,6 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
                         "HTTP/1.1 %d %s\r\n"
                         "Content-Type: %s\r\n"
                         "Content-Length: %zu\r\n"
-                        "Access-Control-Allow-Origin: *\r\n"
-                        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                        "Access-Control-Allow-Headers: Content-Type\r\n"
                         "Cache-Control: no-store\r\n"
                         "Connection: close\r\n\r\n",
                         resp.status, status_text(resp.status),

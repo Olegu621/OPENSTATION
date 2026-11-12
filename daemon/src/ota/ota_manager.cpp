@@ -1106,10 +1106,12 @@ void OtaManager::run_install_sync(bool force) {
     }
 
     if (!force && (!avail || to_update.empty())) {
-        std::lock_guard<std::mutex> lk(mu_);
-        state_ = "up_to_date";
-        progress_pct_ = 100;
-        progress_text_ = "Обновление не требуется — уже v" + installed_version_;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            state_ = "up_to_date";
+            progress_pct_ = 100;
+            progress_text_ = "Обновление не требуется — уже v" + installed_version_;
+        }
         emit_status();
         return;
     }

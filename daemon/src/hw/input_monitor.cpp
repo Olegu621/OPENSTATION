@@ -110,6 +110,10 @@ void InputMonitor::poll_loop() {
     bool action_long_fired = false;
     clock::time_point action_down_tp;
 
+    int mute_tap_count = 0;
+    clock::time_point last_mute_tap_tp;
+    bool mute_tap_pending = false;
+
     while (running_.load()) {
         std::vector<struct pollfd> pfds;
         pfds.reserve(fds_.size());
@@ -127,6 +131,18 @@ void InputMonitor::poll_loop() {
             action_long_fired = true;
             LOGI("InputMonitor", "Action button long press");
             if (cb_) cb_(HwEventType::ActionLong);
+        }
+
+        // Check if pending Mute tap sequence expired without reaching 5 taps
+        if (mute_tap_pending && now - last_mute_tap_tp >= std::chrono::milliseconds(450)) {
+            mute_tap_pending = false;
+            if (mute_tap_count > 0 && mute_tap_count < 5) {
+                LOGI("InputMonitor", "Hardware Mute button tap (count=%d)", mute_tap_count);
+                if (mute_tap_count % 2 != 0) {
+                    if (cb_) cb_(HwEventType::MuteToggle);
+                }
+            }
+            mute_tap_count = 0;
         }
 
         if (ret < 0) {
@@ -176,8 +192,22 @@ void InputMonitor::poll_loop() {
                     }
                 } else if (fds_[i].role == DevRole::Keypad && ev.type == EV_KEY) {
                     if (ev.code == kKeyMute && ev.value == 1) {
-                        LOGI("InputMonitor", "Hardware Mute button pressed");
-                        if (cb_) cb_(HwEventType::MuteToggle);
+                        if (mute_tap_pending && (now - last_mute_tap_tp < std::chrono::milliseconds(550))) {
+                            mute_tap_count++;
+                        } else {
+                            mute_tap_count = 1;
+                        }
+                        last_mute_tap_tp = now;
+                        mute_tap_pending = true;
+
+                        LOGI("InputMonitor", "Hardware Mute button tap #%d", mute_tap_count);
+
+                        if (mute_tap_count >= 5) {
+                            LOGI("InputMonitor", "Hardware Mute 5-tap detected -> BluetoothToggle!");
+                            mute_tap_pending = false;
+                            mute_tap_count = 0;
+                            if (cb_) cb_(HwEventType::BluetoothToggle);
+                        }
                     } else if (ev.code == kKeyAction) {
                         if (ev.value == 1) {
                             action_down = true;
