@@ -33,7 +33,11 @@ void TimerManager::start(FireCallback on_fire) {
 }
 
 void TimerManager::stop() {
-    running_.store(false);
+    {
+        // Store under the mutex so the worker can't miss the wakeup between predicate check and wait.
+        std::lock_guard<std::mutex> lk(mu_);
+        running_.store(false);
+    }
     cv_.notify_all();
     if (worker_.joinable()) {
         worker_.join();
@@ -135,7 +139,8 @@ void TimerManager::worker_loop() {
                 for (const auto& t : timers_) {
                     if (t.fire_tp < soonest) soonest = t.fire_tp;
                 }
-                cv_.wait_until(lk, soonest, [&] { return !running_.load(); });
+                // No predicate: a newly added/cancelled timer must wake us to recompute the deadline.
+                cv_.wait_until(lk, soonest);
             }
             if (!running_.load()) break;
 

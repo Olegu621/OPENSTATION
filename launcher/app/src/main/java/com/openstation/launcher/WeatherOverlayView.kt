@@ -140,6 +140,7 @@ class WeatherOverlayView @JvmOverloads constructor(
         particleCanvas.setCondition(condition)
 
         visibility = VISIBLE
+        isShowing = true
         alpha = 0f
         scaleX = 0.95f
         scaleY = 0.95f
@@ -149,10 +150,11 @@ class WeatherOverlayView @JvmOverloads constructor(
             .scaleY(1f)
             .setDuration(350L)
             .setInterpolator(DecelerateInterpolator())
+            // ViewPropertyAnimator keeps the listener set by dismiss(); clear it or the show animation hides the overlay
+            .setListener(null)
             .start()
 
         particleCanvas.start()
-        isShowing = true
         requestFocus()
 
         dismissRunnable?.let { handler.removeCallbacks(it) }
@@ -174,6 +176,7 @@ class WeatherOverlayView @JvmOverloads constructor(
             .setDuration(280L)
             .setListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
+                    if (isShowing) return
                     visibility = GONE
                     particleCanvas.stop()
                 }

@@ -345,7 +345,9 @@ if (Test-Path (Join-Path $RepoRomDir "rom_manifest.json")) {
 Write-Host "[1/4] Поиск и проверка образов OpenStation Max (vbmeta, vendor, system)..." -ForegroundColor Yellow
 
 $ResolvedRomDir = $null
-if ($RomDir) {
+if ($AfterUbt) {
+    # After UBT only sends U-Boot env commands; ROM images are not needed
+} elseif ($RomDir) {
     if (-not (Test-RomDirValid $RomDir)) {
         throw "В папке '$RomDir' не найдены vbmeta.img, vendor.img и system.img"
     }
@@ -374,8 +376,10 @@ if ($RomDir) {
     $ResolvedRomDir = $RepoRomDir
 }
 
-Write-Host "  Образы: $ResolvedRomDir" -ForegroundColor Gray
-Verify-RomImages -Dir $ResolvedRomDir
+if (-not $AfterUbt) {
+    Write-Host "  Образы: $ResolvedRomDir" -ForegroundColor Gray
+    Verify-RomImages -Dir $ResolvedRomDir
+}
 
 Show-ServicePortPinout
 
@@ -413,7 +417,8 @@ except Exception:
 idb = d.identify()
 print("STAGE=" + str(ord(idb[3])))
 '@
-$stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
+# Local EAP=Continue: on Windows PowerShell 5.1 redirected native stderr under "Stop" aborts the script
+$stageOut = (& { $ErrorActionPreference = "Continue"; $probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null } | Out-String).Trim()
 if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
     Push-Location $ServiceFlashDir
     try {
@@ -456,7 +461,7 @@ if (-not $ubootReady) {
 }
 
 $DoWipeData = $false
-if ($KeepData -or $SkipWipe) {
+if ($KeepData -or $SkipWipe -or $AfterUbt) {
     $DoWipeData = $false
 } elseif ($WipeData -or $ForceWipe) {
     $DoWipeData = $true
