@@ -51,6 +51,7 @@ namespace OpenStationFlasher
         private Button _btnAdbReboot;
         private Button _btnAdbScreen;
         private bool _isAdbConnected = false;
+        private bool _isDriverError = false;
         private Button _btnTogglePinout;
         private Border _pinoutCard;
         private Button _btnToggleAvito;
@@ -1086,10 +1087,12 @@ namespace OpenStationFlasher
 
                 Dispatcher.Invoke(() =>
                 {
-                    if (connected != _isDeviceConnected || adbConnected != _isAdbConnected)
+                    // driverError is compared too, so the warning clears once the driver gets installed while connected
+                    if (connected != _isDeviceConnected || adbConnected != _isAdbConnected || driverError != _isDriverError)
                     {
                         _isDeviceConnected = connected;
                         _isAdbConnected = adbConnected;
+                        _isDriverError = driverError;
 
                         if (connected)
                         {
@@ -1527,6 +1530,9 @@ namespace OpenStationFlasher
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8
             };
+            // Redirected Python stdout otherwise uses the ANSI code page: output is mis-decoded and
+            // non-encodable chars (e.g. "✓" in boot-g12.py) raise UnicodeEncodeError
+            psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
 
             using (var proc = new Process { StartInfo = psi })
             {
