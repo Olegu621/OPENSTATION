@@ -165,6 +165,14 @@ private:
     explicit Parser(const std::string& s) : s_(s) {}
     const std::string& s_;
     size_t pos_ = 0;
+    // Bounds recursion so deeply nested untrusted input cannot overflow the stack.
+    static constexpr int kMaxDepth = 128;
+    int depth_ = 0;
+    struct DepthGuard {
+        int& d;
+        explicit DepthGuard(int& x) : d(x) { ++d; }
+        ~DepthGuard() { --d; }
+    };
 
     void skip_ws() {
         while (pos_ < s_.size() && (s_[pos_] == ' ' || s_[pos_] == '\t' || s_[pos_] == '\r' || s_[pos_] == '\n')) {

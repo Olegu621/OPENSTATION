@@ -329,7 +329,8 @@ class StationAudioService : Service() {
                 try {
                     sock = DatagramSocket(null).apply {
                         reuseAddress = true
-                        bind(InetSocketAddress(8086))
+                        // Loopback only: openstationd sends from 127.0.0.1; commands must not be reachable from the LAN
+                        bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 8086))
                     }
                     udpSocket = sock
                     val buf = ByteArray(4096)
