@@ -1155,8 +1155,9 @@
         try {
           const res = await api("/api/weather");
           const el = $("weatherTestResult");
-          if (res && res.valid) {
-            const desc = `🌡 ${res.temperature}°C, ${res.conditionText || "Ясно"} (${res.city})`;
+          if (res && res.ok) {
+            const cur = res.current || {};
+            const desc = `🌡 ${cur.tempC ?? cur.tempNum ?? "?"}°C, ${cur.condition || "Ясно"} (${res.city || ""})`;
             if (el) el.textContent = desc;
             showToast(desc);
           } else {
@@ -1270,6 +1271,14 @@
   }
   if ($("btnLaunchMusic")) $("btnLaunchMusic").addEventListener("click", () => sendMusicCmd({ cmd: "launch_music" }, "Открываем Яндекс Музыку на ТВ"));
   if ($("btnMusicWave")) $("btnMusicWave").addEventListener("click", () => sendMusicCmd({ cmd: "play_my_wave", mood: "any", openUi: false }, "Запускаем Мою волну..."));
+  [
+    ["btnWaveEnergetic", "energetic", "Бодрая"],
+    ["btnWaveJoy", "fun", "Весёлая"],
+    ["btnWaveCalm", "calm", "Спокойная"],
+    ["btnWaveSad", "sad", "Грустная"]
+  ].forEach(([id, mood, label]) => {
+    if ($(id)) $(id).addEventListener("click", () => sendMusicCmd({ cmd: "play_my_wave", mood, openUi: false }, `Запускаем волну: ${label}...`));
+  });
   if ($("btnMusicPrev")) $("btnMusicPrev").addEventListener("click", () => sendMusicCmd({ cmd: "music_action", action: "PREV" }));
   if ($("btnMusicPlayPause")) $("btnMusicPlayPause").addEventListener("click", () => sendMusicCmd({ cmd: "music_action", action: "PLAY_PAUSE" }));
   if ($("btnMusicNext")) $("btnMusicNext").addEventListener("click", () => sendMusicCmd({ cmd: "music_action", action: "NEXT" }));
@@ -1444,7 +1453,7 @@
         let data = null;
         try { data = await res.json(); } catch {}
         if (!res.ok || (data && data.ok === false)) {
-          throw new Error((data && data.message) || `HTTP ${res.status}`);
+          throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
         }
         if (state && data?.bootanim) state.bootanim = data.bootanim;
         applyBootanimState(data?.bootanim || {});
@@ -1734,9 +1743,13 @@
         { ok: !!ww.ready, txt: ww.ready ? "Отклик на фразу «Алиса» активен" : "Отклик на фразу выключен" },
         { ok: !!m.hasAuth, txt: m.hasAuth ? `Яндекс Музыка: @${m.userLogin || "OK"}` : "Яндекс Музыка: без входа (опц.)" }
       ];
-      $("wizChecklist").innerHTML = checks.map((c) =>
-        `<div class="wiz-check-item ${c.ok ? "ok" : "warn"}">${c.ok ? "✓" : "•"} ${c.txt}</div>`
-      ).join("");
+      // textContent: userLogin comes from the music account and must not be parsed as HTML
+      $("wizChecklist").replaceChildren(...checks.map((c) => {
+        const el = document.createElement("div");
+        el.className = `wiz-check-item ${c.ok ? "ok" : "warn"}`;
+        el.textContent = `${c.ok ? "✓" : "•"} ${c.txt}`;
+        return el;
+      }));
     }
 
     if ((populateFields || !wizPopulatedOnce) && cfg.assistant) {
@@ -2009,6 +2022,7 @@
     otaPendingRestart = true;
     try {
       const r = await api("/api/ota/install", "POST", { force: !!force });
+      if (r.ok === false) otaPendingRestart = false;
       if (r.ota) applyOtaState(r.ota, state?.firmwareVersion);
       showToast(r.message || "Запуск обновления...", !r.ok);
     } catch (e) {

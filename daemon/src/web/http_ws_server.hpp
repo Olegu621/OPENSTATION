@@ -58,7 +58,7 @@ private:
     struct WsClient {
         int fd = -1;
         bool want_audio = false;
-        bool dead = false;
+        std::atomic<bool> dead{false};
         std::mutex send_mu;
     };
 
