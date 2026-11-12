@@ -364,8 +364,9 @@ bool is_valid_clock_style(const std::string& s) {
 }
 
 bool is_valid_visualizer_style(const std::string& s) {
-    return s == "particles" || s == "bars" || s == "wave" ||
-           s == "fireflies" || s == "aurora" || s == "matrix";
+    return s == "nexus" || s == "specterr" || s == "anomaly" ||
+           s == "aurora" || s == "bars" || s == "wave" ||
+           s == "fireflies" || s == "matrix" || s == "particles";
 }
 
 std::string url_decode_str(const std::string& s) {

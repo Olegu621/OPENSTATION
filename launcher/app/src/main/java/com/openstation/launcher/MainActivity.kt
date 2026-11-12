@@ -168,8 +168,8 @@ class MainActivity : Activity() {
     private lateinit var tileMute: HwTileViews
     private lateinit var tileRoute: HwTileViews
     private lateinit var tileEq: HwTileViews
-    private lateinit var tileCecWake: HwTileViews
-    private lateinit var tileCecOff: HwTileViews
+    private lateinit var tileVis: HwTileViews
+    private lateinit var tileCec: HwTileViews
 
     // Screen 1: Apps grid & Native Yandex Music Vinyl Hero card
     private lateinit var appsGrid: GridLayout
@@ -789,6 +789,10 @@ class MainActivity : Activity() {
             isFocusable = true
             isClickable = true
             setOnClickListener { triggerAlice() }
+            setOnLongClickListener {
+                cycleVisualizerStyle()
+                true
+            }
             layoutParams = FrameLayout.LayoutParams(
                 dp(320),
                 dp(320),
@@ -1438,8 +1442,18 @@ class MainActivity : Activity() {
         tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Мик: Вкл") { toggleMute() }
         tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
         tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
-        tileCecWake = makeHwTile(R.drawable.ic_hw_tv, "Включить ТВ") { sendCec("wake") }
-        tileCecOff = makeHwTile(R.drawable.ic_hw_tv, "Выключить ТВ") { sendCec("standby") }
+        val curVisName = when (LiveOrbState.visualizerStyle) {
+            "nexus", "anomaly" -> "Nexus 3D"
+            "specterr" -> "Specterr"
+            "aurora" -> "Аврора"
+            "bars" -> "Спектр"
+            "wave" -> "Волна"
+            "matrix" -> "Матрица"
+            "fireflies" -> "Частицы"
+            else -> "Nexus 3D"
+        }
+        tileVis = makeHwTile(R.drawable.ic_wave, "Визуал: $curVisName") { cycleVisualizerStyle() }
+        tileCec = makeHwTile(R.drawable.ic_hw_tv, "ТВ: Вкл/Выкл") { toggleCec() }
 
         val hwGrid = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1449,7 +1463,7 @@ class MainActivity : Activity() {
                 1f
             )
         }
-        val hwTiles = listOf(tileRing, tileMute, tileRoute, tileEq, tileCecWake, tileCecOff)
+        val hwTiles = listOf(tileRing, tileMute, tileRoute, tileEq, tileVis, tileCec)
         for (r in 0 until 3) {
             val rowLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -2574,6 +2588,17 @@ class MainActivity : Activity() {
                     "custom" -> "Кастом"
                     else -> "Баланс"
                 }
+                val visName = when (LiveOrbState.visualizerStyle) {
+                    "nexus", "anomaly" -> "Nexus 3D"
+                    "specterr" -> "Specterr"
+                    "aurora" -> "Аврора"
+                    "bars" -> "Спектр"
+                    "wave" -> "Волна"
+                    "matrix" -> "Матрица"
+                    "fireflies" -> "Частицы"
+                    else -> "Nexus 3D"
+                }
+                tileVis.label.text = "Визуал: $visName"
             }
 
             val astBusy = assistantState != "idle"
@@ -3068,6 +3093,37 @@ class MainActivity : Activity() {
         postAsync("http://127.0.0.1:8080/api/remote/cec", body)
         val msg = if (cmd == "standby") "Выключение ТВ отправлено" else "Включение ТВ отправлено"
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private var cecState = false
+    private fun toggleCec() {
+        cecState = !cecState
+        val cmd = if (cecState) "standby" else "wake"
+        sendCec(cmd)
+        tileCec.label.text = if (cecState) "ТВ: Выключен" else "ТВ: Включён"
+    }
+
+    private fun cycleVisualizerStyle() {
+        val styles = listOf("nexus", "specterr", "aurora", "bars", "wave", "matrix", "fireflies")
+        val shortNames = mapOf(
+            "nexus" to "Nexus 3D",
+            "specterr" to "Specterr",
+            "aurora" to "Аврора",
+            "bars" to "Спектр",
+            "wave" to "Волна",
+            "matrix" to "Матрица",
+            "fireflies" to "Частицы"
+        )
+        val cur = LiveOrbState.visualizerStyle
+        val curIdx = styles.indexOf(cur).takeIf { it >= 0 } ?: 0
+        val next = styles[(curIdx + 1) % styles.size]
+        LiveOrbState.visualizerStyle = next
+        LiveOrbState.previewUntilMs = System.currentTimeMillis() + 8000L
+        val name = shortNames[next] ?: next
+        tileVis.label.text = "Визуал: $name"
+        Toast.makeText(this, "3D Визуализатор: $name", Toast.LENGTH_SHORT).show()
+        val body = JSONObject().put("visualizerStyle", next).toString()
+        postAsync("http://127.0.0.1:8080/api/config", body)
     }
 
     private fun postAsync(url: String, jsonBody: String) {

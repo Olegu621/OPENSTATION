@@ -8,13 +8,13 @@
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  2309536,
-                                 "sha256":  "56bfe615149ce75408e97cd905dd542dfc03b76605572416add2fd07872349cb"
+                                 "size":  2309784,
+                                 "sha256":  "6e57b93f4bec6132ac3099435a9314c4ba20ddbc6cb24c5a932667b4e33808c1"
                              },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4697261,
-                                   "sha256":  "32ff92fe0265ff8d7249943944f372c699941c4936c9dfe9efa316007c48c5d9"
+                                   "size":  4699238,
+                                   "sha256":  "5d0c6037b7b30bca582bf64135c44dca31debe10bc358ed8616dd08709533dbe"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

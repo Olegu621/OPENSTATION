@@ -63,8 +63,9 @@ object LiveOrbState {
     @Volatile var musicOverall: Float = 0f
 
     @Volatile var clockStyle: String = "classic"
-    @Volatile var visualizerStyle: String = "particles"
+    @Volatile var visualizerStyle: String = "nexus"
     @Volatile var autoMusicVisualizer: Boolean = true
+    @Volatile var previewUntilMs: Long = 0L
 
     @Volatile var weatherTemp: Int = 0
     @Volatile var weatherCondition: String = ""
@@ -552,7 +553,16 @@ class AliceOrbView @JvmOverloads constructor(
         val finalBright = tgtBright + boost * 0.24f
         val finalEnergy = (tgtEnergy + boost * 0.24f).coerceIn(0f, 1f)
 
-        val shouldMorph = LiveOrbState.autoMusicVisualizer && musicOn && (st == "idle")
+        val nowMs = System.currentTimeMillis()
+        val isPreview = (nowMs < LiveOrbState.previewUntilMs)
+        val shouldMorph = (LiveOrbState.autoMusicVisualizer && musicOn && (st == "idle")) || isPreview
+        if (isPreview && !musicOn) {
+            val phase = (nowMs % 2800L) / 2800f * (2f * PI.toFloat())
+            LiveOrbState.musicBass = (0.55f + 0.35f * sin(phase)).coerceIn(0f, 1f)
+            LiveOrbState.musicMid = (0.40f + 0.30f * cos(phase * 1.4f)).coerceIn(0f, 1f)
+            LiveOrbState.musicHigh = (0.30f + 0.25f * sin(phase * 2.2f)).coerceIn(0f, 1f)
+            LiveOrbState.musicOverall = (LiveOrbState.musicBass + LiveOrbState.musicMid) * 0.5f
+        }
         val tgtMorph = if (shouldMorph) 1f else 0f
         val morphRate = dt * (1f / 0.48f) // 480ms S-curve morph
         if (morphProgress < tgtMorph) {

@@ -816,7 +816,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     {
         Value p = Value::make_obj();
         p["clock_style"] = make_enum_prop("Clock display style on LED matrix and TV", {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"});
-        p["visualizer_style"] = make_enum_prop("Music visualizer style (TV orb morph + front LED matrix)", {"particles", "bars", "wave", "fireflies", "aurora", "matrix"});
+        p["visualizer_style"] = make_enum_prop("Music visualizer style (TV orb morph + front LED matrix)", {"nexus", "specterr", "aurora", "bars", "wave", "fireflies", "matrix", "particles", "anomaly"});
         p["auto_music_visualizer"] = make_prop("BOOLEAN", "Auto morph TV orb & LED display into visualizer when music plays");
         p["screen_color"] = make_prop("STRING", "Optional LED screen clock hex color like #00d4ff or #ffffff");
         decls.push(make_func_decl(
