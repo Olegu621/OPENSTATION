@@ -1,20 +1,20 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.3.1",
+    "version":  "1.3.2",
     "autonomous":  true,
-    "changelog":  "OpenStation Max v1.3.1: Нативный стек захвата звука (Yandex VQE DSP libyandexvqe.so) с многомикрофонным формированием луча и аппаратным эхоподавлением; строгое распознавание только русского и английского языков; 3D визуализатор Nexus Anomaly на Three.js с реакцией на басы; стиль Apple Liquid Glass для плеера и веб-интерфейса; поддержка ревизий 0008, 00052 и 00053 (Zigbee 2023+).",
-    "buildTimeUtc":  "2026-11-12T05:35:00Z",
+    "changelog":  "OpenStation Max v1.3.2: Встроенный мастер разблокировки подписочных станций с Авито в OpenStationFlasher.exe; нативный стек захвата звука (Yandex VQE DSP libyandexvqe.so) с многомикрофонным формированием луча и аппаратным эхоподавлением; строгое распознавание только русского и английского языков; 3D визуализатор Nexus Anomaly на Three.js с реакцией на басы; стиль Apple Liquid Glass для плеера и веб-интерфейса; поддержка ревизий 0008, 00052 и 00053 (Zigbee 2023+).",
+    "buildTimeUtc":  "2026-11-12T06:45:00Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
                                  "size":  2309784,
-                                 "sha256":  "6e57b93f4bec6132ac3099435a9314c4ba20ddbc6cb24c5a932667b4e33808c1"
+                                 "sha256":  "1bd3dbb4581395cda5abfdddbe4916fcf3d26441001c3e0a76b4e27d223e2c60"
                              },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4699238,
-                                   "sha256":  "5d0c6037b7b30bca582bf64135c44dca31debe10bc358ed8616dd08709533dbe"
+                                   "size":  4410524,
+                                   "sha256":  "15516c2f6982f54fe48971cde2c5224e1257410d2e3d6022b14f3715aa0e8741"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

@@ -53,6 +53,8 @@ namespace OpenStationFlasher
         private bool _isAdbConnected = false;
         private Button _btnTogglePinout;
         private Border _pinoutCard;
+        private Button _btnToggleAvito;
+        private Border _avitoCard;
         private ProgressBar _progBar;
         private TextBlock _progText;
         private TextBox _logBox;
@@ -73,15 +75,16 @@ namespace OpenStationFlasher
             InitWindow();
             InitUI();
             StartDevicePolling();
-            Log("OpenStation Max Flasher v1.3.1 запущен.");
+            Log("OpenStation Max Flasher v1.3.2 запущен.");
             Log("Каталог программы: " + _baseDir);
             Log("Поддержка ревизий: YNDX-0008, YNDX-00052, YNDX-00053 (Zigbee).");
+            Log("Разблокировка подписочных станций с Авито: 100% автономно без облака Яндекса.");
             CheckPrerequisites();
         }
 
         private void InitWindow()
         {
-            Title = "OpenStation Max — Сервисный прошивальщик v1.3.1";
+            Title = "OpenStation Max — Сервисный прошивальщик v1.3.2";
             Width = 940;
             Height = 840;
             MinWidth = 820;
@@ -128,29 +131,61 @@ namespace OpenStationFlasher
 
         private void OpenWebUi()
         {
-            try
+            ThreadPool.QueueUserWorkItem(_ =>
             {
-                Process.Start(new ProcessStartInfo
+                string targetUrl = "http://192.168.0.20:8080";
+                try
                 {
-                    FileName = "http://192.168.0.20:8080",
-                    UseShellExecute = true
-                });
-            }
-            catch
-            {
+                    if (_isAdbConnected)
+                    {
+                        string adb = FindAdbExe();
+                        var psi = new ProcessStartInfo(adb, "shell ip -f inet addr show wlan0")
+                        {
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardOutput = true
+                        };
+                        using (var p = Process.Start(psi))
+                        {
+                            string outStr = p.StandardOutput.ReadToEnd();
+                            p.WaitForExit(1000);
+                            var m = System.Text.RegularExpressions.Regex.Match(outStr, @"inet\s+(\d+\.\d+\.\d+\.\d+)");
+                            if (m.Success)
+                            {
+                                targetUrl = "http://" + m.Groups[1].Value + ":8080";
+                            }
+                        }
+                    }
+                }
+                catch { }
+
                 try
                 {
                     Process.Start(new ProcessStartInfo
                     {
-                        FileName = "http://station-max.local:8080",
+                        FileName = targetUrl,
                         UseShellExecute = true
                     });
                 }
-                catch (Exception ex)
+                catch
                 {
-                    MessageBox.Show("Не удалось открыть браузер: " + ex.Message, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Information);
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "http://station-max.local:8080",
+                            UseShellExecute = true
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.Invoke(() =>
+                        {
+                            MessageBox.Show("Не удалось открыть браузер: " + ex.Message, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Information);
+                        });
+                    }
                 }
-            }
+            });
         }
 
         private void InitUI()
@@ -203,7 +238,7 @@ namespace OpenStationFlasher
             };
             verBadge.Child = new TextBlock
             {
-                Text = "v1.3.1",
+                Text = "v1.3.2",
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(0, 212, 255))
@@ -323,20 +358,38 @@ namespace OpenStationFlasher
             Grid.SetColumn(statusTextStack, 0);
             statusGrid.Children.Add(statusTextStack);
 
+            var topBtnsPanel = new StackPanel { Orientation = Orientation.Horizontal };
+
             _btnTogglePinout = CreateButton("Распиновка порта", Color.FromRgb(33, 38, 45), Color.FromRgb(201, 209, 217));
             _btnTogglePinout.Padding = new Thickness(12, 6, 12, 6);
             _btnTogglePinout.Click += (s, e) =>
             {
                 _pinoutCard.Visibility = (_pinoutCard.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
+                if (_pinoutCard.Visibility == Visibility.Visible && _avitoCard != null) _avitoCard.Visibility = Visibility.Collapsed;
             };
-            Grid.SetColumn(_btnTogglePinout, 1);
-            statusGrid.Children.Add(_btnTogglePinout);
+            topBtnsPanel.Children.Add(_btnTogglePinout);
+
+            _btnToggleAvito = CreateButton("🔓 Разблокировка с Авито", Color.FromRgb(45, 26, 68), Color.FromRgb(216, 180, 254));
+            _btnToggleAvito.Padding = new Thickness(12, 6, 12, 6);
+            _btnToggleAvito.Margin = new Thickness(8, 0, 0, 0);
+            _btnToggleAvito.ToolTip = "Пошаговая инструкция для покупателей подписочных Станций Макс со вторичного рынка (Авито)";
+            _btnToggleAvito.Click += (s, e) =>
+            {
+                _avitoCard.Visibility = (_avitoCard.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
+                if (_avitoCard.Visibility == Visibility.Visible && _pinoutCard != null) _pinoutCard.Visibility = Visibility.Collapsed;
+            };
+            topBtnsPanel.Children.Add(_btnToggleAvito);
+
+            Grid.SetColumn(topBtnsPanel, 1);
+            statusGrid.Children.Add(topBtnsPanel);
 
             _statusBadge.Child = statusGrid;
             Grid.SetRow(_statusBadge, 2);
             rootGrid.Children.Add(_statusBadge);
 
-            // 3. Pinout Helper (Initially Collapsed)
+            // 3. Helpers Container (Pinout & Avito Unlock)
+            var helpersStack = new StackPanel();
+
             _pinoutCard = new Border
             {
                 Background = new SolidColorBrush(Color.FromArgb(235, 12, 17, 28)),
@@ -381,8 +434,92 @@ namespace OpenStationFlasher
             };
             pinoutStack.Children.Add(pinDesc);
             _pinoutCard.Child = pinoutStack;
-            Grid.SetRow(_pinoutCard, 3);
-            rootGrid.Children.Add(_pinoutCard);
+            helpersStack.Children.Add(_pinoutCard);
+
+            // 3b. Avito / Subscription Unlock Helper
+            _avitoCard = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(240, 16, 12, 28)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(120, 163, 113, 247)),
+                BorderThickness = new Thickness(1.2),
+                CornerRadius = new CornerRadius(22),
+                Padding = new Thickness(16),
+                Margin = new Thickness(0, 0, 0, 10),
+                Visibility = Visibility.Collapsed
+            };
+
+            var avitoStack = new StackPanel();
+            var avitoTitleGrid = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+            avitoTitleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            avitoTitleGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var avitoTitle = new TextBlock
+            {
+                Text = "🔓 Руководство по разблокировке подписочных Станций Макс (Авито / Вторые руки):",
+                FontWeight = FontWeights.Bold,
+                FontSize = 13,
+                Foreground = new SolidColorBrush(Color.FromRgb(192, 132, 252)),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(avitoTitle, 0);
+            avitoTitleGrid.Children.Add(avitoTitle);
+
+            var btnCopyAvito = CreateButton("📋 Скопировать инструкцию", Color.FromRgb(45, 26, 68), Color.FromRgb(216, 180, 254));
+            btnCopyAvito.Padding = new Thickness(10, 4, 10, 4);
+            btnCopyAvito.FontSize = 11;
+            Grid.SetColumn(btnCopyAvito, 1);
+            avitoTitleGrid.Children.Add(btnCopyAvito);
+
+            avitoStack.Children.Add(avitoTitleGrid);
+
+            string avitoGuideText =
+                "• ПОЧЕМУ ПОДПИСОЧНЫЕ СТАНЦИИ БЛОКИРУЮТСЯ НА СТОКЕ:\n" +
+                "  Яндекс блокирует колонки, оформленные в рассрочку/подписку Плюс, если за них перестали платить.\n" +
+                "  Блокировка выполняется удалённо через облачный сервис quasi.yandex.ru по серийному номеру (S/N).\n\n" +
+                "• КАК OPENSTATION MAX РАЗБЛОКИРУЕТ УСТРОЙСТВО НАВСЕГДА:\n" +
+                "  Прошивка полностью заменяет закрытую прошивку Яндекса на открытую ОС (system.img + vendor.img).\n" +
+                "  Наш фоновый демон openstationd работает полностью автономно и не связывается с серверами блокировки Яндекса.\n" +
+                "  Никакие повторные блокировки и абонентские платы невозможны!\n\n" +
+                "• ЧТО РАБОТАЕТ ПОСЛЕ ПЕРЕПРОШИВКИ:\n" +
+                "  ✓ Все 5 акустических динамиков (СЧ, ВЧ, НЧ вуфер, пассивные излучатели) и усилитель 65W;\n" +
+                "  ✓ Матричный LED-дисплей (часы, погода, эквалайзер, визуализатор музыки);\n" +
+                "  ✓ HDMI 4K вывод на ТВ со стилем Apple Liquid Glass и 3D визуализатором Nexus Anomaly (Three.js);\n" +
+                "  ✓ Голосовой ассистент Алиса (Gemini Live / offline) с выбором голоса и памятью диалогов;\n" +
+                "  ✓ Яндекс Музыка («Моя волна», персональные чарты) через ваш личный токен без привязки к железу.\n\n" +
+                "• ПОШАГОВАЯ ИНСТРУКЦИЯ ПО РАЗБЛОКИРОВКЕ В 1 КЛИК:\n" +
+                "  1. Отогните резиновую ножку внизу колонки возле гнезда питания и AUX 3.5mm.\n" +
+                "  2. Замкните тонкой канцелярской скрепкой пины [6] (BOOT) и [3] (GND).\n" +
+                "  3. Подключите сервисный Type-C провод к ПК и вставьте блок питания 19V в розетку.\n" +
+                "  4. Статус устройства выше окрасится в зелёный цвет («Станция Макс подключена»).\n" +
+                "  5. Нажмите большую кнопку «⚡ Чистая прошивка» и дождитесь надписи «УСПЕХ».\n" +
+                "  6. Снимите скрепку с пина 6, отключите 19V на 3 секунды и включите обратно.\n" +
+                "  Колонка полностью разблокирована и готова к работе!";
+
+            var avitoDesc = new TextBlock
+            {
+                Text = avitoGuideText,
+                FontSize = 11.5,
+                LineHeight = 17,
+                Foreground = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                FontFamily = new FontFamily("Consolas, Segoe UI, monospace")
+            };
+            avitoStack.Children.Add(avitoDesc);
+            _avitoCard.Child = avitoStack;
+
+            btnCopyAvito.Click += (s, e) =>
+            {
+                try
+                {
+                    Clipboard.SetText(avitoGuideText);
+                    MessageBox.Show("Инструкция по разблокировке скопирована в буфер обмена!", "Готово", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch { }
+            };
+
+            helpersStack.Children.Add(_avitoCard);
+
+            Grid.SetRow(helpersStack, 3);
+            rootGrid.Children.Add(helpersStack);
 
             // 4. Revision Selector & Fast Action Bar
             var revBar = new Border

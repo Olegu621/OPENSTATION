@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.3.1",
-    [string]$Changelog = "OpenStation Max v1.3.1: Нативный стек захвата звука (Yandex VQE DSP libyandexvqe.so) с многомикрофонным формированием луча и аппаратным эхоподавлением; строгое распознавание только русского и английского языков; 3D визуализатор Nexus Anomaly на Three.js с реакцией на басы; стиль Apple Liquid Glass для плеера и веб-интерфейса; поддержка ревизий 0008, 00052 и 00053 (Zigbee 2023+).",
+    [string]$Version = "1.3.2",
+    [string]$Changelog = "OpenStation Max v1.3.2: Встроенный мастер разблокировки подписочных станций с Авито в OpenStationFlasher.exe; нативный стек захвата звука (Yandex VQE DSP libyandexvqe.so) с многомикрофонным формированием луча и аппаратным эхоподавлением; строгое распознавание только русского и английского языков; 3D визуализатор Nexus Anomaly на Three.js с реакцией на басы; стиль Apple Liquid Glass для плеера и веб-интерфейса; поддержка ревизий 0008, 00052 и 00053 (Zigbee 2023+).",
     [switch]$Clean
 )
 

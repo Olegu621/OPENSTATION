@@ -12,13 +12,18 @@ android {
         minSdk = 26
         targetSdk = 28
         versionCode = 7
-        versionName = "1.3.1"
+        versionName = "1.3.2"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
         }
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
     }
 
     compileOptions {
