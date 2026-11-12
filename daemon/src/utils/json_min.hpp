@@ -165,6 +165,14 @@ private:
     explicit Parser(const std::string& s) : s_(s) {}
     const std::string& s_;
     size_t pos_ = 0;
+    // Bounds recursion so deeply nested untrusted input cannot overflow the stack.
+    static constexpr int kMaxDepth = 128;
+    int depth_ = 0;
+    struct DepthGuard {
+        int& d;
+        explicit DepthGuard(int& x) : d(x) { ++d; }
+        ~DepthGuard() { --d; }
+    };
 
     void skip_ws() {
         while (pos_ < s_.size() && (s_[pos_] == ' ' || s_[pos_] == '\t' || s_[pos_] == '\r' || s_[pos_] == '\n')) {
@@ -231,6 +239,7 @@ private:
                             pos_ += 2;
                             uint32_t low = 0;
                             if (!parse_hex4(low)) return false;
+                            if (low < 0xDC00 || low > 0xDFFF) return false;
                             cp = 0x10000 + (((cp - 0xD800) << 10) | (low - 0xDC00));
                         }
                         append_utf8(out, cp);
@@ -280,6 +289,8 @@ private:
             return true;
         }
         if (c == '{') {
+            DepthGuard guard(depth_);
+            if (depth_ > kMaxDepth) return false;
             ++pos_;
             out = Value::make_obj();
             skip_ws();
@@ -302,6 +313,8 @@ private:
             }
         }
         if (c == '[') {
+            DepthGuard guard(depth_);
+            if (depth_ > kMaxDepth) return false;
             ++pos_;
             out = Value::make_arr();
             skip_ws();
