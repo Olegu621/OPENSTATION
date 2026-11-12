@@ -634,6 +634,37 @@
       $("btnQuickMute").className = "btn btn-sm btn-danger" + (muted ? " active" : "");
     }
 
+    // Mic & VQE DSP monitor
+    const eng = au.engine || {};
+    const monoRms = typeof eng.monoRms === "number" ? eng.monoRms : 0;
+    const noiseFloor = typeof eng.noiseFloor === "number" ? eng.noiseFloor : 0;
+    const backendName = eng.backend || "aaudio";
+    const vadActive = !!(ast.wakeWord?.vadSpeech);
+
+    if ($("badgeMicDsp")) {
+      $("badgeMicDsp").textContent = backendName.includes("vqe") ? "Yandex VQE DSP · 16 кГц" : backendName;
+    }
+    if ($("metricMonoRms")) {
+      $("metricMonoRms").textContent = `${Math.round(monoRms)} RMS`;
+    }
+    if ($("metricNoiseFloor")) {
+      $("metricNoiseFloor").textContent = `${Math.round(noiseFloor)} RMS`;
+    }
+    if ($("metricVad")) {
+      $("metricVad").textContent = vadActive ? "🗣 Слышу голос" : "Тишина";
+      $("metricVad").style.color = vadActive ? "#10b981" : "#94a3b8";
+    }
+    if ($("vuMeterFill")) {
+      let pct = 0;
+      if (monoRms > 0) {
+        pct = Math.min(100, Math.max(2, Math.round((Math.log10(monoRms + 1) / Math.log10(30000)) * 100)));
+      }
+      $("vuMeterFill").style.width = `${pct}%`;
+      if ($("vuMeterPeak")) {
+        $("vuMeterPeak").style.left = `${pct}%`;
+      }
+    }
+
     // Update 24 SVG LEDs
     const px = hw.ringPixels || [];
     for (let i = 0; i < dots.length && i < px.length; i++) {

@@ -122,6 +122,8 @@ class MainActivity : Activity() {
     private lateinit var tvHeroReply: TextView
     private lateinit var btnHeroMusicChip: LinearLayout
     private lateinit var tvHeroMusicChip: TextView
+    private lateinit var btnGoMedia: LinearLayout
+    private lateinit var btnGoSystem: LinearLayout
 
     private lateinit var bottomDockBar: LinearLayout
     private lateinit var bottomDockBg: GradientDrawable
@@ -192,7 +194,7 @@ class MainActivity : Activity() {
     private var latestMusicSnap = YmPlayerSnapshot()
 
     // Live daemon state
-    private var fwVer = "1.2.3"
+    private var fwVer = "1.3.1"
     private var ringMode = "music"
     private var micMuted = false
     private var outputRoute = "auto"
@@ -401,32 +403,74 @@ class MainActivity : Activity() {
                         return true
                     }
                 }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
                     val cur = currentFocus
-                    if (currentPage == 0 && (cur === btnHeroOrbClick || cur === heroReplyCard)) {
-                        setPage(1, animate = true)
+                    if (currentPage == 0 && (cur === btnHeroOrbClick || cur == null)) {
+                        if (::btnGoMedia.isInitialized) btnGoMedia.requestFocus()
                         return true
                     }
-                    val root = window.decorView as? ViewGroup
-                    val next = if (root != null) FocusFinder.getInstance().findNextFocus(root, cur, View.FOCUS_RIGHT) else null
-                    val curIsTab = tabViews.any { it === cur }
-                    if (!curIsTab && (cur == null || next == null) && currentPage < 2) {
-                        setPage(currentPage + 1, animate = true)
+                }
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    val cur = currentFocus
+                    if (currentPage == 0 && (cur === btnHeroOrbClick || cur == null)) {
+                        if (::tabViews.isInitialized && tabViews.isNotEmpty()) tabViews[0].requestFocus()
                         return true
+                    }
+                    if (currentPage == 0 && (cur === btnHeroMusicChip || (::btnGoMedia.isInitialized && cur === btnGoMedia) || (::btnGoSystem.isInitialized && cur === btnGoSystem))) {
+                        btnHeroOrbClick.requestFocus()
+                        return true
+                    }
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    val cur = currentFocus
+                    if (currentPage == 0) {
+                        if (::tabViews.isInitialized && tabViews.isNotEmpty() && cur === tabViews[0]) {
+                            tabViews[1].requestFocus()
+                            return true
+                        }
+                        if (::btnGoMedia.isInitialized && cur === btnGoMedia) {
+                            btnGoSystem.requestFocus()
+                            return true
+                        }
+                        setPage(1, animate = true)
+                        return true
+                    } else if (currentPage == 1) {
+                        if (::tabViews.isInitialized && tabViews.size > 2 && cur === tabViews[1]) {
+                            tabViews[2].requestFocus()
+                            return true
+                        }
+                        val root = window.decorView as? ViewGroup
+                        val next = if (root != null) FocusFinder.getInstance().findNextFocus(root, cur, View.FOCUS_RIGHT) else null
+                        if (next == null) {
+                            setPage(2, animate = true)
+                            return true
+                        }
                     }
                 }
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     val cur = currentFocus
-                    if (currentPage > 0 && cur === bottomDockBar) {
-                        setPage(currentPage - 1, animate = true)
-                        return true
-                    }
-                    val root = window.decorView as? ViewGroup
-                    val next = if (root != null) FocusFinder.getInstance().findNextFocus(root, cur, View.FOCUS_LEFT) else null
-                    val curIsTab = tabViews.any { it === cur }
-                    if (!curIsTab && (cur == null || next == null) && currentPage > 0) {
-                        setPage(currentPage - 1, animate = true)
-                        return true
+                    if (currentPage == 2) {
+                        if (::tabViews.isInitialized && tabViews.size > 2 && cur === tabViews[2]) {
+                            tabViews[1].requestFocus()
+                            return true
+                        }
+                        val root = window.decorView as? ViewGroup
+                        val next = if (root != null) FocusFinder.getInstance().findNextFocus(root, cur, View.FOCUS_LEFT) else null
+                        if (next == null || cur === bottomDockBar) {
+                            setPage(1, animate = true)
+                            return true
+                        }
+                    } else if (currentPage == 1) {
+                        if (::tabViews.isInitialized && tabViews.size > 1 && cur === tabViews[1]) {
+                            tabViews[0].requestFocus()
+                            return true
+                        }
+                        val root = window.decorView as? ViewGroup
+                        val next = if (root != null) FocusFinder.getInstance().findNextFocus(root, cur, View.FOCUS_LEFT) else null
+                        if (next == null || cur === bottomDockBar || (::btnHomeWave.isInitialized && cur === btnHomeWave) || (::btnHomePrev.isInitialized && cur === btnHomePrev.root)) {
+                            setPage(0, animate = true)
+                            return true
+                        }
                     }
                 }
             }
@@ -770,12 +814,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             background = heroReplyCardBg
             setPadding(dp(22), dp(10), dp(22), dp(12))
-            isFocusable = true
-            isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.02f else 1f).scaleY(if (hasFocus) 1.02f else 1f).setDuration(90).start()
-            }
-            setOnClickListener { triggerAlice() }
+            isFocusable = false
+            isClickable = false
             layoutParams = FrameLayout.LayoutParams(
                 dp(700),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -900,14 +940,14 @@ class MainActivity : Activity() {
                 Gravity.END or Gravity.CENTER_VERTICAL
             )
         }
-        val btnGoMedia = makeTextIconPill(R.drawable.ic_yaos_apps, "Музыка и приложения →", gold = false) {
+        btnGoMedia = makeTextIconPill(R.drawable.ic_yaos_apps, "Музыка и приложения →", gold = false) {
             setPage(1, animate = true)
         }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
                 marginEnd = dp(8)
             }
         }
-        val btnGoSystem = makeTextIconPill(R.drawable.ic_settings, "Станция и настройки →", gold = false) {
+        btnGoSystem = makeTextIconPill(R.drawable.ic_settings, "Станция и настройки →", gold = false) {
             setPage(2, animate = true)
         }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34))

@@ -92,7 +92,8 @@ struct AssistantConfig {
     std::string gemini_proxy_host = "ai-pool.comss.one"; // SNI proxy fallback on geo-block (1007)
     std::string voice_name = "Aoede";
     std::string system_prompt =
-        "Ты — голосовой ассистент Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). "
+        "Ты — девушка, голосовая помощница Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). "
+        "Говори о себе исключительно в женском роде («я готова», «я нашла», «я включила», «я сделала»). "
         "Отвечай по-русски живо, дружелюбно, естественно и кратко (1-3 предложения, если не просят подробнее). "
         "Обязательно используй локальные инструменты: web_search, get_weather, fetch_url и http_request для погоды, новостей, курсов валют, любых фактов и умного дома; "
         "shell_exec, system_info, device_power, set_volume, set_eq_preset, set_audio_route, play_sound, set_mic_mute, set_led_ring, set_led_screen, "

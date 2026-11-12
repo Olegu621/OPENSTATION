@@ -199,6 +199,39 @@
               <button class="btn btn-accent" id="btnAliceSendText">Отправить</button>
             </div>
 
+            <!-- LIVE MIC & VQE DSP MONITOR -->
+            <div class="mic-diag-box" style="margin-top: 16px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+                <span style="font-weight: 600; font-size: 0.88rem; color: #f1f5f9;">🎙 Захват звука (Yandex VQE DSP)</span>
+                <span class="badge badge-accent" id="badgeMicDsp">aaudio 16kHz</span>
+              </div>
+              <div class="vu-meter-wrap">
+                <div class="vu-meter-bar" id="vuMeterBar">
+                  <div class="vu-meter-fill" id="vuMeterFill" style="width: 12%;"></div>
+                  <div class="vu-meter-peak" id="vuMeterPeak" style="left: 12%;"></div>
+                </div>
+                <div class="vu-labels">
+                  <span>Тишина (~50)</span>
+                  <span>Разговорная речь (300-800)</span>
+                  <span>Пик (&gt;2k)</span>
+                </div>
+              </div>
+              <div class="grid-3-tight" style="margin-top:8px;">
+                <div class="metric-pill">
+                  <span class="metric-title">Сигнал (RMS)</span>
+                  <span class="metric-val" id="metricMonoRms">-- RMS</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="metric-title">Уровень шума</span>
+                  <span class="metric-val" id="metricNoiseFloor">-- RMS</span>
+                </div>
+                <div class="metric-pill">
+                  <span class="metric-title">Детекция речи (VAD)</span>
+                  <span class="metric-val" id="metricVad">Ожидание...</span>
+                </div>
+              </div>
+            </div>
+
             <h3>История общения</h3>
             <div class="alice-live-box" id="aliceLiveBox" style="display:none;">
               <div class="live-line user" id="aliceLiveUser"></div>
