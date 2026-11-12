@@ -227,7 +227,7 @@ foreach ($imgName in @("vbmeta.img", "vendor.img", "system.img")) {
 
 Write-Host "[2/6] Проверка root ADB и свободного места на станции-сборщике..." -ForegroundColor Yellow
 if (-not $DeviceSerial) {
-    $devListRaw = (& $AdbPath devices 2>$null) -split "\r?\n"
+    $devListRaw = (& { $ErrorActionPreference = "Continue"; & $AdbPath devices 2>$null }) -split "\r?\n"
     $onlineDevs = New-Object System.Collections.Generic.List[string]
     foreach ($ln in $devListRaw) {
         if ($ln -match '^(\S+)\s+device$') { $onlineDevs.Add($Matches[1]) }

@@ -323,6 +323,7 @@ Write-Host "Python : $PythonExe" -ForegroundColor Gray
 
 if ($InstallDriver) {
     Install-WorldCupDriver
+    exit 0
 } elseif (-not $SkipDriverCheck -and -not (Test-WorldCupDriverInstalled)) {
     Write-Host "[!] USB-драйвер WorldCup (1B8E:C003) ещё не установлен в Windows." -ForegroundColor DarkYellow
     if (-not $ForceWipe) {
@@ -345,7 +346,9 @@ if (Test-Path (Join-Path $RepoRomDir "rom_manifest.json")) {
 Write-Host "[1/4] Поиск и проверка образов OpenStation Max (vbmeta, vendor, system)..." -ForegroundColor Yellow
 
 $ResolvedRomDir = $null
-if ($RomDir) {
+if ($AfterUbt) {
+    # After UBT only sends U-Boot env commands; ROM images are not needed
+} elseif ($RomDir) {
     if (-not (Test-RomDirValid $RomDir)) {
         throw "В папке '$RomDir' не найдены vbmeta.img, vendor.img и system.img"
     }
@@ -374,8 +377,10 @@ if ($RomDir) {
     $ResolvedRomDir = $RepoRomDir
 }
 
-Write-Host "  Образы: $ResolvedRomDir" -ForegroundColor Gray
-Verify-RomImages -Dir $ResolvedRomDir
+if (-not $AfterUbt) {
+    Write-Host "  Образы: $ResolvedRomDir" -ForegroundColor Gray
+    Verify-RomImages -Dir $ResolvedRomDir
+}
 
 Show-ServicePortPinout
 
@@ -413,11 +418,12 @@ except Exception:
 idb = d.identify()
 print("STAGE=" + str(ord(idb[3])))
 '@
-$stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
+# Local EAP=Continue: on Windows PowerShell 5.1 redirected native stderr under "Stop" aborts the script
+$stageOut = (& { $ErrorActionPreference = "Continue"; $probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null } | Out-String).Trim()
 if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
     Push-Location $ServiceFlashDir
     try {
-        & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
+        & { $ErrorActionPreference = "Continue"; & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null }
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  U-Boot Update уже активен (Stage=$($Matches[1])), пропускаем повторную загрузку aml.img." -ForegroundColor Gray
             $ubootReady = $true
@@ -440,7 +446,7 @@ if (-not $ubootReady) {
     while ((Get-Date) -lt $deadline) {
         Push-Location $ServiceFlashDir
         try {
-            & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
+            & { $ErrorActionPreference = "Continue"; & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null }
             if ($LASTEXITCODE -eq 0) {
                 $ubootReady = $true
                 break
@@ -456,7 +462,7 @@ if (-not $ubootReady) {
 }
 
 $DoWipeData = $false
-if ($KeepData -or $SkipWipe) {
+if ($KeepData -or $SkipWipe -or $AfterUbt) {
     $DoWipeData = $false
 } elseif ($WipeData -or $ForceWipe) {
     $DoWipeData = $true
