@@ -1019,8 +1019,29 @@ textarea { resize: vertical; line-height: 1.45; }
 }
 
 @media (max-width: 640px) {
-  .grid-2-tight, .wiz-checklist { grid-template-columns: 1fr; }
+  .grid-2-tight, .wiz-checklist, .grid-3-tight { grid-template-columns: 1fr; }
   .tabs { width: 100%; justify-content: center; }
+  .player {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+  .player__thumb {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .player__controls {
+    width: 100%;
+    justify-content: space-around;
+  }
+  .glass-content {
+    padding: 1rem;
+    gap: 12px;
+  }
+  .eq-sliders-row {
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
 }
 
 /* 10-Band EQ & SVG Curve */
