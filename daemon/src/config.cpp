@@ -168,8 +168,8 @@ void DaemonConfig::sanitize_and_validate() {
     if (!is_one_of(led_screen.clock_style, {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"})) {
         led_screen.clock_style = "classic";
     }
-    if (!is_one_of(led_screen.visualizer_style, {"particles", "bars", "wave", "fireflies", "aurora", "matrix"})) {
-        led_screen.visualizer_style = "particles";
+    if (!is_one_of(led_screen.visualizer_style, {"nexus", "specterr", "particles", "bars", "wave", "fireflies", "aurora", "matrix", "anomaly"})) {
+        led_screen.visualizer_style = "nexus";
     }
     if (led_screen.text.size() > 256) led_screen.text.resize(256);
     if (led_screen.color.empty()) led_screen.color = "#ffffff";

@@ -63,7 +63,7 @@ namespace OpenStationFlasher
             InitWindow();
             InitUI();
             StartDevicePolling();
-            Log("OpenStation Max Flasher v1.3.0 запущен.");
+            Log("OpenStation Max Flasher v1.3.1 запущен.");
             Log("Каталог программы: " + _baseDir);
             Log("Поддержка ревизий: YNDX-0008, YNDX-00052, YNDX-00053 (Zigbee).");
             CheckPrerequisites();
@@ -71,7 +71,7 @@ namespace OpenStationFlasher
 
         private void InitWindow()
         {
-            Title = "OpenStation Max — Сервисный прошивальщик v1.3.0";
+            Title = "OpenStation Max — Сервисный прошивальщик v1.3.1";
             Width = 920;
             Height = 780;
             MinWidth = 800;
@@ -127,7 +127,7 @@ namespace OpenStationFlasher
             };
             verBadge.Child = new TextBlock
             {
-                Text = "v1.3.0",
+                Text = "v1.3.1",
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(0, 212, 255))
