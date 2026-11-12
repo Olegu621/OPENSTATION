@@ -562,8 +562,20 @@ namespace OpenStationFlasher
             _comboRev.Items.Add(new ComboBoxItem { Content = "Авто (пробовать все)", Tag = "auto", IsSelected = true });
             _comboRev.Items.Add(new ComboBoxItem { Content = "YNDX-0008 / YNDX-00052", Tag = "0008" });
             _comboRev.Items.Add(new ComboBoxItem { Content = "YNDX-00053 (Zigbee 2023+)", Tag = "00053" });
-            Grid.SetColumn(_comboRev, 1);
-            revBarGrid.Children.Add(_comboRev);
+
+            var revStack = new StackPanel { Orientation = Orientation.Horizontal };
+            revStack.Children.Add(_comboRev);
+            var revHint = new TextBlock
+            {
+                Text = "ℹ Модель указана на нижней наклейке корпуса",
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(139, 148, 158)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(10, 0, 0, 0)
+            };
+            revStack.Children.Add(revHint);
+            Grid.SetColumn(revStack, 1);
+            revBarGrid.Children.Add(revStack);
 
             var rightActions = new StackPanel { Orientation = Orientation.Horizontal };
 
@@ -880,6 +892,9 @@ namespace OpenStationFlasher
 
         private string FindPythonExe()
         {
+            string embedPy = Path.Combine(_baseDir, "tools", "python-embed", "python.exe");
+            if (File.Exists(embedPy)) return embedPy;
+
             string[] testCommands = new string[] { "python.exe", "py.exe", "python3.exe" };
             foreach (var cmd in testCommands)
             {

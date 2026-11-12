@@ -317,13 +317,14 @@ class WeatherOverlayView @JvmOverloads constructor(
         }
 
         private fun drawRain(canvas: Canvas, w: Float, h: Float, dt: Float) {
+            val speedScale = (dt * 60f).coerceIn(0.5f, 2.0f)
             pPaint.color = Color.parseColor("#8038BDF8")
             pPaint.strokeWidth = 2.5f
             pPaint.style = Paint.Style.STROKE
 
             for (p in particles) {
-                p.x += p.vx
-                p.y += p.vy
+                p.x += p.vx * speedScale
+                p.y += p.vy * speedScale
                 if (p.y > h) {
                     p.y = -20f
                     p.x = Random.nextFloat() * w
@@ -334,12 +335,13 @@ class WeatherOverlayView @JvmOverloads constructor(
         }
 
         private fun drawSnow(canvas: Canvas, w: Float, h: Float, dt: Float) {
+            val speedScale = (dt * 60f).coerceIn(0.5f, 2.0f)
             pPaint.color = Color.WHITE
             pPaint.style = Paint.Style.FILL
 
             for (p in particles) {
-                p.x += p.vx
-                p.y += p.vy
+                p.x += p.vx * speedScale
+                p.y += p.vy * speedScale
                 if (p.y > h) {
                     p.y = -10f
                     p.x = Random.nextFloat() * w
@@ -350,11 +352,12 @@ class WeatherOverlayView @JvmOverloads constructor(
         }
 
         private fun drawClouds(canvas: Canvas, w: Float, h: Float, dt: Float) {
+            val speedScale = (dt * 60f).coerceIn(0.5f, 2.0f)
             pPaint.color = Color.parseColor("#2694A3B8")
             pPaint.style = Paint.Style.FILL
 
             for (p in particles) {
-                p.x += p.vx
+                p.x += p.vx * speedScale
                 if (p.x > w + 60f) {
                     p.x = -60f
                     p.y = Random.nextFloat() * h * 0.7f

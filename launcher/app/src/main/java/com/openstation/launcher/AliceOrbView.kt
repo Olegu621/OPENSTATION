@@ -953,11 +953,12 @@ class AliceOrbView @JvmOverloads constructor(
         val high = LiveOrbState.musicHigh
         val mTot = LiveOrbState.musicOverall
 
-        // Background floating particles
+        // Background floating particles modulated by overall music energy
+        val spread = radius * (1.8f + mTot * 0.25f)
         visPaint.style = Paint.Style.FILL
         for (i in 0 until 24) {
             val t = (totalTime * (0.2f + (i % 4) * 0.08f) + i / 24f) % 1f
-            val px = cx - radius * 0.9f + t * radius * 1.8f
+            val px = cx - spread * 0.5f + t * spread
             val py = cy + sin(t * PI.toFloat() * 2f + i) * radius * 0.45f
             val pSize = max(2.5f, radius * (0.012f + (i % 3) * 0.010f + high * 0.02f))
             visPaint.color = if (i % 2 == 0) Color.parseColor("#00F5FF") else Color.parseColor("#EC4899")
@@ -1026,10 +1027,10 @@ class AliceOrbView @JvmOverloads constructor(
     }
 
     private fun drawAuroraVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
-        visPaint.style = Paint.Style.STROKE
-        visPaint.strokeWidth = max(5f, radius * 0.08f)
         val mid = LiveOrbState.musicMid
         val high = LiveOrbState.musicHigh
+        visPaint.style = Paint.Style.STROKE
+        visPaint.strokeWidth = max(5f, radius * (0.07f + high * 0.04f))
 
         for (a in 0..1) {
             visWavePath.reset()
