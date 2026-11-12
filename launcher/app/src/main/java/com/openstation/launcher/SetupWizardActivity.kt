@@ -76,6 +76,12 @@ class SetupWizardActivity : Activity() {
     // Step 2: Alice / Gemini Live
     private lateinit var tvStep2GeminiStatus: TextView
     private lateinit var tvStep2KwsLive: TextView
+    private lateinit var vStep2VuContainer: LinearLayout
+    private lateinit var vStep2VuBarFill: View
+    private lateinit var tvStep2VuStats: TextView
+    private var curAudioRms = 0
+    private var curAudioNoise = 0
+    private var curAudioBackend = "aaudio_1ch_16k_vqe"
     private val voicePills = LinkedHashMap<String, TextView>()
     private val proxyPills = LinkedHashMap<String, TextView>()
     private val promptPills = LinkedHashMap<String, TextView>()
@@ -663,6 +669,68 @@ class SetupWizardActivity : Activity() {
             }
         }
         col.addView(tvStep2KwsLive)
+
+        vStep2VuContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#180F172A"))
+                setStroke(dp(1), Color.parseColor("#3338BDF8"))
+                cornerRadius = dp(10).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        val vuHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(5)
+            }
+        }
+        val tvVuLabel = TextView(this).apply {
+            text = "МИКРОФОН И VQE УРОВЕНЬ:"
+            textSize = 10f
+            setTextColor(Color.parseColor("#94A3B8"))
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        tvStep2VuStats = TextView(this).apply {
+            text = "0 RMS | Шум: 0 | vqe"
+            textSize = 10f
+            setTextColor(Color.parseColor("#38BDF8"))
+            typeface = Typeface.MONOSPACE
+        }
+        vuHeader.addView(tvVuLabel)
+        vuHeader.addView(tvStep2VuStats)
+        vStep2VuContainer.addView(vuHeader)
+
+        val vuTrack = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#33000000"))
+                cornerRadius = dp(4).toFloat()
+            }
+        }
+        vStep2VuBarFill = View(this).apply {
+            layoutParams = FrameLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(
+                    Color.parseColor("#10B981"),
+                    Color.parseColor("#06B6D4"),
+                    Color.parseColor("#3B82F6"),
+                    Color.parseColor("#F59E0B")
+                )
+            ).apply {
+                cornerRadius = dp(4).toFloat()
+            }
+        }
+        vuTrack.addView(vStep2VuBarFill)
+        vStep2VuContainer.addView(vuTrack)
+
+        col.addView(vStep2VuContainer)
         return wrapStepScroll(col)
     }
 
@@ -1102,6 +1170,11 @@ class SetupWizardActivity : Activity() {
                     val ast = root.optJSONObject("assistant")
                     val ww = ast?.optJSONObject("wakeWord")
                     val music = root.optJSONObject("music")
+                    val audio = root.optJSONObject("audio")
+                    val engine = audio?.optJSONObject("engine")
+                    val aRms = engine?.optDouble("monoRms", 0.0)?.toInt() ?: 0
+                    val aNoise = engine?.optInt("noiseFloor", 0) ?: 0
+                    val aBackend = engine?.optString("backend", "aaudio_1ch_16k_vqe") ?: "aaudio_1ch_16k_vqe"
 
                     val sysMusicSnap = StationAudioService.instance?.musicPlayer?.getSnapshot()
                     val mLoggedIn = sysMusicSnap?.account?.loggedIn ?: (music?.optBoolean("hasAuth", false) ?: false)
@@ -1139,6 +1212,9 @@ class SetupWizardActivity : Activity() {
                         curMusicLoggedIn = mLoggedIn
                         curMusicUser = mUser
                         curMusicPlus = mPlus
+                        curAudioRms = aRms
+                        curAudioNoise = aNoise
+                        curAudioBackend = aBackend
 
                         renderPolledStatus(ast, ww)
                     }
@@ -1202,7 +1278,7 @@ class SetupWizardActivity : Activity() {
         } else {
             "Авто (${curDnsMode.ifBlank { "нет" }})"
         }
-        tvDiagAudio.text = "Станция Макс\nHi-Fi аудиосистема"
+        tvDiagAudio.text = "Hi-Fi · Yandex VQE DSP\n${curAudioBackend.replace('_', ' ')} (${curAudioRms} RMS)"
         tvDiagHw.text = "Голос и экран\n" + if (curFb5) "Передний экран: активен" else "Передний экран: выкл"
 
         // Step 2 Gemini Banner (only overwrite default hint, preserve explicit test results until next click)
@@ -1238,6 +1314,20 @@ class SetupWizardActivity : Activity() {
                 "Офлайн Wake Word активен — скажите вслух «Алиса» для проверки (срабатываний: $curKwsDetections)"
             else ->
                 "Wake Word выключен (активация кнопкой Action или с экрана)"
+        }
+
+        if (::tvStep2VuStats.isInitialized) {
+            tvStep2VuStats.text = "$curAudioRms RMS | Шум: $curAudioNoise | $curAudioBackend"
+        }
+        if (::vStep2VuBarFill.isInitialized && ::vStep2VuContainer.isInitialized) {
+            val pct = Math.min(100, Math.max(0, (Math.log10(curAudioRms.coerceAtLeast(1).toDouble()) / 3.8 * 100).toInt()))
+            val trackWidth = (vStep2VuContainer.width - dp(24)).coerceAtLeast(10)
+            val targetW = (trackWidth * pct) / 100
+            val lp = vStep2VuBarFill.layoutParams
+            if (lp.width != targetW) {
+                lp.width = targetW
+                vStep2VuBarFill.layoutParams = lp
+            }
         }
 
         // Step 3 Music
