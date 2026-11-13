@@ -126,8 +126,15 @@ def boot_single_image(backend, img_path, retries=2):
             print(f"  ROM: {rom_maj}.{rom_min} Stage: {stage_maj}.{stage_min}")
             print(f"  Need Password: {ord(socid[4])} Password OK: {ord(socid[5])}")
 
-            if stage_maj != 0:
-                print(f"  [✓] Устройство уже находится в режиме U-Boot/Update (Stage {stage_maj}.{stage_min})!")
+            # Genuine G12 BootROM is ROM 3.x with Stage 0.0. A station already
+            # running U-Boot replies with other bytes (e.g. ROM 0.7 Stage 0.16).
+            # Never send BootROM-only requests to a live U-Boot: it drops the
+            # USB link with "Устройство не опознано".
+            if rom_maj != 3 or stage_min != 0:
+                print(
+                    f"  [✓] Устройство уже в режиме U-Boot/Update "
+                    f"(ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}) — загрузка не нужна."
+                )
                 return True
 
             loadAddr = 0xFFFA0000
