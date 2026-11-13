@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "v1.5.2";
+        private const string FW_VERSION = "v1.5.3";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -830,30 +830,62 @@ namespace OpenStationFlasher
             }
         }
 
+        private static bool IsVersionAtLeast(string actual, string required)
+        {
+            try
+            {
+                Version a = new Version(actual.Trim().TrimStart('v', 'V'));
+                Version b = new Version(required.Trim().TrimStart('v', 'V'));
+                return a >= b;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void EnsureFlashToolsPresent()
         {
-            string flashPy = Path.Combine(_toolsRoot, "service_flash", "flash_service.py");
-            string updateExe = Path.Combine(_toolsRoot, "service_flash", "update.exe");
-            string verFile = Path.Combine(_toolsRoot, "service_flash", "tools_version.txt");
-
             string appData = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "OpenStation"
             );
+
+            string flashPy = Path.Combine(_toolsRoot, "service_flash", "flash_service.py");
+            string updateExe = Path.Combine(_toolsRoot, "service_flash", "update.exe");
+            string verFile = Path.Combine(_toolsRoot, "service_flash", "tools_version.txt");
+
             bool isAppDataCache = string.Equals(
                 Path.GetFullPath(_toolsRoot).TrimEnd('\\'),
                 Path.GetFullPath(appData).TrimEnd('\\'),
                 StringComparison.OrdinalIgnoreCase
             );
 
-            bool versionMatches = false;
+            string localVer = null;
             if (File.Exists(verFile))
             {
-                try
+                try { localVer = File.ReadAllText(verFile).Trim(); } catch { }
+            }
+            bool versionMatches = string.Equals(localVer, FW_VERSION, StringComparison.OrdinalIgnoreCase);
+            bool versionFresh = versionMatches || IsVersionAtLeast(localVer ?? "", FW_VERSION);
+
+            // An old portable copy (e.g. a GitHub ZIP extracted next to the .exe)
+            // must not silently override the tools that ship with a newer
+            // installer: otherwise a fresh .exe runs stale python/dll files.
+            if (!isAppDataCache && File.Exists(flashPy) && File.Exists(updateExe) && !versionFresh)
+            {
+                AppendLog("Локальные утилиты (" + (string.IsNullOrEmpty(localVer) ? "версия неизвестна" : localVer) +
+                          ") устарели — переключаюсь на актуальный набор " + FW_VERSION + ".");
+                _toolsRoot = appData;
+                isAppDataCache = true;
+                flashPy = Path.Combine(_toolsRoot, "service_flash", "flash_service.py");
+                updateExe = Path.Combine(_toolsRoot, "service_flash", "update.exe");
+                verFile = Path.Combine(_toolsRoot, "service_flash", "tools_version.txt");
+                versionMatches = false;
+                if (File.Exists(verFile))
                 {
-                    versionMatches = string.Equals(File.ReadAllText(verFile).Trim(), FW_VERSION, StringComparison.OrdinalIgnoreCase);
+                    try { versionMatches = string.Equals(File.ReadAllText(verFile).Trim(), FW_VERSION, StringComparison.OrdinalIgnoreCase); } catch { }
                 }
-                catch { }
             }
 
             if (File.Exists(flashPy) && File.Exists(updateExe) && (!isAppDataCache || versionMatches))
