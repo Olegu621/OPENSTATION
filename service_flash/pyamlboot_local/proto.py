@@ -22,6 +22,7 @@ Amlogic USB Boot Protocol Library
 
 import string
 import os
+import time
 import usb.core
 import usb.util
 from struct import Struct, unpack, pack
@@ -40,6 +41,7 @@ REQ_IDENTIFY_HOST = 0x20
 
 REQ_TPL_CMD    = 0x30
 REQ_TPL_STAT = 0x31
+REQ_BURN_WRITE = 0x32
 
 REQ_BULKCMD = 0x34
 
@@ -490,29 +492,40 @@ class AmlogicSoC(object):
         amls = pack('<4sBBBBII', bytes("AMLS", 'ascii'), seq, 0, 0, 0, checksum, 0) + data[16:512]
         self._writeAMLCData(amlcOffset, amls)
 
-    def bulkCmd(self, command):
-        """Send a textual command
+    @staticmethod
+    def _burn_command_payload(command):
+        payload = command.encode("ascii")
+        if len(payload) >= 64:
+            raise ValueError("WorldCup command must be shorter than 64 bytes")
+        return payload.ljust(64, b'\0')
 
-        When talking to U-Boot's implementation of this protocol, execute the
-        given string as a U-Boot command. Not supported by other
-        implementations, including the ROM one, to my knowledge.
-        """
-        request_type = usb.util.build_request_type(usb.util.CTRL_OUT,
-                                                   usb.util.CTRL_TYPE_VENDOR,
-                                                   usb.util.CTRL_RECIPIENT_DEVICE)
+    def bulkCmd(self, command, timeout=3000):
+        """Send a fixed-width WorldCup command and read the final U-Boot reply."""
+        self.dev.ctrl_transfer(0x40, REQ_BULKCMD, 0, 2, self._burn_command_payload(command), timeout)
+        return self._read_burn_status(timeout)
 
-        terminated_cmd = command + '\0'
+    def start_download(self, target, name, image_format, size, timeout):
+        command = self._burn_command_payload(f"download {target} {name} {image_format} 0x{size:X}")
+        self.dev.ctrl_transfer(0x40, REQ_TPL_CMD, 0, 1, command, timeout)
+        return bytes(self.dev.ctrl_transfer(0xc0, REQ_TPL_STAT, 0, 0, 64, timeout)).split(b'\0', 1)[0]
 
-        # U-Boot's USB function gets confused if the string is longer than this.
-        # Not sure why.
-        if len(terminated_cmd) >= 128:
-            raise ValueError("Bulk command must be shorter than 127 characters")
+    def write_download_block(self, seq, data, timeout):
+        padded = data + b'\0' * (-len(data) % 4)
+        checksum = sum(word for (word,) in Struct("<I").iter_unpack(padded)) & 0xFFFFFFFF
+        # The low four bits of the sequence field are reserved for block retries.
+        request = pack("<IIIIHH12x", 0, len(data), seq << 4, checksum, 0xEF, 0x100)
+        self.dev.ctrl_transfer(0x40, REQ_BURN_WRITE, 1, 0xFFFF, request, timeout)
+        if self.dev.write(0x02, data, timeout) != len(data):
+            raise IOError("Short WorldCup bulk write")
+        reply = self._read_burn_status(timeout, size=256)
+        if not reply.startswith(b"OK!!"):
+            raise IOError(f"WorldCup rejected block {seq}: {reply!r}")
 
-        self.dev.ctrl_transfer(bmRequestType = request_type,
-                               bRequest = REQ_BULKCMD,
-                               wValue = 0, # Ignored
-                               wIndex = 2, # Ignored
-                               data_or_wLength = command + '\0')
-
-        BULK_REPLY_LEN = 512
-        return self.dev.read(usb.util.ENDPOINT_IN | 1, BULK_REPLY_LEN)
+    def _read_burn_status(self, timeout, size=512):
+        deadline = time.monotonic() + timeout / 1000
+        while time.monotonic() < deadline:
+            remaining = max(1, int((deadline - time.monotonic()) * 1000))
+            reply = bytes(self.dev.read(0x81, size, remaining)).split(b'\0', 1)[0]
+            if not reply.startswith(b"Continue"):
+                return reply
+        raise TimeoutError("WorldCup did not return a final status")

@@ -1,4 +1,5 @@
 @echo off
+setlocal
 chcp 65001 >nul
 title OpenStation Max — After UBT (Fix Bootloop / AVB2 Unlock)
 cd /d "%~dp0"
@@ -21,30 +22,12 @@ echo.
 pause
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\flash_service_port.ps1" -AfterUbt
+set "RC=%ERRORLEVEL%"
 
-if errorlevel 1 (
+if not "%RC%"=="0" (
     echo.
-    echo [!] Произошла ошибка при выполнении команд U-Boot через PowerShell.
-    echo [!] Пробуем прямое выполнение через service_flash\update.exe...
-    echo.
-    if exist "%~dp0service_flash\update.exe" (
-        pushd "%~dp0service_flash"
-        update.exe bulkcmd "store init"
-        update.exe bulkcmd "setenv silent 0"
-        update.exe bulkcmd "setenv lock 10000000"
-        update.exe bulkcmd "setenv avb2 0"
-        update.exe bulkcmd "saveenv"
-        popd
-        echo.
-        echo Прямые команды U-Boot отправлены.
-    ) else (
-        echo [ОШИБКА] service_flash\update.exe не найден!
-    )
+    echo [ОШИБКА] After UBT завершился с кодом %RC%. Подробности выше.
 )
 
-echo.
-echo ========================================================================
-echo   Готово! Снимите сервисную перемычку и перезагрузите Станцию по питанию.
-echo ========================================================================
-echo.
 pause
+exit /b %RC%

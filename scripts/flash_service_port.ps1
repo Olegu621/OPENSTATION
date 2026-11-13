@@ -304,26 +304,29 @@ function Resolve-RomReleaseZipDownload {
     return $finalPath
 }
 
-function Invoke-UpdateExe {
+function Invoke-WorldCup {
     param([string[]]$CmdArgs, [string]$StepTitle)
     if ($StepTitle) {
         Write-Host ("  -> {0}" -f $StepTitle) -ForegroundColor Gray
     }
-    Push-Location $ServiceFlashDir
-    try {
-        & (Join-Path $ServiceFlashDir "update.exe") @CmdArgs
-        $rc = $LASTEXITCODE
-    } finally {
-        Pop-Location
+    $mode = "--$($CmdArgs[0])"
+    $commandArgs = $CmdArgs[1..($CmdArgs.Count - 1)]
+    & $PythonExe -X utf8 (Join-Path $ServiceFlashDir "flash_service.py") $mode @commandArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Ошибка WorldCup ($($CmdArgs -join ' ')) с кодом $LASTEXITCODE"
     }
-    if ($rc -ne 0) {
-        throw "Ошибка update.exe ($($CmdArgs -join ' ')) с кодом $rc"
+}
+
+function Enter-WorldCupUpdate {
+    & $PythonExe -X utf8 (Join-Path $ServiceFlashDir "flash_service.py") --enter-update --revision $Revision --skip-driver-check
+    if ($LASTEXITCODE -ne 0) {
+        throw "Не удалось перевести станцию в режим U-Boot Update."
     }
 }
 
 Write-Host "=== OpenStation Max — Сервисная прошивка через 7-пиновый порт ===" -ForegroundColor Cyan
 
-foreach ($req in @("aml.img", "update.exe", "boot-g12.py", "AmlLibusb.dll", "UsbRomDrv.dll")) {
+foreach ($req in @("flash_service.py", "update.exe")) {
     if (-not (Test-Path (Join-Path $ServiceFlashDir $req))) {
         throw "В папке service_flash\ отсутствует необходимый файл: $req"
     }
@@ -349,6 +352,38 @@ if ($InstallDriver) {
 }
 
 $RepoRomDir = Join-Path $RootDir "rom"
+
+if ($AfterUbt) {
+    Write-Host "[*] Режим 'After UBT': применение параметров U-Boot для предотвращения бутлупа..." -ForegroundColor Yellow
+    Enter-WorldCupUpdate
+
+    $miscCands = if ($Revision -eq "00053") {
+        Join-Path $ServiceFlashDir "misc_00053.img"
+        Join-Path $RepoRomDir "misc_00053.img"
+        Join-Path $ServiceFlashDir "misc.img"
+    } else {
+        Join-Path $ServiceFlashDir "misc.img"
+        Join-Path $RepoRomDir "misc.img"
+        Join-Path $ServiceFlashDir "misc_00053.img"
+    }
+    $targetMisc = $miscCands | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+    if ($targetMisc) {
+        Invoke-WorldCup @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
+        Invoke-WorldCup @("bulkcmd", "store disprotect key") "Снятие защиты разделов"
+        Invoke-WorldCup @("mwrite", $targetMisc, "store", "misc", "normal") "Запись misc (uboot-command: отключение AVB / permissive bootargs)"
+    }
+
+    foreach ($cmd in @("store init", "setenv silent 0", "setenv lock 10000000", "setenv avb2 0", "saveenv")) {
+        Invoke-WorldCup @("bulkcmd", $cmd) "U-Boot: $cmd"
+    }
+    Write-Host ""
+    Write-Host "  НАСТРОЙКИ AFTER UBT ПРИМЕНЕНЫ УСПЕШНО!" -ForegroundColor Green
+    Write-Host "  1) Снимите перемычку с 6 пина." -ForegroundColor Yellow
+    Write-Host "  2) Переподключите питание 19V станции." -ForegroundColor Gray
+    exit 0
+}
+
 $RepoDistDir = Join-Path $RootDir "dist"
 $repoManifestPath = Join-Path $RepoRomDir "rom_manifest.json"
 if (-not (Test-Path $repoManifestPath)) { throw "Доверенный rom_manifest.json отсутствует: $repoManifestPath" }
@@ -409,101 +444,7 @@ if (-not $ForceWipe -and -not $NoPause) {
 
 Write-Host "[2/4] Инициализация BootROM и проверка U-Boot..." -ForegroundColor Yellow
 
-$ubootReady = $false
-
-# 1. Прямая проверка update.exe bulkcmd "mmc dev 1" (если U-Boot уже загружен в память или после UBT)
-Push-Location $ServiceFlashDir
-try {
-    & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  [✓] U-Boot уже активен на станции (mmc dev 1 OK)! Пропускаем этап загрузки aml.img." -ForegroundColor Green
-        $ubootReady = $true
-    }
-} catch {}
-finally {
-    Pop-Location
-}
-
-# 2. Если update.exe еще не отвечает, проверяем стадию через Python probe
-if (-not $ubootReady) {
-    $probeStagePy = @'
-import importlib.util, os, sys
-sf = sys.argv[1]
-sys.path.insert(0, sf)
-s = importlib.util.spec_from_file_location("bg", os.path.join(sf, "boot-g12.py"))
-m = importlib.util.module_from_spec(s)
-s.loader.exec_module(m)
-be = m.resolve_usb_backend()
-from pyamlboot import pyamlboot
-d = pyamlboot.AmlogicSoC(backend=be)
-try:
-    d.dev.set_configuration()
-except Exception:
-    pass
-idb = d.identify()
-print("STAGE=" + str(ord(idb[3])))
-'@
-    $stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
-    if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
-        Push-Location $ServiceFlashDir
-        try {
-            & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  [✓] U-Boot Update уже активен (Stage=$($Matches[1])), пропускаем повторную загрузку aml.img." -ForegroundColor Green
-                $ubootReady = $true
-            }
-        } catch {}
-        finally {
-            Pop-Location
-        }
-    }
-}
-
-# 3. Если устройство находится в BootROM (Stage 0), запускаем boot-g12.py
-if (-not $ubootReady) {
-    Write-Host "  -> Запуск boot-g12.py (ревизия: $Revision)..." -ForegroundColor Yellow
-    $bootOut = (& $PythonExe (Join-Path $ServiceFlashDir "boot-g12.py") "--revision" $Revision "--retries" "3" 2>&1 | Out-String)
-    Write-Host ($bootOut.Trim()) -ForegroundColor Gray
-
-    # Проверяем готовность после вызова boot-g12.py
-    Start-Sleep -Seconds 2
-    Push-Location $ServiceFlashDir
-    try {
-        & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  [✓] U-Boot успешно откликнулся после boot-g12.py!" -ForegroundColor Green
-            $ubootReady = $true
-        }
-    } catch {}
-    finally {
-        Pop-Location
-    }
-
-    if (-not $ubootReady) {
-        throw "Не удалось инициализировать Amlogic USB Boot (1B8E:C003).`n`nВозможные причины:`n1) Станция не переведена в BootROM (проверьте перемычку пина 6 на пин 3 GND);`n2) Нет питания 19V или кабель Type-C не передает данные (нужны D+, D-, GND);`n3) Драйвер WorldCup Device не установлен в Диспетчере устройств Windows.`n`nЛог boot-g12.py:`n$bootOut"
-    }
-}
-
-    Write-Host "  Ожидание переподключения USB-интерфейса WorldCup Update..." -ForegroundColor Gray
-    Start-Sleep -Seconds 3
-    $deadline = (Get-Date).AddSeconds(30)
-    while ((Get-Date) -lt $deadline) {
-        Push-Location $ServiceFlashDir
-        try {
-            & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                $ubootReady = $true
-                break
-            }
-        } finally {
-            Pop-Location
-        }
-        Start-Sleep -Seconds 2
-    }
-    if (-not $ubootReady) {
-        throw "U-Boot aml.img загрузился, но update.exe не видит WorldCup Device. Проверьте установку драйвера из service_flash\Drivers\dpinst64.exe."
-    }
-}
+Enter-WorldCupUpdate
 
 $DoWipeData = $false
 if ($KeepData -or $SkipWipe) {
@@ -516,42 +457,6 @@ if ($KeepData -or $SkipWipe) {
     $DoWipeData = (-not $ansWipe) -or ($ansWipe -match '^[YyДд]')
 }
 
-if ($AfterUbt) {
-    Write-Host "[*] Режим 'After UBT': применение параметров U-Boot для предотвращения бутлупа..." -ForegroundColor Yellow
-
-    # Выбор подходящего misc.img для ревизии
-    $miscCands = if ($Revision -eq "00053") {
-        @(Join-Path $ServiceFlashDir "misc_00053.img", Join-Path $RepoRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc.img")
-    } else {
-        @(Join-Path $ServiceFlashDir "misc.img", Join-Path $RepoRomDir "misc.img", Join-Path $ServiceFlashDir "misc_00053.img")
-    }
-    $targetMisc = $miscCands | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if ($targetMisc) {
-        Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
-        Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов"
-        Invoke-UpdateExe @("mwrite", $targetMisc, "store", "misc", "normal") "Запись misc (uboot-command: отключение AVB / permissive bootargs)"
-    }
-
-    $afterUbtCmds = @(
-        "store init",
-        "setenv silent 0",
-        "setenv lock 10000000",
-        "setenv avb2 0",
-        "saveenv"
-    )
-    foreach ($cmd in $afterUbtCmds) {
-        Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
-    }
-    Write-Host ""
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "  НАСТРОЙКИ AFTER UBT ПРИМЕНЕНЫ УСПЕШНО!" -ForegroundColor Green
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "  1) Снимите перемычку с 6 пина." -ForegroundColor Yellow
-    Write-Host "  2) Переподключите питание 19V станции." -ForegroundColor Gray
-    exit 0
-}
-
 Write-Host "[3/4] Прошивка системных разделов OpenStation Max..." -ForegroundColor Yellow
 Write-Host "[!] Запись разделов не имеет автоматического rollback. Не отключайте питание." -ForegroundColor Red
 
@@ -560,25 +465,31 @@ $vendorPath = Join-Path $ResolvedRomDir "vendor.img"
 $systemPath = Join-Path $ResolvedRomDir "system.img"
 
 $miscCandidates = if ($Revision -eq "00053") {
-    @(Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img", Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img")
+    Join-Path $ResolvedRomDir "misc_00053.img"
+    Join-Path $ServiceFlashDir "misc_00053.img"
+    Join-Path $ResolvedRomDir "misc.img"
+    Join-Path $ServiceFlashDir "misc.img"
 } else {
-    @(Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img", Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img")
+    Join-Path $ResolvedRomDir "misc.img"
+    Join-Path $ServiceFlashDir "misc.img"
+    Join-Path $ResolvedRomDir "misc_00053.img"
+    Join-Path $ServiceFlashDir "misc_00053.img"
 }
-$miscPath = $miscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$miscPath = $miscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 
-Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
-Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов (store disprotect key)"
-Invoke-UpdateExe @("mwrite", $vbmetaPath, "store", "vbmeta", "normal") "Запись vbmeta (2 МБ)"
-Invoke-UpdateExe @("mwrite", $vendorPath, "store", "vendor", "normal") "Запись vendor (512 МБ)"
-Invoke-UpdateExe @("mwrite", $systemPath, "store", "system", "normal") "Запись system (~1.44 ГБ, подождите 1-2 минуты)"
+Invoke-WorldCup @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
+Invoke-WorldCup @("bulkcmd", "store disprotect key") "Снятие защиты разделов (store disprotect key)"
+Invoke-WorldCup @("mwrite", $vbmetaPath, "store", "vbmeta", "normal") "Запись vbmeta (2 МБ)"
+Invoke-WorldCup @("mwrite", $vendorPath, "store", "vendor", "normal") "Запись vendor (512 МБ)"
+Invoke-WorldCup @("mwrite", $systemPath, "store", "system", "normal") "Запись system (~1.44 ГБ, подождите 1-2 минуты)"
 if ($miscPath -and (Test-Path $miscPath)) {
-    Invoke-UpdateExe @("mwrite", $miscPath, "store", "misc", "normal") "Запись misc (uboot-command: обход AVB / permissive bootargs)"
+    Invoke-WorldCup @("mwrite", $miscPath, "store", "misc", "normal") "Запись misc (uboot-command: обход AVB / permissive bootargs)"
 }
 
 if ($DoWipeData) {
     Write-Host "[4/4] Очистка пользовательских разделов (/data и /cache)..." -ForegroundColor Yellow
-    Invoke-UpdateExe @("bulkcmd", "amlmmc erase data") "Очистка раздела data"
-    Invoke-UpdateExe @("bulkcmd", "amlmmc erase cache") "Очистка раздела cache"
+    Invoke-WorldCup @("bulkcmd", "amlmmc erase data") "Очистка раздела data"
+    Invoke-WorldCup @("bulkcmd", "amlmmc erase cache") "Очистка раздела cache"
 } else {
     Write-Host "[4/4] Завершение (/data сохранён)..." -ForegroundColor Yellow
 }
@@ -592,7 +503,7 @@ $afterUbtCmds = @(
     "saveenv"
 )
 foreach ($cmd in $afterUbtCmds) {
-    Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
+    Invoke-WorldCup @("bulkcmd", $cmd) "U-Boot: $cmd"
 }
 
 Write-Host ""
@@ -611,9 +522,7 @@ if (-not $ForceWipe -and -not $NoPause) {
     $ansReset = Read-Host "Если вы УЖЕ сняли перемычку с 6 пина, нажмите R + Enter для программной перезагрузки (или просто Enter для выхода)"
     if ($ansReset -match '^[Rr]') {
         try {
-            Push-Location $ServiceFlashDir
-            & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "reset" 2>&1 | Out-Null
-            Pop-Location
+            Invoke-WorldCup @("bulkcmd", "reset")
         } catch {}
     }
 }
