@@ -37,6 +37,16 @@ void InputMonitor::scan_devices() {
     while ((ent = readdir(dir)) != nullptr) {
         if (strncmp(ent->d_name, "event", 5) != 0) continue;
         std::string path = std::string("/dev/input/") + ent->d_name;
+
+        bool already_open = false;
+        for (const auto& w : fds_) {
+            if (w.path == path && w.fd >= 0) {
+                already_open = true;
+                break;
+            }
+        }
+        if (already_open) continue;
+
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
 
@@ -46,6 +56,11 @@ void InputMonitor::scan_devices() {
             continue;
         }
         std::string sname(name);
+        // Never watch our own uinput device (sending KEY_HOMEPAGE would self-trigger HomePress in an infinite loop)
+        if (sname.find("OpenStation Virtual Remote") != std::string::npos) {
+            ::close(fd);
+            continue;
+        }
         DevRole role;
         bool match = false;
         if (sname.find("gpio_keypad") != std::string::npos) {
@@ -68,10 +83,20 @@ void InputMonitor::scan_devices() {
                 hp_plugged_.store(inserted);
                 LOGI("InputMonitor", "Initial 3.5mm jack state: %s", inserted ? "plugged" : "unplugged");
             }
+        } else if (sname.find("Remote") != std::string::npos ||
+                   sname.find("remote") != std::string::npos ||
+                   sname.find("YNDX") != std::string::npos ||
+                   sname.find("cec") != std::string::npos ||
+                   sname.find("meson-ir") != std::string::npos ||
+                   sname.find("amlogic_ir") != std::string::npos ||
+                   sname.find("Bluetooth") != std::string::npos ||
+                   sname.find("keypad") != std::string::npos) {
+            role = DevRole::RemoteControl;
+            match = true;
         }
 
         if (match) {
-            LOGI("InputMonitor", "Watching %s (%s)", path.c_str(), sname.c_str());
+            LOGI("InputMonitor", "Watching %s (%s, role=%d)", path.c_str(), sname.c_str(), static_cast<int>(role));
             fds_.push_back(WatchedFd{fd, role, sname, path});
         } else {
             ::close(fd);
@@ -113,8 +138,15 @@ void InputMonitor::poll_loop() {
     int mute_tap_count = 0;
     clock::time_point last_mute_tap_tp;
     bool mute_tap_pending = false;
+    clock::time_point last_home_press_tp{};
+    clock::time_point last_rescan_tp = clock::now();
 
     while (running_.load()) {
+        auto now = clock::now();
+        if (now - last_rescan_tp >= std::chrono::milliseconds(2500)) {
+            scan_devices();
+            last_rescan_tp = now;
+        }
         std::vector<struct pollfd> pfds;
         pfds.reserve(fds_.size());
         for (const auto& w : fds_) {
@@ -124,7 +156,7 @@ void InputMonitor::poll_loop() {
             pfds.push_back(pfd);
         }
         int ret = pfds.empty() ? (usleep(100000), 0) : poll(pfds.data(), pfds.size(), 100);
-        auto now = clock::now();
+        now = clock::now();
 
         if (action_down && !action_long_fired &&
             now - action_down_tp >= std::chrono::milliseconds(800)) {
@@ -227,6 +259,15 @@ void InputMonitor::poll_loop() {
                     hp_plugged_.store(plugged);
                     LOGI("InputMonitor", "3.5mm jack state -> %s", plugged ? "plugged" : "unplugged");
                     if (cb_) cb_(plugged ? HwEventType::JackPlugged : HwEventType::JackUnplugged);
+                } else if (fds_[i].role == DevRole::RemoteControl && ev.type == EV_KEY && ev.value == 1) {
+                    if (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377) {
+                        auto hnow = clock::now();
+                        if (hnow - last_home_press_tp >= std::chrono::milliseconds(350)) {
+                            last_home_press_tp = hnow;
+                            LOGI("InputMonitor", "Remote Home/Exit key detected (%d on %s) -> HomePress", ev.code, fds_[i].name.c_str());
+                            if (cb_) cb_(HwEventType::HomePress);
+                        }
+                    }
                 }
             }
         }

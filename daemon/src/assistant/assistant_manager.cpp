@@ -682,12 +682,24 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "- Блютуз (bluetooth_control): на команды «включи блютуз», «включить блютуз», «подключи телефон по блютуз», «режим блютуз», «вруби блютуз» "
               "ВСЕГДА сразу вызывай bluetooth_control(action=\"discoverable\"). Колонка станет видимой на телефоне как OpenStation Max, и пользователь сможет "
               "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
+              "- Поиск пульта (find_remote): если пользователь просит найти пульт («где пульт», «найди пульт», «попищи пультом»), сразу вызывай find_remote().\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
               "- Ты — полноценный ИИ-агент колонки: можешь менять свой голос (set_assistant_voice — при запросе поменять голос сразу вызывай инструмент, сессия мгновенно переключится на новый голос), "
               "менять стили часов и визуализатора (set_styles), детально настраивать 10-полосный эквалайзер и бас (set_eq_preset), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
-              "Не отказывайся от задач, если их можно безопасно выполнить через разрешённые инструменты.";
+              "- Адаптивный режим диалога: если пользователь дал конкретную команду (включить/переключить музыку, изменить громкость, включить/выключить блютуз, установить таймер или будильник, выключить ТВ, открыть приложение): "
+              "сначала обязательно вызови инструмент, затем кратко и естественно подтверди голосом (например: «Включаю», «Сделала», «Таймер на 5 минут запущен») и НЕ задавай лишних вопросов — сессия микрофона автоматически завершится сама. "
+              "Если же пользователь просто разговаривает, задаёт вопросы, рассуждает или просит что-то рассказать — отвечай развёрнуто, поддерживай беседу и продолжай живой диалог.\n"
+              "- Визуализация задач на экранчике (draw_led_icon): при выполнении команды автоматически или через draw_led_icon выводи на передний LED-экранчик станции подходящую иконку "
+              "(например: youtube при запуске YouTube/SmartTube, music при музыке, telegram при Telegram, timer при таймере, search/browser при поиске, eq при эквалайзере, terminal при системных командах), после чего экран плавно вернётся к обычному виду.\n";
+        if (c.agent_mode) {
+            sp += "- РЕЖИМ АГЕНТА АКТИВЕН (ПОЛНЫЙ ADB И ROOT-ДОСТУП): ты — автономный системный агент OpenStation Max с полным доступом к ОС Linux/Android и ADB через инструменты adb_exec и shell_exec! "
+                  "Ты можешь выполнять любые ADB/shell команды на станции (settings, pm, am, dumpsys, input, wm, service call, просмотр логов, настройка сервисов, файлов и автоматизации) для решения любых задач пользователя. "
+                  "Бережно обходись с критичными разделами (/dev/block) и не удаляй саму прошивку без явной просьбы. "
+                  "Перед сложной системной задачей кратко скажи что делаешь и выведи terminal/apps на экранчик.\n";
+        }
+        sp += "- Не отказывайся от задач, если их можно безопасно выполнить через разрешённые инструменты.";
         if (cb_.get_runtime_context) {
             std::string rt = cb_.get_runtime_context();
             if (!rt.empty()) {
@@ -854,7 +866,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     {
         Value p = Value::make_obj();
         p["clock_style"] = make_enum_prop("Clock display style on LED matrix and TV", {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"});
-        p["visualizer_style"] = make_enum_prop("Music visualizer style (TV orb morph + front LED matrix)", {"nexus", "specterr", "aurora", "bars", "wave", "fireflies", "matrix", "particles", "anomaly"});
+        p["visualizer_style"] = make_enum_prop("Music visualizer style (TV orb morph + front LED matrix)", {"dots", "nexus", "specterr", "aurora", "bars", "wave", "fireflies", "matrix", "particles", "anomaly"});
         p["auto_music_visualizer"] = make_prop("BOOLEAN", "Auto morph TV orb & LED display into visualizer when music plays");
         p["screen_color"] = make_prop("STRING", "Optional LED screen clock hex color like #00d4ff or #ffffff");
         decls.push(make_func_decl(
@@ -1026,6 +1038,16 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 
     {
         Value p = Value::make_obj();
+        decls.push(make_func_decl(
+            "find_remote",
+            "Ring/beep the physical BLE Yandex TV remote buzzer so the user can locate it in the room.",
+            std::move(p),
+            {},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
         p["text"] = make_prop("STRING", "Text (Russian/English) to type into the currently focused TV input field");
         p["press_enter"] = make_prop("BOOLEAN", "Press Enter/OK after typing (default false)");
         decls.push(make_func_decl(
@@ -1077,6 +1099,48 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
             std::move(p),
             {"topic", "payload"},
             nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["icon"] = make_enum_prop(
+            "Task icon to display smoothly on the 25x16 front LED matrix",
+            {"youtube", "music", "telegram", "browser", "search", "tv", "eq", "timer",
+             "apps", "settings", "terminal", "heart", "star", "check", "custom"});
+        p["color"] = make_prop("STRING", "Optional accent hex color like #ff2030 or #00d4ff");
+        p["duration_ms"] = make_prop("INTEGER", "Display duration in ms (1200..15000, default 5500)");
+        p["pixels"] = make_prop("STRING", "Optional custom 25x16 pixel grid separated by '|' or '\\n' using '.', 'r','g','b','c','y','w' when icon='custom'");
+        decls.push(make_func_decl(
+            "draw_led_icon",
+            "Display an animated pixel icon or custom 25x16 picture on the front LED screen matching the executed task (e.g. youtube logo, music, telegram, timer, terminal).",
+            std::move(p),
+            {"icon"},
+            nb));
+    }
+
+    if (c.agent_mode) {
+        {
+            Value p = Value::make_obj();
+            p["command"] = make_prop("STRING", "Shell or root command to execute on Station Max (/system/bin/sh -c)");
+            p["timeout_sec"] = make_prop("INTEGER", "Execution timeout in seconds (1..30, default 10)");
+            decls.push(make_func_decl(
+                "shell_exec",
+                "Execute any root Linux/Android shell command on the speaker and return exitCode + stdout/stderr (available only in Agent Mode).",
+                std::move(p),
+                {"command"},
+                nb));
+        }
+        {
+            Value p = Value::make_obj();
+            p["command"] = make_prop("STRING", "ADB command (e.g. 'adb shell settings list system', 'am start ...', 'pm list packages', 'dumpsys audio', 'input keyevent 3', 'logcat -d -t 50')");
+            p["timeout_sec"] = make_prop("INTEGER", "Execution timeout in seconds (1..30, default 12)");
+            decls.push(make_func_decl(
+                "adb_exec",
+                "Run any ADB / Android TV system management command on this Station Max (available only in Agent Mode).",
+                std::move(p),
+                {"command"},
+                nb));
+        }
     }
 
     decls.push(make_func_decl(
@@ -1809,6 +1873,7 @@ json::Value AssistantManager::get_status_json() {
     obj["proxyHost"] = Value::make_str(c.gemini_proxy_host);
     obj["proxyActive"] = Value::make_bool(use_proxy_host_.load() && !c.gemini_proxy_host.empty());
     obj["hasApiKey"] = Value::make_bool(!c.gemini_api_key.empty());
+    obj["agentMode"] = Value::make_bool(c.agent_mode);
 
     Value hist = Value::make_arr();
     {

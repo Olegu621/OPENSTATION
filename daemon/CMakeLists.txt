@@ -80,3 +80,28 @@ target_link_libraries(openstationd PRIVATE
     dl
     m
 )
+
+add_executable(openstation_bootlogod
+    bootlogod/bootlogod.cpp
+)
+
+set_target_properties(openstation_bootlogod PROPERTIES
+    OUTPUT_NAME "bootlogod"
+)
+
+target_compile_options(openstation_bootlogod PRIVATE
+    -O2
+    -Wall
+    -Wextra
+    -ffunction-sections
+    -fdata-sections
+)
+
+target_link_options(openstation_bootlogod PRIVATE
+    -static
+    -Wl,--gc-sections
+)
+
+target_link_libraries(openstation_bootlogod PRIVATE
+    m
+)

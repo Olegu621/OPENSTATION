@@ -16,7 +16,8 @@ enum class HwEventType {
     ActionLong,
     JackPlugged,
     JackUnplugged,
-    BluetoothToggle
+    BluetoothToggle,
+    HomePress
 };
 
 class InputMonitor {
@@ -32,7 +33,7 @@ public:
     bool headphone_plugged() const { return hp_plugged_.load(); }
 
 private:
-    enum class DevRole { Keypad, Rotary, HeadphoneJack };
+    enum class DevRole { Keypad, Rotary, HeadphoneJack, RemoteControl };
     struct WatchedFd {
         int fd = -1;
         DevRole role;

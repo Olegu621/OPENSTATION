@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
@@ -35,6 +36,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/system_properties.h>
 #include <sys/types.h>
@@ -45,7 +47,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.3.6";
+constexpr const char* kFirmwareVersion = "1.5.0";
 
 std::atomic<bool> g_stop{false};
 
@@ -349,7 +351,7 @@ bool is_valid_clock_style(const std::string& s) {
 }
 
 bool is_valid_visualizer_style(const std::string& s) {
-    return s == "nexus" || s == "specterr" || s == "anomaly" ||
+    return s == "dots" || s == "nexus" || s == "specterr" || s == "anomaly" ||
            s == "aurora" || s == "bars" || s == "wave" ||
            s == "fireflies" || s == "matrix" || s == "particles";
 }
@@ -492,8 +494,12 @@ struct ShellResult {
     std::string output;
 };
 
-ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, size_t max_bytes = 8192) {
+ShellResult run_argv_with_timeout(const std::vector<std::string>& args, int timeout_sec, size_t max_bytes = 8192) {
     ShellResult sr;
+    if (args.empty()) {
+        sr.output = "empty argv";
+        return sr;
+    }
     int pipefd[2] = {-1, -1};
     if (pipe(pipefd) != 0) {
         sr.output = std::string("pipe() failed: ") + strerror(errno);
@@ -519,7 +525,11 @@ ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, 
         dup2(pipefd[1], STDERR_FILENO);
         ::close(pipefd[0]);
         ::close(pipefd[1]);
-        execl("/system/bin/sh", "sh", "-c", command.c_str(), nullptr);
+        std::vector<char*> c_args;
+        c_args.reserve(args.size() + 1);
+        for (const auto& s : args) c_args.push_back(const_cast<char*>(s.c_str()));
+        c_args.push_back(nullptr);
+        execvp(c_args[0], c_args.data());
         _exit(127);
     }
 
@@ -527,7 +537,7 @@ ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, 
     int fl = fcntl(pipefd[0], F_GETFL, 0);
     if (fl >= 0) fcntl(pipefd[0], F_SETFL, fl | O_NONBLOCK);
 
-    int tsec = std::clamp(timeout_sec, 1, 30);
+    int tsec = std::clamp(timeout_sec, 1, 120);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(tsec);
     std::string raw;
     raw.reserve(4096);
@@ -583,6 +593,10 @@ ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, 
     sr.output = openstation::ensure_utf8_and_truncate(raw, max_bytes);
     if (truncated) sr.output += "\n...[truncated]";
     return sr;
+}
+
+ShellResult run_shell_with_timeout(const std::string& command, int timeout_sec, size_t max_bytes = 8192) {
+    return run_argv_with_timeout({"/system/bin/sh", "-c", command}, std::clamp(timeout_sec, 1, 30), max_bytes);
 }
 
 bool ensure_hardvol_passthrough_active(openstation::AlsaMixer& mixer) {
@@ -1169,12 +1183,9 @@ int main(int argc, char** argv) {
                 bcmd["name"] = json::Value::make_str("OpenStation Max");
                 send_udp_json(8086, bcmd.dump(-1));
             }
-            leds.trigger_screen_text("BT", 0, 180, 255, 6000);
-            leds.trigger_flash(0, 140, 255, 1200);
-
-            audio.play_test_tone(587, 120);
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            audio.play_test_tone(880, 220);
+            leds.trigger_bluetooth_visual(discoverable ? "discoverable" : "connected", discoverable ? 12000 : 5000);
+            leds.trigger_flash(0, 185, 255, 1100);
+            audio.play_bt_chime(discoverable ? "discoverable" : "connected");
         } else {
             LOGI("Main", "Disabling Bluetooth...");
             spawn_detached({"/system/bin/cmd", "bluetooth_manager", "disable"});
@@ -1187,17 +1198,32 @@ int main(int argc, char** argv) {
                 bcmd["action"] = json::Value::make_str("disable");
                 send_udp_json(8086, bcmd.dump(-1));
             }
-            leds.trigger_screen_text("BT OFF", 255, 100, 100, 3000);
-            leds.trigger_flash(255, 80, 80, 800);
-            audio.play_test_tone(880, 120);
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            audio.play_test_tone(587, 220);
+            leds.trigger_bluetooth_visual("off", 3500);
+            leds.trigger_flash(255, 85, 85, 800);
+            audio.play_bt_chime("off");
         }
     };
 
     auto toggle_bluetooth_mode = [&]() {
         bool current = bluetooth_enabled.load();
         apply_bluetooth_mode(!current, !current, 300);
+    };
+
+    auto trigger_go_home = [&]() {
+        LOGI("Main", "Returning to Home screen (Alice orb)...");
+        if (is_udp_port_bound(8086)) {
+            json::Value hcmd = json::Value::make_obj();
+            hcmd["cmd"] = json::Value::make_str("go_home");
+            send_udp_json(8086, hcmd.dump(-1));
+        }
+        uinput.send_android_action("home");
+        spawn_detached({
+            "/system/bin/am", "start",
+            "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.HOME",
+            "-n", "com.openstation.launcher/.MainActivity",
+            "--ez", "go_home", "true"
+        });
     };
 
     for (int attempt = 0; attempt < 5 && !g_stop.load(); ++attempt) {
@@ -1517,6 +1543,7 @@ int main(int argc, char** argv) {
                 vcmd["cmd"] = json::Value::make_str("volume_set");
                 vcmd["percent"] = json::Value::make_int(clamped);
                 vcmd["showUi"] = json::Value::make_bool(false);
+                vcmd["showOsd"] = json::Value::make_bool(show_osd);
                 sent_udp = send_udp_json(8086, vcmd.dump(-1));
                 last_daemon_vol_cmd_ms.store(steady_ms_now());
             }
@@ -1557,6 +1584,7 @@ int main(int argc, char** argv) {
                 vcmd["cmd"] = json::Value::make_str("volume_set");
                 vcmd["percent"] = json::Value::make_int(clamped);
                 vcmd["showUi"] = json::Value::make_bool(false);
+                vcmd["showOsd"] = json::Value::make_bool(show_osd);
                 sent_udp = send_udp_json(8086, vcmd.dump(-1));
                 last_daemon_vol_cmd_ms.store(steady_ms_now());
             }
@@ -1605,6 +1633,7 @@ int main(int argc, char** argv) {
                         vcmd["dir"] = json::Value::make_int(up ? 1 : -1);
                         vcmd["steps"] = json::Value::make_int(steps);
                         vcmd["showUi"] = json::Value::make_bool(false);
+                        vcmd["showOsd"] = json::Value::make_bool(true);
                         sent_udp = send_udp_json(8086, vcmd.dump(-1));
                         last_daemon_vol_cmd_ms.store(steady_ms_now());
                     }
@@ -1678,8 +1707,13 @@ int main(int argc, char** argv) {
                     leds.trigger_flash(124, 58, 237, 250);
                     save_cfg(next_c);
                 } else if (act == "launcher") {
-                    uinput.send_android_action("home");
+                    trigger_go_home();
                 }
+                break;
+            }
+            case HwEventType::HomePress: {
+                trigger_go_home();
+                leds.trigger_flash(0, 212, 255, 220);
                 break;
             }
             case HwEventType::JackPlugged:
@@ -1790,6 +1824,62 @@ int main(int argc, char** argv) {
                contains_case_insensitive(q, "яндекс") ||
                contains_case_insensitive(q, "музык") ||
                contains_case_insensitive(q, "xlam");
+    };
+
+    auto trigger_task_icon_for_app = [&](const std::string& pkg, const std::string& label) {
+        std::string combined = pkg + " " + label;
+        if (contains_case_insensitive(combined, "youtube") ||
+            contains_case_insensitive(combined, "smarttube") ||
+            contains_case_insensitive(combined, "tubenext") ||
+            contains_case_insensitive(combined, "vanced")) {
+            leds.trigger_task_icon("youtube", 255, 42, 42, 6000);
+        } else if (contains_case_insensitive(combined, "telegram")) {
+            leds.trigger_task_icon("telegram", 38, 178, 255, 6000);
+        } else if (contains_case_insensitive(combined, "music") ||
+                   contains_case_insensitive(combined, "музык") ||
+                   contains_case_insensitive(combined, "spotify") ||
+                   contains_case_insensitive(combined, "zvuk") ||
+                   contains_case_insensitive(combined, "звук")) {
+            leds.trigger_task_icon("music", 255, 200, 48, 5600);
+        } else if (contains_case_insensitive(combined, "browser") ||
+                   contains_case_insensitive(combined, "chrome") ||
+                   contains_case_insensitive(combined, "tvbro") ||
+                   contains_case_insensitive(combined, "firefox") ||
+                   contains_case_insensitive(combined, "браузер")) {
+            leds.trigger_task_icon("browser", 56, 208, 255, 5600);
+        } else if (contains_case_insensitive(combined, "kinopoisk") ||
+                   contains_case_insensitive(combined, "wink") ||
+                   contains_case_insensitive(combined, "okko") ||
+                   contains_case_insensitive(combined, "ivi") ||
+                   contains_case_insensitive(combined, "kion") ||
+                   contains_case_insensitive(combined, "plex") ||
+                   contains_case_insensitive(combined, "kodi") ||
+                   contains_case_insensitive(combined, "lampa") ||
+                   contains_case_insensitive(combined, "rutube") ||
+                   contains_case_insensitive(combined, "vk") ||
+                   contains_case_insensitive(combined, "netflix") ||
+                   contains_case_insensitive(combined, "tv")) {
+            leds.trigger_task_icon("tv", 170, 130, 255, 5800);
+        } else if (contains_case_insensitive(combined, "settings") ||
+                   contains_case_insensitive(combined, "настрой")) {
+            leds.trigger_task_icon("settings", 232, 198, 134, 5200);
+        } else {
+            leds.trigger_task_icon("apps", 76, 214, 255, 5200);
+        }
+    };
+
+    auto is_startup_shown_flag = [&]() -> bool {
+        struct stat st{};
+        return ::stat("/dev/.openstation_startup_shown", &st) == 0;
+    };
+
+    auto mark_startup_shown_flag = [&]() {
+        int fd = ::open("/dev/.openstation_startup_shown", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            static const char kOne[] = "1\n";
+            (void)::write(fd, kOne, sizeof(kOne) - 1);
+            ::close(fd);
+        }
     };
 
     auto resolve_app_pkg = [&](const std::string& q, std::string& out_pkg, std::string& out_label) {
@@ -1920,6 +2010,7 @@ int main(int argc, char** argv) {
         if (name == "web_search") {
             std::string query = args.get("query") ? args.get("query")->as_str() : "";
             int count = args.get("count") ? args.get("count")->as_int(5) : 5;
+            leds.trigger_task_icon("search", 70, 210, 255, 5000);
             return tool_web_search(query, count, &g_stop);
         }
 
@@ -1972,6 +2063,7 @@ int main(int argc, char** argv) {
             std::string url = args.get("url") ? args.get("url")->as_str() : "";
             bool raw = args.get("raw") ? args.get("raw")->as_bool(false) : false;
             int max_chars = args.get("max_chars") ? args.get("max_chars")->as_int(6000) : 6000;
+            leds.trigger_task_icon("browser", 70, 210, 255, 4500);
             return tool_fetch_url(url, raw, max_chars, &g_stop);
         }
 
@@ -2091,8 +2183,126 @@ int main(int argc, char** argv) {
         }
 
         if (name == "shell_exec") {
-            res["ok"] = Value::make_bool(false);
-            res["error"] = Value::make_str("shell_exec is disabled; arbitrary root commands are not accepted from assistant tools");
+            bool agent_on = false;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                agent_on = cfg.assistant.agent_mode;
+            }
+            if (!agent_on) {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str(
+                    "Режим Агента выключен. Включите «Режим Агента (ADB и система)» в веб-интерфейсе на вкладке «Алиса».");
+                return res;
+            }
+            std::string command = args.get("command") ? args.get("command")->as_str()
+                                                      : (args.get("cmd") ? args.get("cmd")->as_str() : "");
+            command = trim_ws_copy(command);
+            if (command.empty()) {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str("command is required");
+                return res;
+            }
+            int timeout_sec = args.get("timeout_sec") ? std::clamp(args.get("timeout_sec")->as_int(12), 1, 60) : 12;
+            leds.trigger_task_icon("terminal", 72, 240, 165, 5500);
+            LOGI("agent", "shell_exec (timeout=%ds): %s", timeout_sec, command.c_str());
+            ShellResult sr = run_shell_with_timeout(command, timeout_sec, 16384);
+            res["ok"] = Value::make_bool(!sr.timed_out && sr.exit_code == 0);
+            res["exitCode"] = Value::make_int(sr.exit_code);
+            res["timedOut"] = Value::make_bool(sr.timed_out);
+            res["command"] = Value::make_str(command);
+            res["output"] = Value::make_str(sr.output);
+            return res;
+        }
+
+        if (name == "adb_exec") {
+            bool agent_on = false;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                agent_on = cfg.assistant.agent_mode;
+            }
+            if (!agent_on) {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str(
+                    "Режим Агента выключен. Включите «Режим Агента (ADB и система)» в веб-интерфейсе на вкладке «Алиса».");
+                return res;
+            }
+            std::string raw_cmd = args.get("command") ? args.get("command")->as_str()
+                                                      : (args.get("cmd") ? args.get("cmd")->as_str() : "");
+            std::string cmd = trim_ws_copy(raw_cmd);
+            if (cmd.empty()) {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str("command is required");
+                return res;
+            }
+            int timeout_sec = args.get("timeout_sec") ? std::clamp(args.get("timeout_sec")->as_int(15), 1, 60) : 15;
+            if (cmd.rfind("adb ", 0) == 0 || cmd == "adb") {
+                cmd = trim_ws_copy(cmd.size() > 3 ? cmd.substr(4) : "");
+                if (cmd.rfind("-s ", 0) == 0) {
+                    size_t sp = cmd.find(' ', 3);
+                    cmd = (sp != std::string::npos) ? trim_ws_copy(cmd.substr(sp + 1)) : "";
+                } else if (cmd.rfind("-d ", 0) == 0 || cmd.rfind("-e ", 0) == 0) {
+                    cmd = trim_ws_copy(cmd.substr(3));
+                }
+            }
+            leds.trigger_task_icon("terminal", 72, 240, 165, 5500);
+            if (cmd == "devices" || cmd == "devices -l") {
+                res["ok"] = Value::make_bool(true);
+                res["exitCode"] = Value::make_int(0);
+                res["command"] = Value::make_str(raw_cmd);
+                res["output"] = Value::make_str("List of devices attached\nlocalhost:5555\tdevice product:yandexstation_2\n");
+                return res;
+            }
+            std::string exec_cmd;
+            if (cmd == "shell") {
+                res["ok"] = Value::make_bool(true);
+                res["exitCode"] = Value::make_int(0);
+                res["output"] = Value::make_str("root@yandexstation_2 (uid=0, adbd active on tcp:5555)");
+                return res;
+            } else if (cmd.rfind("shell ", 0) == 0) {
+                exec_cmd = trim_ws_copy(cmd.substr(6));
+            } else if (cmd.rfind("install ", 0) == 0) {
+                exec_cmd = "/system/bin/pm install " + trim_ws_copy(cmd.substr(8));
+            } else if (cmd.rfind("uninstall ", 0) == 0) {
+                exec_cmd = "/system/bin/pm uninstall " + trim_ws_copy(cmd.substr(10));
+            } else if (cmd == "reboot" || cmd.rfind("reboot ", 0) == 0) {
+                exec_cmd = "/system/bin/reboot" + (cmd.size() > 6 ? cmd.substr(6) : "");
+            } else if (cmd == "logcat" || cmd.rfind("logcat ", 0) == 0) {
+                exec_cmd = "/system/bin/logcat" + (cmd.size() > 6 ? cmd.substr(6) : " -d -t 80");
+            } else {
+                exec_cmd = cmd;
+            }
+            LOGI("agent", "adb_exec (timeout=%ds): %s", timeout_sec, exec_cmd.c_str());
+            ShellResult sr = run_shell_with_timeout(exec_cmd, timeout_sec, 16384);
+            res["ok"] = Value::make_bool(!sr.timed_out && sr.exit_code == 0);
+            res["exitCode"] = Value::make_int(sr.exit_code);
+            res["timedOut"] = Value::make_bool(sr.timed_out);
+            res["command"] = Value::make_str(exec_cmd);
+            res["output"] = Value::make_str(sr.output);
+            return res;
+        }
+
+        if (name == "draw_led_icon") {
+            std::string icon = args.get("icon") ? args.get("icon")->as_str("star") : "star";
+            std::string col = args.get("color") ? args.get("color")->as_str() : "";
+            std::string pixels = args.get("pixels") ? args.get("pixels")->as_str() : "";
+            int duration_ms = args.get("duration_ms") ? std::clamp(args.get("duration_ms")->as_int(5500), 1200, 15000) : 5500;
+            uint8_t r = 0, g = 220, b = 255;
+            if (icon == "youtube") { r = 255; g = 42; b = 42; }
+            else if (icon == "music") { r = 255; g = 200; b = 48; }
+            else if (icon == "telegram") { r = 38; g = 178; b = 255; }
+            else if (icon == "browser" || icon == "search") { r = 56; g = 208; b = 255; }
+            else if (icon == "tv") { r = 170; g = 130; b = 255; }
+            else if (icon == "eq") { r = 86; g = 220; b = 255; }
+            else if (icon == "timer") { r = 255; g = 185; b = 64; }
+            else if (icon == "terminal") { r = 72; g = 240; b = 165; }
+            else if (icon == "heart") { r = 255; g = 72; b = 110; }
+            else if (icon == "star" || icon == "settings") { r = 232; g = 198; b = 134; }
+            else if (icon == "check") { r = 72; g = 238; b = 145; }
+            if (!col.empty()) parse_hex_rgb(col, r, g, b);
+            leds.trigger_task_icon(icon, r, g, b, duration_ms, pixels);
+            res["ok"] = Value::make_bool(true);
+            res["icon"] = Value::make_str(icon);
+            res["durationMs"] = Value::make_int(duration_ms);
             return res;
         }
 
@@ -2147,6 +2357,7 @@ int main(int argc, char** argv) {
                     uinput.send_key(113); // KEY_MUTE
                     res["ok"] = Value::make_bool(true);
                     res["action"] = Value::make_str("mute");
+                    res["stopSession"] = Value::make_bool(true);
                     return res;
                 }
                 if (d == "up" || d == "down") {
@@ -2156,6 +2367,7 @@ int main(int argc, char** argv) {
                     int next_p = step_android_volume_pct(up ? dpct : -dpct, true);
                     res["ok"] = Value::make_bool(true);
                     res["volumePercent"] = Value::make_int(next_p);
+                    res["stopSession"] = Value::make_bool(true);
                     return res;
                 }
             }
@@ -2193,6 +2405,7 @@ int main(int argc, char** argv) {
                     res["ok"] = Value::make_bool(true);
                     res["volumePercent"] = Value::make_int(applied);
                 }
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             res["ok"] = Value::make_bool(false);
@@ -2272,6 +2485,7 @@ int main(int argc, char** argv) {
             push_eq_to_launcher(c);
             push_style_sync_to_launcher(c);
             save_cfg(c);
+            leds.trigger_task_icon("eq", 86, 220, 255, 4800);
             res["ok"] = Value::make_bool(true);
             res["preset"] = Value::make_str(c.audio.eq_preset);
             res["bassBoost"] = Value::make_int(c.audio.bass_boost);
@@ -2282,6 +2496,7 @@ int main(int argc, char** argv) {
             }
             res["wooferEq"] = Value::make_bool(c.audio.woofer_eq);
             res["tweetersEq"] = Value::make_bool(c.audio.tweeters_eq);
+            res["stopSession"] = Value::make_bool(true);
             return res;
         }
 
@@ -2355,6 +2570,7 @@ int main(int argc, char** argv) {
             res["autoMusicVisualizer"] = Value::make_bool(c.led_screen.auto_music_visualizer);
             res["screenColor"] = Value::make_str(c.led_screen.color);
             res["screenMode"] = Value::make_str(c.led_screen.mode);
+            res["stopSession"] = Value::make_bool(true);
             return res;
         }
 
@@ -2490,12 +2706,14 @@ int main(int argc, char** argv) {
                 res["ok"] = Value::make_bool(true);
                 res["status"] = Value::make_str("discoverable");
                 res["message"] = Value::make_str("Режим Bluetooth включён. Колонка видна для подключения как OpenStation Max.");
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             } else if (act == "disable" || act == "off") {
                 apply_bluetooth_mode(false, false, 0);
                 res["ok"] = Value::make_bool(true);
                 res["status"] = Value::make_str("disabled");
                 res["message"] = Value::make_str("Bluetooth выключен.");
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             } else if (act == "toggle") {
                 toggle_bluetooth_mode();
@@ -2503,6 +2721,7 @@ int main(int argc, char** argv) {
                 res["ok"] = Value::make_bool(true);
                 res["status"] = Value::make_str(now_on ? "discoverable" : "disabled");
                 res["message"] = Value::make_str(now_on ? "Bluetooth включён" : "Bluetooth выключен");
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             } else {
                 res["ok"] = Value::make_bool(true);
@@ -2674,19 +2893,23 @@ int main(int argc, char** argv) {
                 std::string label = args.get("label") ? args.get("label")->as_str() : "";
                 int id = timers.set_timer(sec, label);
                 leds.trigger_flash(255, 165, 0, 500);
+                leds.trigger_task_icon("timer", 255, 185, 64, 5200);
                 res["ok"] = Value::make_bool(true);
                 res["id"] = Value::make_int(id);
                 res["seconds"] = Value::make_int(sec);
                 if (!label.empty()) res["label"] = Value::make_str(label);
                 res["activeTimers"] = timers.list_timers_json();
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             if (act == "cancel") {
                 std::string target = args.get("target") ? args.get("target")->as_str() : "";
                 int removed = timers.cancel_timer(target);
+                if (removed > 0) leds.trigger_task_icon("check", 72, 238, 145, 3600);
                 res["ok"] = Value::make_bool(removed > 0);
                 res["removed"] = Value::make_int(removed);
                 res["activeTimers"] = timers.list_timers_json();
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             res["ok"] = Value::make_bool(true);
@@ -2704,12 +2927,14 @@ int main(int argc, char** argv) {
             }
             exec_hdmi_cec_action(act);
             if (act == "wake") uinput.send_key(143); // KEY_WAKEUP
+            leds.trigger_task_icon("tv", 110, 210, 255, 4500);
             json::Value payload = json::Value::make_obj();
             payload["cmd"] = Value::make_str("cec");
             payload["action"] = Value::make_str(act);
             send_udp_json(8086, payload.dump(-1));
             res["ok"] = Value::make_bool(true);
             res["action"] = Value::make_str(act);
+            res["stopSession"] = Value::make_bool(true);
             return res;
         }
 
@@ -2719,12 +2944,37 @@ int main(int argc, char** argv) {
             bool ok = false;
             for (int r = 0; r < repeat; ++r) {
                 if (r > 0) usleep(45000);
-                ok = uinput.send_android_action(act);
+                if (act == "home") {
+                    trigger_go_home();
+                    ok = true;
+                } else {
+                    ok = uinput.send_android_action(act);
+                }
                 if (!ok) break;
+            }
+            if (ok) {
+                if (act == "home") leds.trigger_task_icon("apps", 232, 198, 134, 3600);
+                else if (act == "play_pause" || act == "next" || act == "prev" || act == "previous") {
+                    leds.trigger_task_icon("music", 255, 200, 56, 3600);
+                }
             }
             res["ok"] = Value::make_bool(ok);
             res["action"] = Value::make_str(act);
             res["repeat"] = Value::make_int(repeat);
+            res["stopSession"] = Value::make_bool(true);
+            return res;
+        }
+
+        if (name == "find_remote") {
+            json::Value payload = Value::make_obj();
+            payload["cmd"] = Value::make_str("find_remote");
+            bool sent = send_udp_json(8086, payload.dump(-1));
+            leds.trigger_flash(232, 198, 134, 2400);
+            leds.trigger_screen_text("ПУЛЬТ!", 232, 198, 134, 4500);
+            res["ok"] = Value::make_bool(sent);
+            res["message"] = Value::make_str(sent ? "Отправила сигнал поиска на BLE-пульт — он зазвенит."
+                                                  : "Не удалось связаться с BLE-сервисом пульта.");
+            res["stopSession"] = Value::make_bool(true);
             return res;
         }
 
@@ -2744,6 +2994,7 @@ int main(int argc, char** argv) {
             res["ok"] = Value::make_bool(true);
             res["typed"] = Value::make_str(txt);
             res["pressEnter"] = Value::make_bool(press_enter);
+            res["stopSession"] = Value::make_bool(true);
             return res;
         }
 
@@ -2752,6 +3003,14 @@ int main(int argc, char** argv) {
             std::string query = args.get("query") ? args.get("query")->as_str() : "";
             std::string mood = args.get("mood") ? args.get("mood")->as_str("any") : "any";
             bool open_ui = args.get("open_ui") ? args.get("open_ui")->as_bool(false) : false;
+
+            if (act == "like") {
+                leds.trigger_task_icon("heart", 255, 72, 110, 4800);
+            } else if (act == "open" || act == "play_my_wave" || act == "play_query" ||
+                       act == "play_liked" || act == "play" || act == "play_pause" ||
+                       act == "next" || act == "prev" || act == "previous") {
+                leds.trigger_task_icon("music", 255, 200, 48, 5500);
+            }
 
             if (act == "open") {
                 bool udp_ok = ensure_launcher_service_udp(8086);
@@ -2765,6 +3024,7 @@ int main(int argc, char** argv) {
                 res["ok"] = Value::make_bool(true);
                 res["action"] = Value::make_str("open");
                 res["music"] = get_music_json();
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
 
@@ -2850,6 +3110,9 @@ int main(int argc, char** argv) {
                 }
                 if (!cur.codec_label.empty()) res["codec"] = Value::make_str(cur.codec_label);
                 if (has_err) res["error"] = Value::make_str(err_clean);
+                if (!auth_req) {
+                    res["stopSession"] = Value::make_bool(true);
+                }
                 return res;
             }
 
@@ -2937,6 +3200,8 @@ int main(int argc, char** argv) {
                 if (auth_req) {
                     res["authRequired"] = Value::make_bool(true);
                     res["error"] = Value::make_str(snap.error);
+                } else {
+                    res["stopSession"] = Value::make_bool(true);
                 }
                 return res;
             } else if (!uinput_act.empty()) {
@@ -2944,6 +3209,7 @@ int main(int argc, char** argv) {
                 res["ok"] = Value::make_bool(ok);
                 res["backend"] = Value::make_str("uinput");
                 res["action"] = Value::make_str(act);
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             res["ok"] = Value::make_bool(false);
@@ -2974,8 +3240,10 @@ int main(int argc, char** argv) {
                     "-a", "android.intent.action.VIEW",
                     "-d", url
                 });
+                if (spawned) leds.trigger_task_icon("browser", 56, 208, 255, 5600);
                 res["ok"] = Value::make_bool(spawned);
                 res["url"] = Value::make_str(url);
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             std::string q = args.get("app") ? args.get("app")->as_str() : "";
@@ -2992,8 +3260,10 @@ int main(int argc, char** argv) {
                     if (!is_udp_port_bound(8086)) {
                         spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity"});
                     }
+                    leds.trigger_task_icon("music", 255, 200, 48, 5600);
                     res["ok"] = Value::make_bool(true);
                     res["label"] = Value::make_str("Яндекс Музыка · Моя волна");
+                    res["stopSession"] = Value::make_bool(true);
                     return res;
                 }
                 std::string pkg, matched_label;
@@ -3015,9 +3285,11 @@ int main(int argc, char** argv) {
                         "1"
                     });
                 }
+                trigger_task_icon_for_app(pkg, matched_label);
                 res["ok"] = Value::make_bool(true);
                 res["package"] = Value::make_str(pkg);
                 res["label"] = Value::make_str(matched_label);
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             if (act == "close") {
@@ -3071,6 +3343,7 @@ int main(int argc, char** argv) {
                 if (!is_udp_port_bound(8086)) {
                     spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity"});
                 }
+                leds.trigger_task_icon("music", 255, 200, 48, 5600);
                 res["ok"] = Value::make_bool(true);
                 res["label"] = Value::make_str("Яндекс Музыка · Моя волна");
                 return res;
@@ -3094,6 +3367,7 @@ int main(int argc, char** argv) {
                     "1"
                 });
             }
+            trigger_task_icon_for_app(pkg, matched_label);
             res["ok"] = Value::make_bool(true);
             res["package"] = Value::make_str(pkg);
             res["label"] = Value::make_str(matched_label);
@@ -3277,6 +3551,7 @@ int main(int argc, char** argv) {
         root["audio"] = std::move(au);
 
         root["assistant"] = assistant.get_status_json();
+        root["startupShownThisBoot"] = Value::make_bool(is_startup_shown_flag());
         root["music"] = get_music_json();
         root["timers"] = timers.list_timers_json();
         root["wyoming"] = wyoming.get_status_json();
@@ -3380,6 +3655,48 @@ int main(int argc, char** argv) {
                 resp["ok"] = json::Value::make_bool(true);
                 resp["enabled"] = json::Value::make_bool(false);
                 resp["discoverable"] = json::Value::make_bool(false);
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/bluetooth/device_event") {
+                json::Value v;
+                if (json::Parser::parse(req.body, v)) {
+                    std::string ev = v.get("event") ? v.get("event")->as_str("") : "";
+                    if (ev == "connected") {
+                        leds.trigger_bluetooth_visual("connected", 5000);
+                        leds.trigger_flash(40, 255, 195, 1100);
+                        audio.play_bt_chime("connected");
+                    } else if (ev == "disconnected") {
+                        leds.trigger_bluetooth_visual("disconnected", 3500);
+                        leds.trigger_flash(255, 140, 90, 900);
+                        audio.play_bt_chime("disconnected");
+                    }
+                }
+                return HttpResponse::json("{\"ok\":true}");
+            }
+            if (req.method == "POST" && req.path == "/api/leds/recover") {
+                leds.force_recover_screen();
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["recoveries"] = json::Value::make_int(leds.screen_recoveries());
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/system/startup_show") {
+                bool force = (get_query_param(req.query, "force") == "1");
+                bool silent = (get_query_param(req.query, "silent") == "1");
+                json::Value bv;
+                if (!req.body.empty() && json::Parser::parse(req.body, bv) && bv.is_obj()) {
+                    if (const auto* f = bv.get("force"); f && f->is_bool()) force = f->as_bool(force);
+                    if (const auto* s = bv.get("silent"); s && s->is_bool()) silent = s->as_bool(silent);
+                }
+                bool already = is_startup_shown_flag();
+                if (!already || force) {
+                    mark_startup_shown_flag();
+                    leds.trigger_startup_show(5800);
+                    if (!silent) audio.play_startup_chime();
+                }
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["alreadyShown"] = json::Value::make_bool(already);
                 return HttpResponse::json(resp.dump(-1));
             }
             if (req.method == "GET" && req.path == "/api/bluetooth/status") {
@@ -3665,6 +3982,56 @@ int main(int argc, char** argv) {
                 }
                 json::Value pr = probe_gemini_live_json(key, model, proxy);
                 return HttpResponse::json(pr.dump(-1), 200);
+            }
+            if (req.method == "POST" && req.path == "/api/assistant/agent_mode") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                const auto* en = v.get("enabled") ? v.get("enabled") : v.get("agentMode");
+                if (!en || !en->is_bool()) {
+                    return HttpResponse::json("{\"error\":\"enabled boolean required\"}", 400);
+                }
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.assistant.agent_mode = en->as_bool(false);
+                    cfg.sanitize_and_validate();
+                    c = cfg;
+                }
+                assistant.update_config(c.assistant);
+                push_style_sync_to_launcher(c);
+                save_cfg(c);
+                leds.trigger_task_icon(c.assistant.agent_mode ? "terminal" : "check",
+                                       c.assistant.agent_mode ? 72 : 120,
+                                       c.assistant.agent_mode ? 240 : 215,
+                                       c.assistant.agent_mode ? 165 : 255,
+                                       3200);
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["agentMode"] = json::Value::make_bool(c.assistant.agent_mode);
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/leds/task_icon") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                std::string icon = v.get("icon") ? v.get("icon")->as_str("star") : "star";
+                std::string col = v.get("color") ? v.get("color")->as_str() : "";
+                std::string pixels = v.get("pixels") ? v.get("pixels")->as_str() : "";
+                int dur = v.get("durationMs") ? std::clamp(v.get("durationMs")->as_int(5500), 1200, 15000) : 5500;
+                uint8_t r = 0, g = 220, b = 255;
+                if (icon == "youtube") { r = 255; g = 42; b = 42; }
+                else if (icon == "music") { r = 255; g = 200; b = 48; }
+                else if (icon == "telegram") { r = 38; g = 178; b = 255; }
+                else if (icon == "terminal") { r = 72; g = 240; b = 165; }
+                if (!col.empty()) parse_hex_rgb(col, r, g, b);
+                leds.trigger_task_icon(icon, r, g, b, dur, pixels);
+                json::Value resp = json::Value::make_obj();
+                resp["ok"] = json::Value::make_bool(true);
+                resp["icon"] = json::Value::make_str(icon);
+                return HttpResponse::json(resp.dump(-1));
             }
             if (req.method == "POST" && req.path == "/api/setup/complete") {
                 DaemonConfig c;
@@ -4063,11 +4430,53 @@ int main(int argc, char** argv) {
                 }
                 bool ok = false;
                 if (auto* act = v.get("action"); act && act->is_str()) {
-                    ok = uinput.send_android_action(act->as_str());
+                    if (act->as_str() == "home") {
+                        trigger_go_home();
+                        ok = true;
+                    } else {
+                        ok = uinput.send_android_action(act->as_str());
+                    }
                 } else if (auto* kc = v.get("keycode"); kc && kc->is_num()) {
                     ok = uinput.send_key(kc->as_int());
                 }
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}");
+            }
+            if (req.method == "POST" && req.path == "/api/remote/mouse") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v)) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                bool ok = true;
+                int dx = v.get("dx") ? v.get("dx")->as_int(0) : 0;
+                int dy = v.get("dy") ? v.get("dy")->as_int(0) : 0;
+                if (dx != 0 || dy != 0) {
+                    ok &= uinput.send_mouse_move(dx, dy);
+                }
+                if (auto* clk = v.get("click"); clk && clk->as_bool(false)) {
+                    int btn = v.get("button") ? v.get("button")->as_int(0) : 0;
+                    int cnt = v.get("count") ? v.get("count")->as_int(1) : 1;
+                    ok &= uinput.send_mouse_click(btn, cnt);
+                }
+                if (auto* scr = v.get("scroll"); scr && scr->as_int(0) != 0) {
+                    ok &= uinput.send_mouse_scroll(scr->as_int(0));
+                }
+                return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}");
+            }
+            if (req.method == "POST" && req.path == "/api/remote/find") {
+                json::Value payload = json::Value::make_obj();
+                payload["cmd"] = json::Value::make_str("find_remote");
+                bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
+                leds.trigger_flash(232, 198, 134, 2200);
+                leds.trigger_screen_text("ПУЛЬТ!", 232, 198, 134, 4000);
+                return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+            }
+            if (req.method == "POST" && req.path == "/api/remote/pair") {
+                json::Value payload = json::Value::make_obj();
+                payload["cmd"] = json::Value::make_str("pair_remote");
+                bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
+                leds.trigger_flash(0, 212, 255, 1800);
+                leds.trigger_screen_text("BLE ПУЛЬТ", 0, 212, 255, 4000);
+                return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
             }
             if (req.method == "POST" && req.path == "/api/remote/text") {
                 json::Value v;
@@ -4092,6 +4501,140 @@ int main(int argc, char** argv) {
                 payload["action"] = json::Value::make_str(act);
                 send_udp_json(8086, payload.dump(-1));
                 return HttpResponse::json("{\"ok\":true}");
+            }
+            auto finalize_pm_mutation = [&](const ShellResult& sr) {
+                bool ok = sr.output.find("Success") != std::string::npos;
+                if (ok) {
+                    {
+                        std::lock_guard<std::mutex> lk(apps_mu);
+                        apps_cache = json::Value::make_arr();
+                    }
+                    json::Value rcmd = json::Value::make_obj();
+                    rcmd["cmd"] = json::Value::make_str("refresh_apps");
+                    send_udp_json(8086, rcmd.dump(-1));
+                    leds.trigger_flash(16, 210, 129, 900);
+                } else {
+                    leds.trigger_flash(255, 85, 85, 700);
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(ok);
+                out["output"] = json::Value::make_str(sr.timed_out ? (sr.output + "\n[timeout]") : sr.output);
+                return HttpResponse::json(out.dump(-1), ok ? 200 : 400);
+            };
+            if (req.method == "POST" && req.path == "/api/apps/install") {
+                if (req.body.size() < 256 ||
+                    !(req.body[0] == 'P' && req.body[1] == 'K' && req.body[2] == 3 && req.body[3] == 4)) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"Invalid APK file (expected ZIP/APK archive)\"}", 400);
+                }
+                mkdir("/data/local/openstation/ota_tmp", 0755);
+                const char* tmp_apk = "/data/local/openstation/ota_tmp/upload.apk";
+                FILE* fp = fopen(tmp_apk, "wb");
+                if (!fp) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"Failed to open temp APK path\"}", 500);
+                }
+                size_t written = fwrite(req.body.data(), 1, req.body.size(), fp);
+                fflush(fp);
+                fsync(fileno(fp));
+                fclose(fp);
+                if (written != req.body.size()) {
+                    unlink(tmp_apk);
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"Incomplete APK write\"}", 500);
+                }
+                ShellResult sr = run_argv_with_timeout({"/system/bin/pm", "install", "-r", "-g", "-d", tmp_apk}, 90);
+                unlink(tmp_apk);
+                return finalize_pm_mutation(sr);
+            }
+            if (req.method == "POST" && req.path == "/api/apps/install_path") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.get("path") || !v.get("path")->is_str()) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"missing path\"}", 400);
+                }
+                std::string raw_path = v.get("path")->as_str();
+                bool delete_after = v.get("deleteAfter") && v.get("deleteAfter")->is_bool() && v.get("deleteAfter")->as_bool();
+                if (raw_path.empty() || raw_path.size() > 512 || raw_path.find("..") != std::string::npos) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"invalid APK path\"}", 400);
+                }
+                for (unsigned char ch : raw_path) {
+                    if (ch < 32) {
+                        return HttpResponse::json("{\"ok\":false,\"error\":\"invalid control chars in path\"}", 400);
+                    }
+                }
+                char resolved[PATH_MAX];
+                if (!realpath(raw_path.c_str(), resolved)) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"APK file not found\"}", 404);
+                }
+                std::string can_path(resolved);
+                auto has_apk_ext = [](const std::string& p) {
+                    if (p.size() < 4) return false;
+                    std::string tail = p.substr(p.size() - 4);
+                    for (char& ch : tail) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    return tail == ".apk";
+                };
+                const char* allowed_prefixes[] = {
+                    "/data/user/0/com.openstation.launcher/",
+                    "/data/data/com.openstation.launcher/",
+                    "/data/local/openstation/",
+                    "/data/media/0/",
+                    "/sdcard/",
+                    "/storage/",
+                    "/mnt/"
+                };
+                bool prefix_ok = false;
+                for (const char* pfx : allowed_prefixes) {
+                    if (can_path.rfind(pfx, 0) == 0) {
+                        prefix_ok = true;
+                        break;
+                    }
+                }
+                if (!prefix_ok || !has_apk_ext(can_path)) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"APK path outside allowed directories\"}", 403);
+                }
+                struct stat st {};
+                if (stat(can_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 256) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"Invalid or empty APK file\"}", 400);
+                }
+                uint8_t magic[4] = {0, 0, 0, 0};
+                if (FILE* f = fopen(can_path.c_str(), "rb")) {
+                    size_t n = fread(magic, 1, 4, f);
+                    fclose(f);
+                    if (n < 4 || magic[0] != 'P' || magic[1] != 'K' || magic[2] != 3 || magic[3] != 4) {
+                        return HttpResponse::json("{\"ok\":false,\"error\":\"File is not a valid ZIP/APK archive\"}", 400);
+                    }
+                } else {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"Unable to read APK file\"}", 403);
+                }
+                ShellResult sr = run_argv_with_timeout({"/system/bin/pm", "install", "-r", "-g", "-d", can_path}, 90);
+                if (delete_after) {
+                    unlink(can_path.c_str());
+                }
+                return finalize_pm_mutation(sr);
+            }
+            if (req.method == "POST" && req.path == "/api/apps/uninstall") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.get("package") || !v.get("package")->is_str()) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"missing package\"}", 400);
+                }
+                std::string pkg = v.get("package")->as_str();
+                if (!is_valid_package_name(pkg)) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"invalid package\"}", 400);
+                }
+                const char* protected_pkgs[] = {
+                    "com.openstation.launcher",
+                    "com.openstation.ime",
+                    "android",
+                    "com.android.systemui",
+                    "com.android.settings",
+                    "com.android.tv.settings",
+                    "com.android.shell",
+                    "com.android.providers.settings"
+                };
+                for (const char* prot : protected_pkgs) {
+                    if (pkg == prot) {
+                        return HttpResponse::json("{\"ok\":false,\"error\":\"Protected system package cannot be uninstalled\"}", 403);
+                    }
+                }
+                ShellResult sr = run_argv_with_timeout({"/system/bin/pm", "uninstall", pkg}, 45);
+                return finalize_pm_mutation(sr);
             }
             if (req.method == "POST" && req.path == "/api/apps/cache") {
                 json::Value v;
@@ -4171,7 +4714,20 @@ int main(int argc, char** argv) {
             if (json::Parser::parse(ws_msg, v) && v.get("cmd")) {
                 std::string cmd = v.get("cmd")->as_str();
                 if (cmd == "key" && v.get("action")) {
-                    uinput.send_android_action(v.get("action")->as_str());
+                    std::string act = v.get("action")->as_str();
+                    if (act == "home") trigger_go_home();
+                    else uinput.send_android_action(act);
+                } else if (cmd == "mouse_move") {
+                    int dx = v.get("dx") ? v.get("dx")->as_int(0) : 0;
+                    int dy = v.get("dy") ? v.get("dy")->as_int(0) : 0;
+                    uinput.send_mouse_move(dx, dy);
+                } else if (cmd == "mouse_click") {
+                    int btn = v.get("button") ? v.get("button")->as_int(0) : 0;
+                    int cnt = v.get("count") ? v.get("count")->as_int(1) : 1;
+                    uinput.send_mouse_click(btn, cnt);
+                } else if (cmd == "mouse_scroll") {
+                    int dy = v.get("dy") ? v.get("dy")->as_int(0) : 0;
+                    uinput.send_mouse_scroll(dy);
                 } else if (cmd == "mute_toggle") {
                     DaemonConfig next_c;
                     {
@@ -4217,6 +4773,7 @@ int main(int argc, char** argv) {
     // Main telemetry, spectrum & MQTT periodic sync loop (adaptive cadence: 50ms voice / 100ms WS / 250ms idle)
     bool prev_voice_active = false;
     bool initial_udp_synced = false;
+    bool initial_startup_show_played = false;
     auto last_voice_udp_tp = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_ws_tp = std::chrono::steady_clock::now();
     auto last_mqtt_tp = std::chrono::steady_clock::now();
@@ -4230,7 +4787,29 @@ int main(int argc, char** argv) {
             }
             push_eq_to_launcher(c_init);
             push_style_sync_to_launcher(c_init);
+            if (!c_init.setup_completed && !initial_startup_show_played && !is_startup_shown_flag()) {
+                initial_startup_show_played = true;
+                mark_startup_shown_flag();
+                leds.trigger_startup_show(5800);
+                audio.play_startup_chime();
+                json::Value scmd = json::Value::make_obj();
+                scmd["cmd"] = json::Value::make_str("startup_show");
+                send_udp_json(8086, scmd.dump(-1));
+            }
             initial_udp_synced = true;
+        } else if (!initial_startup_show_played &&
+                   std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start_tp).count() >= 6) {
+            initial_startup_show_played = true;
+            if (!is_startup_shown_flag()) {
+                mark_startup_shown_flag();
+                leds.trigger_startup_show(5800);
+                audio.play_startup_chime();
+                if (is_udp_port_bound(8086)) {
+                    json::Value scmd = json::Value::make_obj();
+                    scmd["cmd"] = json::Value::make_str("startup_show");
+                    send_udp_json(8086, scmd.dump(-1));
+                }
+            }
         }
 
         // Drain any incoming UDP 8087 spectrum & music_active datagrams

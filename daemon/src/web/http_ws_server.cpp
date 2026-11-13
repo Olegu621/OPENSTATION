@@ -101,72 +101,6 @@ bool send_all(int fd, const void* buf, size_t len) {
     return true;
 }
 
-bool valid_hex_token(const std::string& token) {
-    if (token.size() != 64) return false;
-    for (unsigned char c : token) {
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
-    }
-    return true;
-}
-
-bool load_web_auth_token(std::string& token) {
-    constexpr const char* kTokenPath = "/data/local/openstation/webui.token";
-    mkdir("/data/local", 0700);
-    mkdir("/data/local/openstation", 0700);
-    auto read_existing = [&]() -> bool {
-        int fd = open(kTokenPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        if (fd < 0) return false;
-        char buf[128] = {};
-        ssize_t n = read(fd, buf, sizeof(buf));
-        fchmod(fd, 0600);
-        close(fd);
-        if (n <= 0) return false;
-        token.assign(buf, static_cast<size_t>(n));
-        while (!token.empty() && (token.back() == '\n' || token.back() == '\r' || token.back() == ' ')) token.pop_back();
-        return valid_hex_token(token);
-    };
-    if (read_existing()) return true;
-    if (access(kTokenPath, F_OK) == 0) return false;
-
-    uint8_t bytes[32];
-    int rng = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    if (rng < 0) return false;
-    size_t got = 0;
-    while (got < sizeof(bytes)) {
-        ssize_t n = read(rng, bytes + got, sizeof(bytes) - got);
-        if (n <= 0) { close(rng); return false; }
-        got += static_cast<size_t>(n);
-    }
-    close(rng);
-    static const char* kHex = "0123456789abcdef";
-    token.clear();
-    token.reserve(64);
-    for (uint8_t b : bytes) {
-        token.push_back(kHex[b >> 4]);
-        token.push_back(kHex[b & 0x0f]);
-    }
-    int fd = open(kTokenPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (fd < 0) return read_existing();
-    const std::string contents = token + "\n";
-    size_t written = 0;
-    while (written < contents.size()) {
-        ssize_t n = write(fd, contents.data() + written, contents.size() - written);
-        if (n <= 0) { close(fd); unlink(kTokenPath); token.clear(); return false; }
-        written += static_cast<size_t>(n);
-    }
-    bool ok = fsync(fd) == 0;
-    close(fd);
-    if (!ok) { unlink(kTokenPath); token.clear(); }
-    return ok;
-}
-
-bool constant_time_equal(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    uint8_t diff = 0;
-    for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<uint8_t>(a[i] ^ b[i]);
-    return diff == 0;
-}
-
 const char* status_text(int code) {
     switch (code) {
         case 200: return "OK";
@@ -188,10 +122,6 @@ HttpWsServer::~HttpWsServer() {
 
 bool HttpWsServer::start(int port, ApiHandler api_cb, WsCmdHandler ws_cb) {
     if (running_.load()) stop();
-    if (!load_web_auth_token(auth_token_)) {
-        LOGE("HttpServer", "Cannot load/create protected web API token; refusing to start");
-        return false;
-    }
     port_ = port;
     api_cb_ = std::move(api_cb);
     ws_cb_ = std::move(ws_cb);
@@ -452,7 +382,6 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
     bool is_ws = false;
     std::string ws_key;
     std::string ws_protocol;
-    std::string authorization;
     size_t pos = line_end == std::string::npos ? hdr_block.size() : line_end + 2;
     while (pos < hdr_block.size()) {
         size_t next = hdr_block.find("\r\n", pos);
@@ -473,40 +402,13 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
                 ws_key = v;
             } else if (k == "sec-websocket-protocol") {
                 ws_protocol = v;
-            } else if (k == "authorization") {
-                authorization = v;
             }
         }
         pos = next + 2;
     }
 
-    sockaddr_in peer_addr{};
-    socklen_t peer_len = sizeof(peer_addr);
-    bool loopback = getpeername(cfd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len) == 0 &&
-                    peer_addr.sin_family == AF_INET && ntohl(peer_addr.sin_addr.s_addr) == INADDR_LOOPBACK;
-    bool bearer_ok = authorization.size() > 7 && authorization.compare(0, 7, "Bearer ") == 0 &&
-                     constant_time_equal(authorization.substr(7), auth_token_);
-    auto send_unauthorized = [&]() {
-        const std::string body = "{\"error\":\"authentication required\"}";
-        char hbuf[256];
-        int hlen = snprintf(hbuf, sizeof(hbuf),
-                            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json; charset=utf-8\r\n"
-                            "Content-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                            body.size());
-        send_all(cfd, hbuf, static_cast<size_t>(hlen));
-        send_all(cfd, body.data(), body.size());
-    };
-    if (!loopback && req.path.rfind("/api/", 0) == 0 && !bearer_ok) {
-        send_unauthorized();
-        return;
-    }
-
     // WebSocket upgrade path
     if (is_ws && req.path == "/ws" && !ws_key.empty()) {
-        if (!loopback && !constant_time_equal(ws_protocol, auth_token_)) {
-            send_unauthorized();
-            return;
-        }
         static const char* kGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         uint8_t digest[20];
         sha1_digest(ws_key + kGuid, digest);
@@ -516,7 +418,7 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Accept: " + accept_key + "\r\n";
-        if (!ws_protocol.empty() && constant_time_equal(ws_protocol, auth_token_)) {
+        if (!ws_protocol.empty()) {
             resp += "Sec-WebSocket-Protocol: " + ws_protocol + "\r\n";
         }
         resp += "\r\n";
@@ -595,9 +497,15 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
     }
 
     // Read remaining HTTP POST body
-    const size_t max_body = (req.path == "/api/bootanim/upload") ? (24ULL * 1024ULL * 1024ULL) : 2097152ULL;
+    const size_t max_body = (req.path == "/api/apps/install")
+                                ? (160ULL * 1024ULL * 1024ULL)
+                                : ((req.path == "/api/bootanim/upload")
+                                       ? (24ULL * 1024ULL * 1024ULL)
+                                       : 2097152ULL);
     if (content_length > max_body) {
-        HttpResponse too_big = HttpResponse::json("{\"error\":\"file too large (max 24 MB)\"}", 413);
+        char ebuf[96];
+        snprintf(ebuf, sizeof(ebuf), "{\"error\":\"file too large (max %llu MB)\"}", max_body / (1024ULL * 1024ULL));
+        HttpResponse too_big = HttpResponse::json(ebuf, 413);
         char hbuf[512];
         int hlen = snprintf(hbuf, sizeof(hbuf),
                             "HTTP/1.1 %d %s\r\n"
@@ -612,17 +520,26 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
         return;
     }
     if (content_length > 262144) {
-        struct timeval long_tv {30, 0};
+        struct timeval long_tv {120, 0};
         setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &long_tv, sizeof(long_tv));
     }
     req.body = std::move(leftover);
     if (content_length > req.body.size()) {
         req.body.reserve(content_length);
     }
-    while (req.body.size() < content_length && running_.load()) {
-        ssize_t n = recv(cfd, tmp, std::min(sizeof(tmp), content_length - req.body.size()), 0);
-        if (n <= 0) break;
-        req.body.append(tmp, static_cast<size_t>(n));
+    if (content_length > 1048576) {
+        std::vector<char> big_tmp(32768);
+        while (req.body.size() < content_length && running_.load()) {
+            ssize_t n = recv(cfd, big_tmp.data(), std::min(big_tmp.size(), content_length - req.body.size()), 0);
+            if (n <= 0) break;
+            req.body.append(big_tmp.data(), static_cast<size_t>(n));
+        }
+    } else {
+        while (req.body.size() < content_length && running_.load()) {
+            ssize_t n = recv(cfd, tmp, std::min(sizeof(tmp), content_length - req.body.size()), 0);
+            if (n <= 0) break;
+            req.body.append(tmp, static_cast<size_t>(n));
+        }
     }
     if (req.body.size() > content_length) req.body.resize(content_length);
 

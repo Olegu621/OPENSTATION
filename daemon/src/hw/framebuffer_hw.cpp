@@ -238,6 +238,16 @@ void FramebufferHw::start(const LedRingConfig& ring_cfg, const LedScreenConfig& 
         ring_cfg_ = ring_cfg;
         screen_cfg_ = screen_cfg;
     }
+    // Signal /sbin/bootlogod for a seamless zero-flicker framebuffer handoff before opening fb4/fb5
+    {
+        int hfd = open("/dev/.openstation_boot_handoff", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (hfd >= 0) ::close(hfd);
+        std::string open_cnt;
+        if (read_trimmed_file("/sys/devices/platform/soc/ffd00000.cbus/ffd15000.spi/spi_master/spi32766/spi32766.0/lp_common/open_fb_count", open_cnt) &&
+            atoi(open_cnt.c_str()) > 0) {
+            usleep(130000);
+        }
+    }
     open_fb_by_name("YNDX LED ring", "/dev/graphics/fb4", fb4_);
     fb4_present_.store(fb4_.fd >= 0);
     if (fb4_.fd >= 0) {
@@ -251,7 +261,9 @@ void FramebufferHw::start(const LedRingConfig& ring_cfg, const LedScreenConfig& 
     }
 
     if (open_fb_by_name("YNDX LED screen", "/dev/graphics/fb5", fb5_)) {
+        fb5_expected_ = true;
         fb5_present_.store(true);
+        last_fb5_ok_tp_ = std::chrono::steady_clock::now();
         std::string max_s;
         if (read_trimmed_file(fb5_.bl_path + "/max_brightness", max_s)) {
             fb5_max_bl_ = std::max(1, atoi(max_s.c_str()));
@@ -320,6 +332,7 @@ void FramebufferHw::set_voice_state(VoiceVisualState st) {
         std::lock_guard<std::mutex> lk(mu_);
         if (voice_state_ != st) {
             voice_state_ = st;
+            voice_state_start_ = std::chrono::steady_clock::now();
             update_needs_spectrum_locked();
             ++wake_seq_;
             notify = true;
@@ -425,6 +438,55 @@ void FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint
     cv_.notify_all();
 }
 
+void FramebufferHw::trigger_bluetooth_visual(const std::string& bt_state, int duration_ms) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        bt_visual_state_ = bt_state;
+        bt_start_ = std::chrono::steady_clock::now();
+        bt_until_ = bt_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 800, 30000));
+        ++wake_seq_;
+    }
+    cv_.notify_all();
+}
+
+void FramebufferHw::trigger_startup_show(int duration_ms) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        startup_start_ = std::chrono::steady_clock::now();
+        startup_until_ = startup_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 1500, 15000));
+        ++wake_seq_;
+    }
+    cv_.notify_all();
+}
+
+void FramebufferHw::trigger_task_icon(const std::string& icon_id,
+                                      uint8_t r,
+                                      uint8_t g,
+                                      uint8_t b,
+                                      int duration_ms,
+                                      const std::string& custom_pixels) {
+    if (icon_id.empty() && custom_pixels.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        task_icon_id_ = icon_id.empty() ? std::string("custom") : icon_id;
+        task_icon_col_ = Rgb{r, g, b};
+        task_icon_custom_ = custom_pixels;
+        task_icon_start_ = std::chrono::steady_clock::now();
+        task_icon_until_ = task_icon_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 1200, 20000));
+        ++wake_seq_;
+    }
+    cv_.notify_all();
+}
+
+void FramebufferHw::force_recover_screen() {
+    force_recover_requested_.store(true);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        ++wake_seq_;
+    }
+    cv_.notify_all();
+}
+
 void FramebufferHw::trigger_calibration(int cal_mode, int duration_ms) {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -472,6 +534,9 @@ bool FramebufferHw::open_fb_by_name(const char* preferred_name, const char* fall
         return false;
     }
 
+    // Wake / unblank framebuffer controller if blanked
+    ioctl(fd, FBIOBLANK, 0);
+
     out.fd = fd;
     out.dev_path = dev_path;
     auto slash = dev_path.find_last_of('/');
@@ -485,6 +550,7 @@ bool FramebufferHw::open_fb_by_name(const char* preferred_name, const char* fall
     out.green_off = vinfo.green.offset;
     out.blue_off = vinfo.blue.offset;
     out.grayscale = vinfo.grayscale;
+    out.has_prev = false;
     out.buf.assign(static_cast<size_t>(out.line_length) * out.yres, 0);
     return true;
 }
@@ -517,18 +583,26 @@ void FramebufferHw::flush_fb(FbDevice& dev) {
         return;
     }
     ssize_t wr = pwrite(dev.fd, dev.buf.data(), dev.buf.size(), 0);
-    if (wr < 0) {
-        LOGW("Framebuffer", "Write error on %s: %s", dev.dev_path.c_str(), strerror(errno));
+    if (wr < 0 || wr != static_cast<ssize_t>(dev.buf.size())) {
+        LOGW("Framebuffer", "Write error on %s (wr=%zd, exp=%zu): %s -> auto-recovering",
+             dev.dev_path.c_str(), wr, dev.buf.size(), strerror(errno));
         if (&dev == &fb5_) {
             std::lock_guard<std::mutex> lk(mu_);
             close_fb(fb5_);
             fb5_present_.store(false);
             last_fb5_bl_ = -1;
             update_needs_spectrum_locked();
+        } else if (&dev == &fb4_) {
+            close_fb(fb4_);
+            fb4_present_.store(false);
+            last_fb4_bl_ = -1;
         }
     } else {
         dev.prev_buf = dev.buf;
         dev.has_prev = true;
+        if (&dev == &fb5_) {
+            last_fb5_ok_tp_ = std::chrono::steady_clock::now();
+        }
     }
 }
 
@@ -601,6 +675,11 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
     Rgb flash_col{};
     bool cal_active = false;
     int cal_mode = -1;
+    bool bt_active = false;
+    std::string bt_state;
+    double bt_elapsed = 0.0;
+    bool startup_active = false;
+    double startup_elapsed = 0.0;
     {
         std::lock_guard<std::mutex> lk(mu_);
         vstate = voice_state_;
@@ -612,6 +691,15 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
         flash_col = flash_color_;
         cal_active = now < cal_until_;
         cal_mode = cal_mode_;
+        if (now < bt_until_) {
+            bt_active = true;
+            bt_state = bt_visual_state_;
+            bt_elapsed = std::chrono::duration<double>(now - bt_start_).count();
+        }
+        if (now < startup_until_) {
+            startup_active = true;
+            startup_elapsed = std::chrono::duration<double>(now - startup_start_).count();
+        }
     }
 
     // Backlight calculation (lux-adaptive or manual)
@@ -634,7 +722,40 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
 
     float spd = 0.25f + (std::clamp(cfg.speed, 1, 100) / 100.0f) * 2.5f;
 
-    if (cal_active) {
+    if (startup_active) {
+        double p = startup_elapsed;
+        if (p < 1.6) {
+            // Dual-head symmetry sweep converging in violet -> electric cyan
+            float sweep = static_cast<float>(std::min(1.0, p / 1.4));
+            double head1 = std::fmod(p * 26.0, 24.0);
+            double head2 = std::fmod(head1 + 12.0, 24.0);
+            for (int i = 0; i < 24; ++i) {
+                double d1 = std::min(std::fabs(i - head1), 24.0 - std::fabs(i - head1));
+                double d2 = std::min(std::fabs(i - head2), 24.0 - std::fabs(i - head2));
+                float k1 = static_cast<float>(std::max(0.0, 1.0 - d1 / 4.5));
+                float k2 = static_cast<float>(std::max(0.0, 1.0 - d2 / 4.5));
+                Rgb c1 = scale_rgb(Rgb{0, 212, 255}, k1);
+                Rgb c2 = scale_rgb(Rgb{168, 85, 247}, k2);
+                Rgb bg = scale_rgb(Rgb{24, 16, 68}, sweep * 0.45f);
+                logical[i] = Rgb{
+                    static_cast<uint8_t>(std::min(255, bg.r + c1.r + c2.r)),
+                    static_cast<uint8_t>(std::min(255, bg.g + c1.g + c2.g)),
+                    static_cast<uint8_t>(std::min(255, bg.b + c1.b + c2.b))
+                };
+            }
+        } else {
+            // Blooming aurora harmony with champagne gold sparkle
+            float breath = 0.55f + 0.45f * std::sin(static_cast<float>((p - 1.6) * 3.8));
+            float phase = static_cast<float>((p - 1.6) * 55.0);
+            for (int i = 0; i < 24; ++i) {
+                float w = 0.5f + 0.5f * std::sin(static_cast<float>(i * (2.0 * kPi / 8.0) - p * 3.2));
+                Rgb c = lerp_rgb(Rgb{0, 212, 255}, Rgb{168, 85, 247}, w);
+                if (i % 6 == 0) c = lerp_rgb(c, Rgb{232, 198, 134}, 0.55f * breath);
+                logical[i] = scale_rgb(c, breath);
+            }
+            (void)phase;
+        }
+    } else if (cal_active) {
         if (cal_mode == -2) {
             for (int i = 0; i < 24; ++i) {
                 if (i < 8) logical[i] = Rgb{255, 0, 0};
@@ -654,6 +775,24 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
                 logical[i] = lerp_rgb(Rgb{0, 220, 255}, Rgb{124, 58, 237}, frac);
             } else {
                 logical[i] = Rgb{8, 8, 12};
+            }
+        }
+    } else if (bt_active) {
+        if (bt_state == "connected") {
+            float flash_k = (bt_elapsed < 1.0) ? (0.4f + 0.6f * std::sin(static_cast<float>(bt_elapsed * 9.0))) : 0.78f;
+            for (int i = 0; i < 24; ++i) {
+                float w = 0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 3.5 + i * 0.28));
+                logical[i] = scale_rgb(lerp_rgb(Rgb{0, 120, 255}, Rgb{0, 235, 255}, w), std::clamp(flash_k, 0.2f, 1.0f));
+            }
+        } else if (bt_state == "disconnected") {
+            float pulse = 0.3f + 0.7f * std::max(0.0f, std::sin(static_cast<float>(bt_elapsed * 6.0)));
+            logical.fill(scale_rgb(Rgb{255, 95, 70}, pulse));
+        } else { // "discoverable" sonar orbital
+            double head = std::fmod(bt_elapsed * 20.0, 24.0);
+            for (int i = 0; i < 24; ++i) {
+                double d = std::min(std::fabs(i - head), 24.0 - std::fabs(i - head));
+                float k = static_cast<float>(std::max(0.12, 1.0 - d / 5.5));
+                logical[i] = lerp_rgb(Rgb{10, 35, 160}, Rgb{0, 212, 255}, k);
             }
         }
     } else if (flash_active) {
@@ -811,9 +950,20 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     last_screen_render_t_ = t_sec;
 
     VoiceVisualState vstate = VoiceVisualState::Idle;
+    double voice_elapsed = 0.0;
     std::array<float, 24> spec{};
     bool osd_active = false;
     int osd_pct = 0;
+    bool startup_active = false;
+    double startup_elapsed = 0.0;
+    bool bt_active = false;
+    std::string bt_state;
+    double bt_elapsed = 0.0;
+    bool task_active = false;
+    std::string task_id;
+    Rgb task_col{};
+    std::string task_custom;
+    double task_elapsed = 0.0;
     bool scr_override_active = false;
     std::string scr_override_txt;
     Rgb scr_override_col{};
@@ -826,9 +976,28 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     {
         std::lock_guard<std::mutex> lk(mu_);
         vstate = voice_state_;
+        if (voice_state_start_.time_since_epoch().count() > 0) {
+            voice_elapsed = std::max(0.0, std::chrono::duration<double>(now - voice_state_start_).count());
+        }
         spec = spectrum_;
         osd_active = now < osd_until_;
         osd_pct = osd_volume_pct_;
+        if (now < startup_until_) {
+            startup_active = true;
+            startup_elapsed = std::chrono::duration<double>(now - startup_start_).count();
+        }
+        if (now < bt_until_) {
+            bt_active = true;
+            bt_state = bt_visual_state_;
+            bt_elapsed = std::chrono::duration<double>(now - bt_start_).count();
+        }
+        if (now < task_icon_until_ && (!task_icon_id_.empty() || !task_icon_custom_.empty())) {
+            task_active = true;
+            task_id = task_icon_id_;
+            task_col = task_icon_col_;
+            task_custom = task_icon_custom_;
+            task_elapsed = std::max(0.0, std::chrono::duration<double>(now - task_icon_start_).count());
+        }
         music_vis_active = (music_playing_ || now < music_stop_grace_until_) &&
                            cfg.auto_music_visualizer && (cfg.mode != "off");
         if (now < weather_until_) {
@@ -853,7 +1022,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         double norm = std::clamp(std::log10(lux + 1.0) / 2.4, 0.05, 1.0);
         bl = std::clamp(static_cast<int>(norm * max_bl), 1, max_bl);
     }
-    if ((vstate != VoiceVisualState::Idle || scr_override_active || osd_active || weather_active || music_vis_active) &&
+    if ((vstate != VoiceVisualState::Idle || scr_override_active || osd_active || startup_active || bt_active || task_active || weather_active || music_vis_active) &&
         bl < std::max(1, max_bl / 3)) {
         bl = std::max(1, max_bl / 3);
     }
@@ -876,6 +1045,12 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     std::string scene_key;
     if (osd_active) {
         scene_key = "osd";
+    } else if (startup_active) {
+        scene_key = "startup";
+    } else if (bt_active) {
+        scene_key = "bt:" + bt_state;
+    } else if (task_active) {
+        scene_key = "task:" + task_id;
     } else if (weather_active) {
         scene_key = "weather:" + weather_cond + ":" + std::to_string(weather_temp);
     } else if (scr_override_active) {
@@ -901,7 +1076,9 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             if (scene_key == "osd" || last_scene_key_ == "osd") {
                 scene_trans_dur_sec_ = 0.16;
             } else if (scene_key.rfind("voice:", 0) == 0 || last_scene_key_.rfind("voice:", 0) == 0) {
-                scene_trans_dur_sec_ = 0.25;
+                scene_trans_dur_sec_ = 0.36;
+            } else if (scene_key.rfind("task:", 0) == 0 || last_scene_key_.rfind("task:", 0) == 0) {
+                scene_trans_dur_sec_ = 0.42;
             } else {
                 scene_trans_dur_sec_ = 0.48;
             }
@@ -1404,6 +1581,370 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
                 pset(static_cast<int>(x), static_cast<int>(bar_y), bc);
             }
         }
+    } else if (startup_active) {
+        double cx = static_cast<double>(W - 1) * 0.5;
+        double cy = static_cast<double>(H - 1) * 0.5;
+        if (startup_elapsed < 1.7) {
+            double rad = startup_elapsed * (std::max(12.0, static_cast<double>(W) * 0.85));
+            for (uint32_t y = 0; y < H; ++y) {
+                for (uint32_t x = 0; x < W; ++x) {
+                    double dx = (static_cast<double>(x) - cx) * 0.55;
+                    double dy = (static_cast<double>(y) - cy);
+                    double dist = std::sqrt(dx * dx + dy * dy);
+                    double ring = std::exp(-std::pow(dist - rad, 2.0) * 0.45);
+                    double core = std::exp(-dist * dist * 0.35) * std::max(0.0, 1.0 - startup_elapsed * 0.55);
+                    float r = static_cast<float>(ring * 120.0 + core * 230.0);
+                    float g = static_cast<float>(ring * 220.0 + core * 245.0);
+                    float b = static_cast<float>(ring * 255.0 + core * 255.0);
+                    pset_rgb(static_cast<int>(x), static_cast<int>(y), r, g, b);
+                }
+            }
+        } else {
+            double p = startup_elapsed - 1.7;
+            std::string banner = "OPENSTATION MAX";
+            auto cps = utf8_to_codepoints(banner);
+            int txt_w = static_cast<int>(cps.size()) * 6 - 1;
+            int span = txt_w + static_cast<int>(W);
+            int px = static_cast<int>(p * 26.0) % std::max(1, span);
+            Rgb col{
+                static_cast<uint8_t>(90 + 130 * (0.5 + 0.5 * std::sin(p * 3.1))),
+                static_cast<uint8_t>(215 + 35 * (0.5 + 0.5 * std::cos(p * 2.4))),
+                255
+            };
+            draw_text_col(banner, static_cast<int>(W) - px, top_y, col);
+            if (H >= 8) {
+                float fill = std::clamp(static_cast<float>(startup_elapsed / 5.2), 0.0f, 1.0f);
+                int fw = static_cast<int>(std::lround(fill * static_cast<float>(W)));
+                for (int x = 0; x < static_cast<int>(W); ++x) {
+                    if (x < fw) {
+                        float k = static_cast<float>(x) / std::max(1, static_cast<int>(W - 1));
+                        pset_rgb(x, static_cast<int>(H - 1), k * 168.0f, 212.0f - k * 120.0f, 255.0f);
+                    }
+                }
+            }
+        }
+    } else if (bt_active) {
+        static const uint8_t bt_glyph[7] = {
+            0b00100,
+            0b00110,
+            0b10101,
+            0b01110,
+            0b10101,
+            0b00110,
+            0b00100
+        };
+        bool is_off = (bt_state == "off" || bt_state == "disconnected");
+        bool is_disc = (bt_state == "discoverable");
+        Rgb icon_col = is_off ? Rgb{255, 85, 85}
+                              : (is_disc ? Rgb{0, 225, 255} : Rgb{40, 255, 195});
+        int iy0 = std::max(0, (static_cast<int>(H) - 7) / 2);
+        int ix0 = (W >= 22) ? 1 : std::max(0, (static_cast<int>(W) - 5) / 2);
+        float icon_pulse = is_disc ? (0.55f + 0.45f * std::sin(static_cast<float>(bt_elapsed * 6.5))) : 1.0f;
+        for (int row = 0; row < 7 && (iy0 + row) < static_cast<int>(H); ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if ((bt_glyph[row] >> (4 - col)) & 1) {
+                    pset(ix0 + col, iy0 + row, scale_rgb(icon_col, icon_pulse));
+                }
+            }
+        }
+        if (W >= 22) {
+            std::string label = is_off ? "OFF" : (is_disc ? "PAIR" : "BT ON");
+            if (is_disc) {
+                for (int wave = 0; wave < 3; ++wave) {
+                    double phase = std::fmod(bt_elapsed * 1.8 - wave * 0.28, 1.0);
+                    if (phase < 0.0) phase += 1.0;
+                    int wx = 7 + static_cast<int>(phase * 4.5);
+                    if (wx < 12) {
+                        float inten = static_cast<float>(1.0 - phase) * 0.9f;
+                        for (int dy = -2; dy <= 2; ++dy) {
+                            int py = iy0 + 3 + dy;
+                            int shift = (std::abs(dy) >= 2) ? -1 : 0;
+                            if (py >= 0 && py < static_cast<int>(H) && (wx + shift) >= 7) {
+                                pset_rgb(wx + shift, py, 0.0f, 220.0f * inten, 255.0f * inten);
+                            }
+                        }
+                    }
+                }
+                draw_text_col("BT", std::max(12, static_cast<int>(W) - 12), top_y, Rgb{185, 240, 255});
+            } else {
+                int lx = 8;
+                draw_text_col(label, lx, top_y, is_off ? Rgb{255, 130, 130} : Rgb{160, 255, 220});
+            }
+        }
+    } else if (task_active) {
+        double te = task_elapsed;
+        float pop = std::clamp(static_cast<float>(te / 0.28), 0.0f, 1.0f);
+        float breathe = 0.88f + 0.12f * std::sin(static_cast<float>(te * 4.2));
+        auto glow_px = [&](int x, int y, Rgb c, float k) {
+            float gain = pop * k;
+            padd(x, y, c.r * gain, c.g * gain, c.b * gain);
+        };
+        if (task_id == "custom" && !task_custom.empty()) {
+            std::vector<std::string> rows;
+            std::string cur;
+            for (char ch : task_custom) {
+                if (ch == '\n' || ch == '|' || ch == ';') {
+                    rows.push_back(cur);
+                    cur.clear();
+                } else if (ch != '\r') {
+                    cur.push_back(ch);
+                }
+            }
+            if (!cur.empty()) rows.push_back(cur);
+            if (rows.size() == 1 && rows[0].size() >= W * 2) {
+                std::string flat = rows[0];
+                rows.clear();
+                for (uint32_t r = 0; r < H && r * W < flat.size(); ++r) {
+                    rows.push_back(flat.substr(r * W, W));
+                }
+            }
+            for (uint32_t y = 0; y < H && y < rows.size(); ++y) {
+                for (uint32_t x = 0; x < W && x < rows[y].size(); ++x) {
+                    char c = rows[y][x];
+                    if (c == '.' || c == '0' || c == ' ') continue;
+                    Rgb px = task_col;
+                    if (c == 'r' || c == 'R') px = Rgb{255, 38, 56};
+                    else if (c == 'g' || c == 'G') px = Rgb{30, 235, 130};
+                    else if (c == 'b' || c == 'B') px = Rgb{40, 145, 255};
+                    else if (c == 'c' || c == 'C') px = Rgb{0, 228, 255};
+                    else if (c == 'y' || c == 'Y') px = Rgb{255, 200, 60};
+                    else if (c == 'm' || c == 'M') px = Rgb{210, 75, 255};
+                    else if (c == 'w' || c == 'W') px = Rgb{255, 255, 255};
+                    pset(static_cast<int>(x), static_cast<int>(y), scale_rgb(px, pop));
+                }
+            }
+        } else if (task_id == "youtube") {
+            // Rounded YouTube red plate (x=3..21, y=2..13) + razor-sharp white Play triangle
+            Rgb yt_red{255, 18, 30};
+            Rgb yt_rim{255, 70, 82};
+            Rgb yt_white{255, 255, 255};
+            for (int y = 2; y <= 13; ++y) {
+                for (int x = 3; x <= 21; ++x) {
+                    bool corner = ((x <= 4 || x >= 20) && (y == 2 || y == 13)) ||
+                                  ((x == 3 || x == 21) && (y == 3 || y == 12));
+                    if (corner) continue;
+                    bool edge = (y == 2 || y == 13 || x == 3 || x == 21);
+                    float sweep = 0.85f + 0.15f * std::sin(static_cast<float>(te * 5.0 - x * 0.25));
+                    pset(x, y, scale_rgb(edge ? yt_rim : yt_red, pop * sweep));
+                }
+            }
+            // Soft outer glow around play plate
+            for (int x = 5; x <= 19; ++x) {
+                glow_px(x, 1, yt_red, 0.22f);
+                glow_px(x, 14, yt_red, 0.22f);
+            }
+            // Crisp Play triangle centered in (x=10..15, y=4..11)
+            for (int row = 0; row < 7; ++row) {
+                int y = 4 + row;
+                int dist_c = std::abs(row - 3);
+                int max_dx = (3 - dist_c) * 2;
+                for (int dx = 0; dx <= max_dx && (10 + dx) <= 15; ++dx) {
+                    pset(10 + dx, y, scale_rgb(yt_white, std::min(1.0f, pop * 1.1f)));
+                }
+            }
+        } else if (task_id == "music" || task_id == "yandex_music") {
+            // Musical eighth-note + live miniature spectrum bars
+            Rgb nc = lerp_rgb(Rgb{0, 224, 255}, Rgb{255, 200, 68}, 0.5f + 0.5f * std::sin(static_cast<float>(te * 3.5)));
+            int bob = static_cast<int>(std::lround(std::sin(te * 4.5) * 0.8));
+            const uint8_t note_mask[10][8] = {
+                {0,0,0,1,1,1,1,1},
+                {0,0,0,1,1,1,1,1},
+                {0,0,0,1,0,0,0,1},
+                {0,0,0,1,0,0,0,1},
+                {0,0,0,1,0,0,0,1},
+                {0,1,1,1,0,0,0,1},
+                {1,1,1,1,0,1,1,1},
+                {1,1,1,1,1,1,1,1},
+                {0,1,1,0,1,1,1,0},
+                {0,0,0,0,0,1,0,0},
+            };
+            for (int r = 0; r < 10; ++r) {
+                for (int c = 0; c < 8; ++c) {
+                    if (note_mask[r][c]) pset(3 + c, 3 + r + bob, scale_rgb(nc, pop));
+                }
+            }
+            for (int b = 0; b < 5; ++b) {
+                int bx = 14 + b * 2;
+                float amp = 0.35f + 0.65f * (0.5f + 0.5f * std::sin(static_cast<float>(te * 8.5 + b * 1.3)));
+                int bh = std::max(2, static_cast<int>(std::lround(amp * 11.0f)));
+                Rgb bc = lerp_rgb(Rgb{0, 230, 210}, Rgb{232, 198, 134}, b / 4.0f);
+                for (int y = 0; y < bh; ++y) {
+                    pset(bx, static_cast<int>(H) - 2 - y, scale_rgb(bc, pop));
+                }
+            }
+        } else if (task_id == "telegram") {
+            Rgb sky{38, 175, 255};
+            for (int y = 1; y < 15; ++y) {
+                for (int x = 5; x < 20; ++x) {
+                    float dx = (x - 12.0f);
+                    float dy = (y - 7.5f);
+                    if (dx * dx + dy * dy <= 49.0f) {
+                        pset(x, y, scale_rgb(sky, 0.32f * pop));
+                    }
+                }
+            }
+            // Crisp tilted paper airplane silhouette
+            const char* plane[9] = {
+                "         ...",
+                "       ..XX.",
+                "     ..XXXX.",
+                "   ..XX.XXX.",
+                " ..XX..XXXX.",
+                "   ...XXXXX.",
+                "     ..XXXX.",
+                "     .X.XXX.",
+                "     .   XX."
+            };
+            for (int r = 0; r < 9; ++r) {
+                for (int c = 0; plane[r][c] != '\0'; ++c) {
+                    if (plane[r][c] == 'X') pset(6 + c, 4 + r, Rgb{255, 255, 255});
+                    else if (plane[r][c] == '.') pset(6 + c, 4 + r, scale_rgb(sky, pop * 0.9f));
+                }
+            }
+        } else if (task_id == "browser" || task_id == "search") {
+            float cx = 12.0f, cy = 7.5f;
+            float r_outer = 6.1f;
+            for (int y = 1; y < 15; ++y) {
+                for (int x = 5; x < 20; ++x) {
+                    float dx = x - cx, dy = y - cy;
+                    float dist = std::sqrt(dx * dx + dy * dy);
+                    float rim = std::exp(-std::pow(dist - r_outer, 2.0f) * 1.4f);
+                    float mer = std::exp(-std::pow(dx - 2.6f * std::sin(static_cast<float>(te * 2.2)), 2.0f) * 1.2f) * (dist <= r_outer ? 0.85f : 0.0f);
+                    float eq = std::exp(-dy * dy * 1.1f) * (dist <= r_outer ? 0.7f : 0.0f);
+                    float k = std::clamp((rim + mer * 0.7f + eq * 0.65f) * pop, 0.0f, 1.0f);
+                    if (k > 0.08f) {
+                        Rgb c = lerp_rgb(Rgb{0, 185, 255}, Rgb{200, 248, 255}, rim);
+                        pset(x, y, scale_rgb(c, k));
+                    }
+                }
+            }
+        } else if (task_id == "timer") {
+            Rgb gold{255, 196, 56};
+            // Hourglass outline x=8..16, y=2..13
+            for (int x = 8; x <= 16; ++x) {
+                pset(x, 2, scale_rgb(gold, pop));
+                pset(x, 13, scale_rgb(gold, pop));
+            }
+            for (int r = 1; r <= 5; ++r) {
+                int lx = 8 + r - 1;
+                int rx = 16 - (r - 1);
+                if (lx > rx) std::swap(lx, rx);
+                pset(lx, 2 + r, gold); pset(rx, 2 + r, gold);
+                pset(lx, 13 - r, gold); pset(rx, 13 - r, gold);
+            }
+            int drop_y = 6 + (static_cast<int>(te * 7.0) % 6);
+            pset(12, drop_y, Rgb{255, 245, 190});
+            pset(11, 12, Rgb{255, 215, 95}); pset(12, 12, Rgb{255, 215, 95}); pset(13, 12, Rgb{255, 215, 95});
+        } else if (task_id == "eq") {
+            for (int b = 0; b < 8; ++b) {
+                int bx = 2 + b * 3;
+                float phase = static_cast<float>(te * 6.5 + b * 0.85);
+                int bh = 3 + static_cast<int>(std::lround((0.5f + 0.5f * std::sin(phase)) * 10.0f));
+                Rgb bc = hsv_to_rgb(180.0f + b * 18.0f, 0.9f, 1.0f);
+                for (int y = 0; y < bh; ++y) {
+                    pset(bx, 13 - y, scale_rgb(bc, pop));
+                    pset(bx + 1, 13 - y, scale_rgb(bc, pop * 0.8f));
+                }
+            }
+        } else if (task_id == "tv") {
+            Rgb rim{90, 210, 255};
+            for (int x = 3; x <= 21; ++x) {
+                pset(x, 2, scale_rgb(rim, pop));
+                pset(x, 11, scale_rgb(rim, pop));
+            }
+            for (int y = 2; y <= 11; ++y) {
+                pset(3, y, scale_rgb(rim, pop));
+                pset(21, y, scale_rgb(rim, pop));
+            }
+            for (int y = 3; y <= 10; ++y) {
+                for (int x = 4; x <= 20; ++x) {
+                    float wave = 0.5f + 0.5f * std::sin(static_cast<float>(te * 4.0 + x * 0.35 + y * 0.4));
+                    Rgb sc = lerp_rgb(Rgb{18, 45, 95}, Rgb{120, 65, 220}, wave);
+                    pset(x, y, scale_rgb(sc, pop));
+                }
+            }
+            pset(12, 12, Rgb{200, 220, 255});
+            for (int x = 8; x <= 16; ++x) pset(x, 13, Rgb{200, 220, 255});
+        } else if (task_id == "terminal" || task_id == "agent" || task_id == "adb") {
+            // Glowing Agent Console ">_"
+            Rgb frame{0, 175, 130};
+            Rgb prompt{70, 255, 195};
+            for (int x = 2; x <= 22; ++x) {
+                pset(x, 1, scale_rgb(frame, 0.45f * pop));
+                pset(x, 14, scale_rgb(frame, 0.45f * pop));
+            }
+            for (int y = 2; y <= 13; ++y) {
+                pset(2, y, scale_rgb(frame, 0.45f * pop));
+                pset(22, y, scale_rgb(frame, 0.45f * pop));
+            }
+            // '>' symbol
+            for (int i = 0; i < 4; ++i) {
+                pset(5 + i, 4 + i, prompt);
+                pset(5 + i, 11 - i, prompt);
+            }
+            // Blinking '_' cursor
+            if (static_cast<int>(te * 3.0) % 2 == 0) {
+                for (int x = 12; x <= 18; ++x) {
+                    pset(x, 10, Rgb{220, 255, 240});
+                    pset(x, 11, Rgb{0, 230, 255});
+                }
+            }
+        } else if (task_id == "apps") {
+            const Rgb cols[4] = {{0, 224, 255}, {232, 198, 134}, {138, 92, 246}, {16, 224, 155}};
+            const int ox[4] = {6, 14, 6, 14};
+            const int oy[4] = {2, 2, 9, 9};
+            for (int t = 0; t < 4; ++t) {
+                float reveal = std::clamp(static_cast<float>(te * 4.5 - t * 0.25), 0.0f, 1.0f);
+                Rgb tc = scale_rgb(cols[t], reveal * breathe);
+                for (int dy = 0; dy < 5; ++dy) {
+                    for (int dx = 0; dx < 5; ++dx) {
+                        if ((dx == 0 || dx == 4) && (dy == 0 || dy == 4)) continue;
+                        pset(ox[t] + dx, oy[t] + dy, tc);
+                    }
+                }
+            }
+        } else if (task_id == "heart") {
+            const char* hmap[10] = {
+                " .XX...XX. ",
+                ".XXX..XXX. ",
+                "XXXXXXXXXX ",
+                "XXXXXXXXXX ",
+                "XXXXXXXXXX ",
+                ".XXXXXXXX. ",
+                "..XXXXXX.. ",
+                "...XXXX... ",
+                "....XX.... ",
+                ".......... "
+            };
+            float hb = 0.72f + 0.28f * std::pow(0.5f + 0.5f * std::sin(static_cast<float>(te * 5.8)), 3.0f);
+            for (int r = 0; r < 10; ++r) {
+                for (int c = 0; c < 10; ++c) {
+                    if (hmap[r][c] == 'X') pset(7 + c, 3 + r, scale_rgb(Rgb{255, 45, 95}, pop * hb));
+                }
+            }
+        } else { // settings / check / star / default
+            float cx = 12.0f, cy = 7.5f;
+            float ring_r = 4.6f + 0.35f * std::sin(static_cast<float>(te * 4.5));
+            for (int y = 1; y < 15; ++y) {
+                for (int x = 4; x < 21; ++x) {
+                    float dx = (x - cx) * 0.85f, dy = y - cy;
+                    float dist = std::sqrt(dx * dx + dy * dy);
+                    float g = std::exp(-std::pow(dist - ring_r, 2.0f) * 1.15f);
+                    if (g > 0.06f) {
+                        pset(x, y, scale_rgb(task_col, pop * g));
+                    }
+                }
+            }
+            if (task_id == "check") {
+                Rgb okc{45, 255, 160};
+                pset(9, 8, okc); pset(10, 9, okc); pset(11, 10, okc);
+                pset(12, 9, okc); pset(13, 8, okc); pset(14, 7, okc); pset(15, 6, okc);
+            } else {
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx)
+                        pset(12 + dx, 7 + dy, Rgb{255, 240, 190});
+            }
+        }
     } else if (weather_active) {
         render_weather_scene();
     } else if (scr_override_active) {
@@ -1417,34 +1958,114 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             draw_text_col(scr_override_txt, static_cast<int>(W) - px, top_y, scr_override_col);
         }
     } else if (vstate != VoiceVisualState::Idle) {
+        // Expressive animated Alice Eyes (25x16 matrix) with natural blinks, gaze & speaking lip wave
+        float wake_t = std::clamp(static_cast<float>(voice_elapsed / 0.36), 0.0f, 1.0f);
+        float wake_ease = wake_t * wake_t * (3.0f - 2.0f * wake_t);
+
+        // Periodic organic eyelid blink every 3.8s
+        double blink_cycle = std::fmod(voice_elapsed + 1.1, 3.8);
+        float blink_k = 1.0f;
+        if (blink_cycle > 3.60) {
+            float bp = static_cast<float>((blink_cycle - 3.60) / 0.20);
+            blink_k = 1.0f - 0.86f * std::sin(bp * static_cast<float>(kPi));
+        }
+
+        float spk_energy = 0.0f;
+        for (size_t i = 0; i < 16; ++i) spk_energy += spec[i];
+        spk_energy = std::clamp(spk_energy / 6.5f, 0.0f, 1.0f);
+
+        float gaze_x = 0.0f, gaze_y = 0.0f;
+        float base_ry = 4.1f;
+        Rgb rim_col{0, 212, 255};
+        Rgb core_col{218, 252, 255};
+        Rgb pupil_col{4, 24, 52};
+
         if (vstate == VoiceVisualState::Listening) {
-            float pulse = 0.65f + 0.35f * std::sin(static_cast<float>(t_sec * 5.0));
-            Rgb cyan = scale_rgb(Rgb{0, 235, 255}, pulse);
-            if (W >= 29 && H >= 7) {
-                draw_text_col("АЛИСА", static_cast<int>((W - 29) / 2), top_y, cyan);
-            } else {
-                for (uint32_t x = 0; x < W; ++x) {
-                    float s = 0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 6.5 + x * 0.45));
-                    uint32_t bh = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(s * H)));
-                    for (uint32_t y = 0; y < bh; ++y) pset(static_cast<int>(x), static_cast<int>(H - 1 - y), cyan);
+            gaze_x = 0.65f * std::sin(static_cast<float>(t_sec * 1.35));
+            gaze_y = 0.35f * std::cos(static_cast<float>(t_sec * 0.95));
+            base_ry = 4.2f;
+            rim_col = Rgb{0, 224, 255};
+            core_col = Rgb{225, 252, 255};
+        } else if (vstate == VoiceVisualState::Thinking) {
+            gaze_x = 1.45f * std::sin(static_cast<float>(t_sec * 2.8));
+            gaze_y = -0.85f + 0.35f * std::cos(static_cast<float>(t_sec * 2.1));
+            base_ry = 3.2f;
+            rim_col = Rgb{150, 95, 255};
+            core_col = Rgb{195, 232, 255};
+        } else { // Speaking
+            gaze_x = 0.35f * std::sin(static_cast<float>(t_sec * 2.1));
+            gaze_y = -0.25f;
+            base_ry = 3.7f - spk_energy * 0.45f; // gentle warm happy squint when speaking loud
+            rim_col = lerp_rgb(Rgb{0, 224, 195}, Rgb{232, 198, 134}, 0.25f + spk_energy * 0.45f);
+            core_col = Rgb{240, 255, 248};
+        }
+
+        float eye_ry = std::max(0.55f, base_ry * wake_ease * blink_k);
+        float eye_rx = 3.15f;
+        float eye_cy = 5.8f;
+        const float eye_cxs[2] = {6.3f, 17.7f};
+
+        for (int e = 0; e < 2; ++e) {
+            float ecx = eye_cxs[e];
+            for (int y = 0; y < static_cast<int>(H) - 3; ++y) {
+                for (int x = 0; x < static_cast<int>(W); ++x) {
+                    float dx = (static_cast<float>(x) - ecx) / eye_rx;
+                    float dy = (static_cast<float>(y) - eye_cy) / eye_ry;
+                    // Cheek / smile arch slightly clips lower outer edge when Speaking
+                    if (vstate == VoiceVisualState::Speaking && dy > 0.42f && std::fabs(dx) < 0.72f) {
+                        dy += 0.25f * (1.0f - std::fabs(dx));
+                    }
+                    float d2 = dx * dx + dy * dy;
+                    if (d2 <= 1.75f) {
+                        float glow = std::exp(-std::max(0.0f, d2 - 0.85f) * 2.6f);
+                        Rgb px_c = lerp_rgb(rim_col, core_col, std::clamp(1.1f - d2 * 0.72f, 0.0f, 1.0f));
+                        // Pupil & specular highlight inside open eye
+                        if (wake_ease * blink_k > 0.52f && d2 < 0.92f) {
+                            float px = static_cast<float>(x) - (ecx + gaze_x);
+                            float py = static_cast<float>(y) - (eye_cy + gaze_y);
+                            float pd2 = px * px + py * py;
+                            if (pd2 < 1.35f) {
+                                // Luminous sapphire-obsidian iris + crisp white catchlight at top-left
+                                px_c = lerp_rgb(pupil_col, px_c, std::clamp(pd2 / 1.35f, 0.22f, 1.0f));
+                            }
+                            float hx = static_cast<float>(x) - (ecx + gaze_x - 0.85f);
+                            float hy = static_cast<float>(y) - (eye_cy + gaze_y - 0.9f);
+                            if (hx * hx + hy * hy < 0.72f) {
+                                px_c = Rgb{255, 255, 255};
+                            }
+                        }
+                        padd(x, y, px_c.r * glow, px_c.g * glow, px_c.b * glow);
+                    }
                 }
             }
+        }
+
+        if (vstate == VoiceVisualState::Listening) {
+            // Soft listening acoustic shimmer at outer cheeks
+            float mic_pulse = 0.28f + 0.42f * (0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 5.2)));
+            padd(1, 6, 0.0f, 210.0f * mic_pulse, 255.0f * mic_pulse);
+            padd(23, 6, 0.0f, 210.0f * mic_pulse, 255.0f * mic_pulse);
         } else if (vstate == VoiceVisualState::Thinking) {
-            int mid_y = static_cast<int>(H / 2);
-            double head = std::fmod(t_sec * 24.0, static_cast<double>(std::max<uint32_t>(1, W)));
+            // Orbiting stardust sparkles across brow line
             for (int k = 0; k < 4; ++k) {
-                int px = (static_cast<int>(head) - k + static_cast<int>(W)) % static_cast<int>(W);
-                float fade = 1.0f - k * 0.22f;
-                Rgb c = scale_rgb(lerp_rgb(Rgb{124, 58, 237}, Rgb{0, 212, 255}, 1.0f - k * 0.25f), fade);
-                for (int dy = -1; dy <= 1; ++dy) pset(px, mid_y + dy, c);
+                float sx = std::fmod(static_cast<float>(t_sec * 16.0) + k * 2.0f, static_cast<float>(W));
+                int px = static_cast<int>(sx) % static_cast<int>(W);
+                float fade = 1.0f - k * 0.24f;
+                padd(px, 1, 120.0f * fade, 195.0f * fade, 255.0f * fade);
             }
-        } else {
-            for (uint32_t x = 0; x < W; ++x) {
-                size_t bi = std::min<size_t>(23, (x * 24) / std::max<uint32_t>(1, W));
-                float lvl = std::clamp(spec[bi], 0.08f, 1.0f);
-                uint32_t bar_h = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(lvl * H)));
-                Rgb c = lerp_rgb(Rgb{0, 210, 170}, Rgb{150, 255, 240}, lvl);
-                for (uint32_t y = 0; y < bar_h; ++y) pset(static_cast<int>(x), static_cast<int>(H - 1 - y), c);
+        } else { // Speaking -> animated centered vocal wave bar along y = 12..15
+            int bar_y_base = static_cast<int>(H) - 1;
+            for (int x = 5; x <= 19; ++x) {
+                float dist_mid = std::fabs(x - 12.0f) / 7.0f;
+                float falloff = 1.0f - dist_mid * dist_mid;
+                size_t bi = static_cast<size_t>((x - 5) * 24 / 15) % 24;
+                float v = std::clamp(spec[bi] * 1.15f + 0.16f + 0.14f * std::sin(static_cast<float>(t_sec * 14.0 + x * 0.65)), 0.08f, 1.0f);
+                float amp = v * falloff * 3.1f;
+                int rows = std::clamp(static_cast<int>(std::lround(amp)), 1, 3);
+                Rgb wc = lerp_rgb(Rgb{0, 224, 215}, Rgb{240, 210, 130}, amp / 3.1f);
+                for (int r = 0; r < rows; ++r) {
+                    padd(x, bar_y_base - r, wc.r * 0.9f, wc.g * 0.9f, wc.b * 0.9f);
+                }
             }
         }
     } else if (cfg.mode == "off") {
@@ -1636,6 +2257,8 @@ void FramebufferHw::worker_loop() {
     auto start_tp = clock::now();
     auto last_sensor_tp = clock::now() - std::chrono::seconds(5);
     auto last_fb5_probe_tp = clock::now() - std::chrono::seconds(5);
+    auto last_fb5_health_tp = clock::now();
+    auto last_fb5_refresh_tp = clock::now();
 
     while (running_.load()) {
         auto now = clock::now();
@@ -1645,7 +2268,44 @@ void FramebufferHw::worker_loop() {
             poll_sensors();
             last_sensor_tp = now;
         }
-        if (fb5_.fd < 0 && now - last_fb5_probe_tp >= std::chrono::seconds(5)) {
+
+        if (force_recover_requested_.exchange(false)) {
+            LOGI("Framebuffer", "Manual/watchdog screen recovery triggered");
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (fb5_.fd >= 0) {
+                    close_fb(fb5_);
+                }
+                fb5_present_.store(false);
+                scr_prev_frame_.clear();
+                last_scene_key_.clear();
+            }
+            last_fb5_probe_tp = now - std::chrono::seconds(5);
+        }
+
+        if (fb5_.fd >= 0 && now - last_fb5_health_tp >= std::chrono::milliseconds(3500)) {
+            struct fb_var_screeninfo vi{};
+            if (ioctl(fb5_.fd, FBIOGET_VSCREENINFO, &vi) != 0) {
+                LOGW("Framebuffer", "fb5 ioctl health check failed; resetting LED screen");
+                std::lock_guard<std::mutex> lk(mu_);
+                close_fb(fb5_);
+                fb5_present_.store(false);
+                fb5_recoveries_.fetch_add(1);
+                scr_prev_frame_.clear();
+                last_scene_key_.clear();
+            } else {
+                ioctl(fb5_.fd, FBIOBLANK, 0);
+                last_fb5_ok_tp_ = now;
+            }
+            last_fb5_health_tp = now;
+        }
+
+        if (fb5_.fd >= 0 && now - last_fb5_refresh_tp >= std::chrono::milliseconds(2000)) {
+            fb5_.has_prev = false;
+            last_fb5_refresh_tp = now;
+        }
+
+        if (fb5_.fd < 0 && now - last_fb5_probe_tp >= std::chrono::milliseconds(1200)) {
             FbDevice cand;
             if (open_fb_by_name("YNDX LED screen", "/dev/graphics/fb5", cand)) {
                 int max_bl = 255;
@@ -1657,16 +2317,25 @@ void FramebufferHw::worker_loop() {
                 uint32_t cand_w = cand.xres;
                 uint32_t cand_h = cand.yres;
                 uint32_t cand_bpp = cand.bpp;
+                bool recovered = false;
                 {
                     std::lock_guard<std::mutex> lk(mu_);
+                    recovered = fb5_expected_;
                     fb5_ = std::move(cand);
+                    fb5_expected_ = true;
                     fb5_max_bl_ = max_bl;
                     last_fb5_bl_ = -1;
+                    last_fb5_ok_tp_ = now;
+                    scr_prev_frame_.clear();
+                    last_scene_key_.clear();
                     fb5_present_.store(true);
                     update_needs_spectrum_locked();
                 }
-                LOGI("Framebuffer", "Hotplug detected LED screen on %s (%ux%u %ubpp, max_bl=%d)",
-                     cand_dev.c_str(), cand_w, cand_h, cand_bpp, max_bl);
+                if (recovered) {
+                    fb5_recoveries_.fetch_add(1);
+                }
+                LOGI("Framebuffer", "LED screen ready on %s (%ux%u %ubpp, max_bl=%d, recoveries=%d)",
+                     cand_dev.c_str(), cand_w, cand_h, cand_bpp, max_bl, fb5_recoveries_.load());
             }
             last_fb5_probe_tp = now;
         }
@@ -1686,17 +2355,21 @@ void FramebufferHw::worker_loop() {
             std::unique_lock<std::mutex> lk(mu_);
             bool trans_active = (std::chrono::duration<double>(now - scene_trans_start_).count() < scene_trans_dur_sec_ + 0.08);
             bool weather_active = (now < weather_until_);
+            bool startup_active_lk = (now < startup_until_);
+            bool bt_active_lk = (now < bt_until_);
+            bool task_active_lk = (now < task_icon_until_);
             bool music_active = (music_playing_ || now < music_stop_grace_until_) && scfg.auto_music_visualizer && scfg.mode != "off";
             bool transient_active = (voice_state_ != VoiceVisualState::Idle) || mic_muted_ ||
                                     (now < osd_until_) || (now < flash_until_) ||
                                     (now < cal_until_) || (now < scr_text_until_) ||
+                                    startup_active_lk || bt_active_lk || task_active_lk ||
                                     trans_active || weather_active || music_active;
             bool ring_static = (rcfg.mode == "off" || rcfg.mode == "solid");
             bool scr_has = fb5_present_.load();
             bool clock_smooth = (scfg.mode == "clock" &&
                                  (scfg.clock_style == "neon" || scfg.clock_style == "minimal" || scfg.clock_style == "seconds" || scfg.clock_style == "binary"));
             bool scr_static = (!scr_has || scfg.mode == "off" || (scfg.mode == "clock" && !clock_smooth));
-            int sleep_ms = (music_active || trans_active || weather_active) ? 25 : 33;
+            int sleep_ms = (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk) ? 25 : 33;
             if (!transient_active && ring_static && scr_static) {
                 sleep_ms = (scr_has && scfg.mode == "clock") ? 180 : 500;
             }
@@ -1713,6 +2386,7 @@ json::Value FramebufferHw::get_status_json() {
     Value obj = Value::make_obj();
     obj["fb4Present"] = Value::make_bool(fb4_present_.load());
     obj["fb5Present"] = Value::make_bool(fb5_present_.load());
+    obj["fb5Recoveries"] = Value::make_int(fb5_recoveries_.load());
     obj["lux"] = Value::make_num(last_lux_.load());
     obj["socTempC"] = Value::make_num(soc_temp_c_.load());
     obj["effectiveBrightness"] = Value::make_int(eff_brightness_.load());
@@ -1730,6 +2404,13 @@ json::Value FramebufferHw::get_status_json() {
         obj["fb5Bpp"] = Value::make_int(fb5_.bpp);
         obj["fb5RgbOffsets"] = Value::make_str(
             std::to_string(fb5_.red_off) + "/" + std::to_string(fb5_.green_off) + "/" + std::to_string(fb5_.blue_off));
+        auto now_st = std::chrono::steady_clock::now();
+        obj["activeTaskIcon"] = Value::make_str(now_st < task_icon_until_ ? task_icon_id_ : "");
+        const char* vs_str = "idle";
+        if (voice_state_ == VoiceVisualState::Listening) vs_str = "listening";
+        else if (voice_state_ == VoiceVisualState::Thinking) vs_str = "thinking";
+        else if (voice_state_ == VoiceVisualState::Speaking) vs_str = "speaking";
+        obj["voiceVisualState"] = Value::make_str(vs_str);
         for (const auto& p : ring_pixels_) {
             Value item = Value::make_arr();
             item.push(Value::make_int(p.r));

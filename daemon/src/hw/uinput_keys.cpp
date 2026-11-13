@@ -16,7 +16,8 @@ constexpr int SUPPORTED_KEYS[] = {
     KEY_BACK, KEY_HOMEPAGE, KEY_MENU, KEY_ENTER, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
     KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_MUTE, KEY_POWER, KEY_WAKEUP, KEY_SLEEP, KEY_PLAYPAUSE,
     KEY_STOPCD, KEY_NEXTSONG, KEY_PREVIOUSSONG, KEY_SEARCH, KEY_ESC, KEY_OK, KEY_SELECT,
-    KEY_INFO, KEY_CHANNELUP, KEY_CHANNELDOWN, KEY_REWIND, KEY_FASTFORWARD
+    KEY_INFO, KEY_CHANNELUP, KEY_CHANNELDOWN, KEY_REWIND, KEY_FASTFORWARD,
+    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE
 };
 } // namespace
 
@@ -43,10 +44,15 @@ bool UinputKeys::init() {
     }
 
     ioctl(fd_, UI_SET_EVBIT, EV_KEY);
+    ioctl(fd_, UI_SET_EVBIT, EV_REL);
     ioctl(fd_, UI_SET_EVBIT, EV_SYN);
     for (int k : SUPPORTED_KEYS) {
         ioctl(fd_, UI_SET_KEYBIT, k);
     }
+    ioctl(fd_, UI_SET_RELBIT, REL_X);
+    ioctl(fd_, UI_SET_RELBIT, REL_Y);
+    ioctl(fd_, UI_SET_RELBIT, REL_WHEEL);
+    ioctl(fd_, UI_SET_RELBIT, REL_HWHEEL);
 
     struct uinput_user_dev udev {};
     snprintf(udev.name, UINPUT_MAX_NAME_SIZE, "OpenStation Virtual Remote");
@@ -118,6 +124,43 @@ bool UinputKeys::send_android_action(const std::string& action) {
     if (action == "info") return send_key(KEY_INFO);
     if (action == "esc") return send_key(KEY_ESC);
     return false;
+}
+
+bool UinputKeys::send_mouse_move(int dx, int dy) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (fd_ < 0 || (dx == 0 && dy == 0)) return fd_ >= 0;
+    bool ok = true;
+    if (dx != 0) ok &= emit(EV_REL, REL_X, dx);
+    if (dy != 0) ok &= emit(EV_REL, REL_Y, dy);
+    ok &= emit(EV_SYN, SYN_REPORT, 0);
+    return ok;
+}
+
+bool UinputKeys::send_mouse_click(int button, int count) {
+    int code = (button == 1) ? BTN_RIGHT : ((button == 2) ? BTN_MIDDLE : BTN_LEFT);
+    int reps = (count >= 2) ? 2 : 1;
+    bool ok = true;
+    for (int i = 0; i < reps; ++i) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (fd_ < 0) return false;
+            ok &= emit(EV_KEY, static_cast<unsigned short>(code), 1);
+            emit(EV_SYN, SYN_REPORT, 0);
+            usleep(14000);
+            ok &= emit(EV_KEY, static_cast<unsigned short>(code), 0);
+            emit(EV_SYN, SYN_REPORT, 0);
+        }
+        if (i + 1 < reps) usleep(45000);
+    }
+    return ok;
+}
+
+bool UinputKeys::send_mouse_scroll(int dy) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (fd_ < 0 || dy == 0) return fd_ >= 0;
+    bool ok = emit(EV_REL, REL_WHEEL, dy);
+    ok &= emit(EV_SYN, SYN_REPORT, 0);
+    return ok;
 }
 
 } // namespace openstation

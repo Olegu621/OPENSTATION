@@ -180,6 +180,16 @@ $BootAnimZip = if ($fwManifest.files.PSObject.Properties.Name -contains "bootani
 } else {
     Join-Path $fwDir "bootanimation.zip"
 }
+$BootLogodBin = if ($fwManifest.files.PSObject.Properties.Name -contains "bootlogod" -and $fwManifest.files.bootlogod) {
+    Join-Path $fwDir $fwManifest.files.bootlogod.fileName
+} else {
+    Join-Path $fwDir "bootlogod"
+}
+$BootLogoImg = if ($fwManifest.files.PSObject.Properties.Name -contains "bootlogo" -and $fwManifest.files.bootlogo) {
+    Join-Path $fwDir $fwManifest.files.bootlogo.fileName
+} else {
+    Join-Path $fwDir "logo.img"
+}
 
 $fwChecks = @(
     @{ Entry = $fwManifest.files.daemon; Path = $DaemonBin },
@@ -188,6 +198,12 @@ $fwChecks = @(
 )
 if ($fwManifest.files.PSObject.Properties.Name -contains "bootanimation" -and $fwManifest.files.bootanimation) {
     $fwChecks += @{ Entry = $fwManifest.files.bootanimation; Path = $BootAnimZip }
+}
+if ($fwManifest.files.PSObject.Properties.Name -contains "bootlogod" -and $fwManifest.files.bootlogod) {
+    $fwChecks += @{ Entry = $fwManifest.files.bootlogod; Path = $BootLogodBin }
+}
+if ($fwManifest.files.PSObject.Properties.Name -contains "bootlogo" -and $fwManifest.files.bootlogo) {
+    $fwChecks += @{ Entry = $fwManifest.files.bootlogo; Path = $BootLogoImg }
 }
 foreach ($pair in $fwChecks) {
     if (-not (Test-Path $pair.Path)) { throw "Отсутствует файл firmware: $($pair.Path)" }
@@ -640,6 +656,9 @@ try {
     if ($BootAnimZip -and (Test-Path $BootAnimZip)) {
         $tarFilesList += @{ src = $BootAnimZip; arc = "meta/bootanimation.zip"; mode = 420 }
     }
+    if ($BootLogodBin -and (Test-Path $BootLogodBin)) {
+        $tarFilesList += @{ src = $BootLogodBin; arc = "meta/bootlogod"; mode = 493 }
+    }
     $tarSpecObj = [ordered]@{
         tarPath = $PayloadTar
         files   = $tarFilesList
@@ -928,6 +947,15 @@ if [ -f "$BUILD/payload/meta/bootanimation.zip" ]; then
     chcon u:object_r:system_file:s0 "$MNT/system/media/bootanimation.zip" 2>/dev/null || true
 fi
 
+# Фирменный логотип матричного LED-экрана на старте (/sbin/bootlogod)
+if [ -f "$BUILD/payload/meta/bootlogod" ]; then
+    mkdir -p "$MNT/sbin"
+    cp -f "$BUILD/payload/meta/bootlogod" "$MNT/sbin/bootlogod"
+    chown 0:0 "$MNT/sbin/bootlogod"
+    chmod 755 "$MNT/sbin/bootlogod"
+    chcon u:object_r:rootfs:s0 "$MNT/sbin/bootlogod" 2>/dev/null || true
+fi
+
 # Патч /system/etc/prop.default (раннее включение USB/TCP ADB и перехват кнопок на OpenStation)
 PD="$MNT/system/etc/prop.default"
 [ -f "$PD" ] || { echo "Missing system/etc/prop.default" >&2; exit 1; }
@@ -1015,16 +1043,31 @@ echo "SYSTEM_IMG_OK"
     $systemOutPath = Join-Path $OutDir "system.img"
     Invoke-Adb @("pull", "/data/local/tmp/rom_build/system.img", $systemOutPath)
 
-    Write-Host "[6/6] Финализация vbmeta.img, rom_manifest.json и архива ZIP..." -ForegroundColor Yellow
+    Write-Host "[6/6] Финализация vbmeta.img, logo.img, rom_manifest.json и архива ZIP..." -ForegroundColor Yellow
     $vbmetaOutPath = Join-Path $OutDir "vbmeta.img"
     Copy-Item -Force (Join-Path $BaseDir "vbmeta.img") $vbmetaOutPath
 
-    $imgSpecs = [ordered]@{}
-    foreach ($pair in @(
+    $partList = @("vbmeta", "vendor", "system")
+    $specInputs = @(
         @{ Key = "vbmeta"; Name = "vbmeta.img"; Path = $vbmetaOutPath },
         @{ Key = "vendor"; Name = "vendor.img"; Path = $vendorOutPath },
         @{ Key = "system"; Name = "system.img"; Path = $systemOutPath }
-    )) {
+    )
+    $zipEntries = @(
+        @{ src = $vbmetaOutPath; arc = "vbmeta.img" },
+        @{ src = $vendorOutPath; arc = "vendor.img" },
+        @{ src = $systemOutPath; arc = "system.img" }
+    )
+    if ($BootLogoImg -and (Test-Path $BootLogoImg)) {
+        $logoOutPath = Join-Path $OutDir "logo.img"
+        Copy-Item -Force $BootLogoImg $logoOutPath
+        $partList += "logo"
+        $specInputs += @{ Key = "logo"; Name = "logo.img"; Path = $logoOutPath }
+        $zipEntries += @{ src = $logoOutPath; arc = "logo.img" }
+    }
+
+    $imgSpecs = [ordered]@{}
+    foreach ($pair in $specInputs) {
         $fi = Get-Item $pair.Path
         $sha = (Get-FileHash -Path $pair.Path -Algorithm SHA256).Hash.ToLowerInvariant()
         $imgSpecs[$pair.Key] = [ordered]@{
@@ -1042,7 +1085,7 @@ echo "SYSTEM_IMG_OK"
         version      = $Version
         buildTimeUtc = $buildUtc
         baseSource   = "YAOSX 1.99"
-        partitions   = @("vbmeta", "vendor", "system")
+        partitions   = $partList
         files        = $imgSpecs
     }
     $innerJson = (($innerManifest | ConvertTo-Json -Depth 6) -replace "`r`n", "`n") + "`n"
@@ -1054,14 +1097,10 @@ echo "SYSTEM_IMG_OK"
         $zipPath = Join-Path $DistDir $zipName
         if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 
+        $zipEntries += @{ src = $ManifestNoArchive; arc = "rom_manifest.json" }
         $zipSpecObj = [ordered]@{
             zipPath = $zipPath
-            entries = @(
-                @{ src = $vbmetaOutPath; arc = "vbmeta.img" },
-                @{ src = $vendorOutPath; arc = "vendor.img" },
-                @{ src = $systemOutPath; arc = "system.img" },
-                @{ src = $ManifestNoArchive; arc = "rom_manifest.json" }
-            )
+            entries = $zipEntries
         }
         $zipSpecPath = Join-Path $StageDir "zip_spec.json"
         [System.IO.File]::WriteAllText($zipSpecPath, ($zipSpecObj | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))

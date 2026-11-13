@@ -1324,12 +1324,17 @@ class YandexMusicActivity : Activity() {
         val cm = CookieManager.getInstance()
         cm.setAcceptCookie(true)
         cm.setAcceptThirdPartyCookies(wv, true)
+        wv.setInitialScale(66)
         wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
             useWideViewPort = true
             loadWithOverviewMode = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            textZoom = 78
         }
 
         fun tryExtractToken(urlStr: String?): Boolean {
@@ -1371,6 +1376,10 @@ class YandexMusicActivity : Activity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 tryExtractToken(url)
+                view?.evaluateJavascript(
+                    "(function(){try{var m=document.querySelector('meta[name=viewport]');if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}m.content='width=1120,initial-scale=0.66,minimum-scale=0.4,maximum-scale=2.0,user-scalable=yes';if(!window.__osZoom){window.__osZoom=0.76;}document.documentElement.style.zoom=String(window.__osZoom);}catch(e){}})();",
+                    null
+                )
             }
         }
 
@@ -1395,10 +1404,36 @@ class YandexMusicActivity : Activity() {
             }
         }
         val tvCursorHint = TextView(this).apply {
-            text = "MENU: курсор/клавиатура  ·  BACK: закрыть"
+            text = "MENU: курсор  ·  BACK: закрыть"
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 11.5f
-            setPadding(0, 0, dp(10), 0)
+            setPadding(0, 0, dp(8), 0)
+        }
+        val btnZoomOut = TextView(this).apply {
+            text = "🔍-"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setBackgroundResource(R.drawable.bg_pill)
+            setOnClickListener {
+                wv.evaluateJavascript(
+                    "(function(){window.__osZoom=Math.max(0.45,(window.__osZoom||0.76)-0.1);document.documentElement.style.zoom=String(window.__osZoom);})();",
+                    null
+                )
+            }
+        }
+        val btnZoomIn = TextView(this).apply {
+            text = "🔍+"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setBackgroundResource(R.drawable.bg_pill)
+            setOnClickListener {
+                wv.evaluateJavascript(
+                    "(function(){window.__osZoom=Math.min(1.3,(window.__osZoom||0.76)+0.1);document.documentElement.style.zoom=String(window.__osZoom);})();",
+                    null
+                )
+            }
         }
         val btnClose = TextView(this).apply {
             text = "Закрыть"
@@ -1409,6 +1444,8 @@ class YandexMusicActivity : Activity() {
             setOnClickListener { dlgHolder[0]?.dismiss() }
         }
         topOverlay.addView(tvCursorHint)
+        topOverlay.addView(btnZoomOut)
+        topOverlay.addView(btnZoomIn)
         topOverlay.addView(btnClose)
         root.addView(topOverlay)
 

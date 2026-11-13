@@ -31,7 +31,7 @@ struct LedRingConfig {
 struct LedScreenConfig {
     std::string mode = "clock";          // off, clock, text, spectrum, snake
     std::string clock_style = "classic"; // classic, minimal, bold, seconds, binary, neon, retro
-    std::string visualizer_style = "nexus"; // nexus (Three.js Anomaly), specterr, particles, bars, wave, fireflies, aurora, matrix
+    std::string visualizer_style = "dots"; // dots, nexus, specterr, particles, bars, wave, fireflies, aurora, matrix
     bool auto_music_visualizer = true;   // smooth auto morph orb + LED screen when music plays
     std::string text = "OPEN STATION MAX";
     std::string color = "#ffffff";
@@ -105,6 +105,7 @@ struct AssistantConfig {
     int kws_threads = 1;
     bool chime_enabled = true;
     bool google_search = false;
+    bool agent_mode = false;
     bool echo_guard = true;
     int pre_roll_ms = 450;
     int follow_up_sec = 8;

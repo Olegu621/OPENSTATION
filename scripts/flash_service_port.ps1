@@ -23,6 +23,9 @@ param(
     [switch]$NoPause
 )
 
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
 $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $PSScriptRoot
 $ServiceFlashDir = Join-Path $RootDir "service_flash"
@@ -404,10 +407,26 @@ if (-not $ForceWipe -and -not $NoPause) {
     $null = Read-Host "Подключите станцию согласно схеме и нажмите Enter для начала прошивки"
 }
 
-Write-Host "[2/4] Инициализация BootROM и загрузка U-Boot (boot-g12.py -> aml.img)..." -ForegroundColor Yellow
+Write-Host "[2/4] Инициализация BootROM и проверка U-Boot..." -ForegroundColor Yellow
 
 $ubootReady = $false
-$probeStagePy = @'
+
+# 1. Прямая проверка update.exe bulkcmd "mmc dev 1" (если U-Boot уже загружен в память или после UBT)
+Push-Location $ServiceFlashDir
+try {
+    & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  [✓] U-Boot уже активен на станции (mmc dev 1 OK)! Пропускаем этап загрузки aml.img." -ForegroundColor Green
+        $ubootReady = $true
+    }
+} catch {}
+finally {
+    Pop-Location
+}
+
+# 2. Если update.exe еще не отвечает, проверяем стадию через Python probe
+if (-not $ubootReady) {
+    $probeStagePy = @'
 import importlib.util, os, sys
 sf = sys.argv[1]
 sys.path.insert(0, sf)
@@ -424,26 +443,46 @@ except Exception:
 idb = d.identify()
 print("STAGE=" + str(ord(idb[3])))
 '@
-$stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
-if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
+    $stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
+    if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
+        Push-Location $ServiceFlashDir
+        try {
+            & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  [✓] U-Boot Update уже активен (Stage=$($Matches[1])), пропускаем повторную загрузку aml.img." -ForegroundColor Green
+                $ubootReady = $true
+            }
+        } catch {}
+        finally {
+            Pop-Location
+        }
+    }
+}
+
+# 3. Если устройство находится в BootROM (Stage 0), запускаем boot-g12.py
+if (-not $ubootReady) {
+    Write-Host "  -> Запуск boot-g12.py (ревизия: $Revision)..." -ForegroundColor Yellow
+    $bootOut = (& $PythonExe (Join-Path $ServiceFlashDir "boot-g12.py") "--revision" $Revision "--retries" "3" 2>&1 | Out-String)
+    Write-Host ($bootOut.Trim()) -ForegroundColor Gray
+
+    # Проверяем готовность после вызова boot-g12.py
+    Start-Sleep -Seconds 2
     Push-Location $ServiceFlashDir
     try {
         & (Join-Path $ServiceFlashDir "update.exe") bulkcmd "mmc dev 1" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  U-Boot Update уже активен (Stage=$($Matches[1])), пропускаем повторную загрузку aml.img." -ForegroundColor Gray
+            Write-Host "  [✓] U-Boot успешно откликнулся после boot-g12.py!" -ForegroundColor Green
             $ubootReady = $true
         }
-    } finally {
+    } catch {}
+    finally {
         Pop-Location
     }
-}
 
-if (-not $ubootReady) {
-    Write-Host "  -> Запуск boot-g12.py (ревизия: $Revision)..." -ForegroundColor Yellow
-    & $PythonExe (Join-Path $ServiceFlashDir "boot-g12.py") "--revision" $Revision "--retries" "3"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Не удалось инициализировать Amlogic USB Boot (1B8E:C003). Проверьте: пайку/контакт DATA+/DATA-/GND, перемычку 6 пина на 3 (GND), драйвер WorldCup и подачу питания 19V."
+    if (-not $ubootReady) {
+        throw "Не удалось инициализировать Amlogic USB Boot (1B8E:C003).`n`nВозможные причины:`n1) Станция не переведена в BootROM (проверьте перемычку пина 6 на пин 3 GND);`n2) Нет питания 19V или кабель Type-C не передает данные (нужны D+, D-, GND);`n3) Драйвер WorldCup Device не установлен в Диспетчере устройств Windows.`n`nЛог boot-g12.py:`n$bootOut"
     }
+}
 
     Write-Host "  Ожидание переподключения USB-интерфейса WorldCup Update..." -ForegroundColor Gray
     Start-Sleep -Seconds 3

@@ -25,13 +25,18 @@ platform-tools/
 # Service port ROM images & release archives (distributed via GitHub Releases)
 rom/*.img
 rom/*.zip
+rom/.stage_tmp/
 dist/
 base_rom/
 *.img
+!firmware/logo.img
 !service_flash/aml.img
 !service_flash/aml_0008_00052.img
 !service_flash/aml_00053.img
+!service_flash/aml_bundle.img
 !service_flash/bootloader.img
+!service_flash/misc.img
+!service_flash/misc_00053.img
 
 # IDE & OS metadata
 .idea/

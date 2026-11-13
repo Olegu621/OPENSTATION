@@ -1,30 +1,40 @@
 {
-    "name":  "OpenStation Max",
-    "device":  "yandexstation_2",
-    "version":  "1.3.2",
-    "autonomous":  true,
-    "changelog":  "OpenStation Max v1.3.4: Пошаговый мастер прошивки (Wizard) в OpenStationFlasher.exe с защитой от бутлупа; нативный стек захвата звука (Yandex VQE DSP libyandexvqe.so) с многомикрофонным формированием луча и аппаратным эхоподавлением; строгое распознавание только русского и английского языков; 3D визуализатор Nexus Anomaly на Three.js с реакцией на басы; стиль Apple Liquid Glass для плеера и веб-интерфейса; поддержка всех ревизий 0008, 00052 и 00053 (Zigbee 2023+).",
-    "buildTimeUtc":  "2026-11-12T06:45:00Z",
-    "files":  {
-                  "daemon":  {
-                                 "fileName":  "openstationd",
-                                 "size":  2309784,
-                                 "sha256":  "1bd3dbb4581395cda5abfdddbe4916fcf3d26441001c3e0a76b4e27d223e2c60"
-                             },
-                  "launcher":  {
-                                   "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4703565,
-                                   "sha256":  "524f5d845d33a05bec9545832af5553f00e4028a3c519ceca04127d7a88fc751"
-                               },
-                  "ime":  {
-                              "fileName":  "OpenStationIME.apk",
-                              "size":  808866,
-                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
-                          },
-                  "bootanimation":  {
-                                        "fileName":  "bootanimation.zip",
-                                        "size":  6200752,
-                                        "sha256":  "78ca568599b4dfd549665812c50d0f12091fff0ebbe83fc50b7932d161328154"
-                                    }
-              }
+  "name": "OpenStation Max",
+  "device": "yandexstation_2",
+  "version": "1.5.0",
+  "autonomous": true,
+  "changelog": "OpenStation Max v1.5.0: новый 3D Halftone-визуализатор «3D Точки», улучшенная навигация по экранам лаунчера, веб-пульт без запроса токена и обновлённый установщик прошивки в 1 клик.",
+  "buildTimeUtc": "2026-11-13T03:26:37Z",
+  "files": {
+    "daemon": {
+      "fileName": "openstationd",
+      "size": 2466432,
+      "sha256": "a0ae2159a572e8ccb0e6514f4faf756e38606502c81acb9e49c1b3a09d4c9b54"
+    },
+    "bootlogod": {
+      "fileName": "bootlogod",
+      "size": 657728,
+      "sha256": "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
+    },
+    "launcher": {
+      "fileName": "OpenStationLauncher.apk",
+      "size": 5060842,
+      "sha256": "5ac4b17ef25a0a1638a2199a85c4524e00ae4c0d34e888eeaaed24151e6177bf"
+    },
+    "ime": {
+      "fileName": "OpenStationIME.apk",
+      "size": 808082,
+      "sha256": "9e8460d2666bb93f0da00229b6337f6867f3e648ab6fd38ce00c07611b040490"
+    },
+    "bootanimation": {
+      "fileName": "bootanimation.zip",
+      "size": 6725707,
+      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
+    },
+    "bootlogo": {
+      "fileName": "logo.img",
+      "size": 2252608,
+      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
+    }
+  }
 }

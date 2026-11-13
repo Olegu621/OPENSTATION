@@ -134,21 +134,70 @@
                 <button class="btn btn-sm" id="btnRefreshApps">Обновить</button>
               </div>
               <div class="apps-grid" id="appsGrid">Загрузка...</div>
+
+              <div class="apk-installer">
+                <input type="file" id="apkFileInput" accept=".apk,application/vnd.android.package-archive" style="display:none;" />
+                <div class="apk-dropzone" id="apkDropzone" tabindex="0" role="button" aria-label="Установить APK на станцию">
+                  <div class="apk-dropzone-icon">📦</div>
+                  <div class="apk-dropzone-meta">
+                    <div class="apk-dropzone-title">Установить приложение (.apk)</div>
+                    <div class="hint">Перетащите файл сюда или выберите APK с устройства (до 160 МБ)</div>
+                  </div>
+                  <button class="btn btn-sm btn-accent" id="btnChooseApk" type="button">Выбрать APK</button>
+                </div>
+                <div class="ota-progress-wrap" id="apkProgressWrap" style="display:none; margin-top: 10px;">
+                  <div class="ota-progress-bar">
+                    <div class="ota-progress-fill" id="apkProgressFill" style="width:0%"></div>
+                  </div>
+                  <div class="hint" id="apkProgressLabel" style="margin-top:4px;">0%</div>
+                </div>
+                <div class="status-banner" id="apkInstallStatus" style="display:none; margin-top: 10px;"></div>
+              </div>
             </div>
           </div>
 
           <div class="card">
-            <h2>Пульт и телевизор</h2>
-            <div class="dpad">
-              <div></div>
-              <button class="btn dpad-btn" data-key="up">▲</button>
-              <div></div>
-              <button class="btn dpad-btn" data-key="left">◀</button>
-              <button class="btn dpad-btn btn-accent" data-key="center">OK</button>
-              <button class="btn dpad-btn" data-key="right">▶</button>
-              <div></div>
-              <button class="btn dpad-btn" data-key="down">▼</button>
-              <div></div>
+            <div class="row-between" style="margin-bottom: 12px; gap: 10px; flex-wrap: wrap;">
+              <h2 style="margin: 0;">Пульт и телевизор</h2>
+              <div class="seg-group" id="remoteInputMode">
+                <button class="seg active" data-rmode="dpad" type="button">Крестовина</button>
+                <button class="seg" data-rmode="touchpad" type="button">Тачпад</button>
+              </div>
+            </div>
+
+            <div id="remoteDpadWrap">
+              <div class="dpad">
+                <div></div>
+                <button class="btn dpad-btn" data-key="up">▲</button>
+                <div></div>
+                <button class="btn dpad-btn" data-key="left">◀</button>
+                <button class="btn dpad-btn btn-accent" data-key="center">OK</button>
+                <button class="btn dpad-btn" data-key="right">▶</button>
+                <div></div>
+                <button class="btn dpad-btn" data-key="down">▼</button>
+                <div></div>
+              </div>
+            </div>
+
+            <div id="remoteTouchpadWrap" style="display:none;">
+              <div class="touchpad-surface" id="touchpadSurface">
+                <div class="touchpad-cursor-badge" id="touchpadStateBadge">Готов</div>
+                <div class="touchpad-hint">
+                  <div class="touchpad-hint-title">🖱 Сенсорная панель (Мышь ТВ)</div>
+                  <div class="hint">Проведите для курсора · Тап — ЛКМ · 2 пальца — ПКМ / скролл</div>
+                </div>
+              </div>
+              <div class="btn-row center-row" style="margin-top: 10px;">
+                <button class="btn btn-sm" id="btnMouseLeft" type="button">ЛКМ</button>
+                <button class="btn btn-sm" id="btnMouseDouble" type="button">2×ЛКМ</button>
+                <button class="btn btn-sm" id="btnMouseRight" type="button">ПКМ</button>
+                <button class="btn btn-sm" id="btnScrollUp" type="button">↑ Скролл</button>
+                <button class="btn btn-sm" id="btnScrollDown" type="button">↓ Скролл</button>
+              </div>
+              <div class="form-row" style="margin-top: 10px; margin-bottom: 8px;">
+                <label>Чувствительность курсора <span id="lblTouchSens">1.5×</span></label>
+                <input type="range" id="touchSensitivity" min="0.5" max="3.5" step="0.1" value="1.5" />
+              </div>
             </div>
 
             <div class="btn-row center-row">
@@ -169,6 +218,13 @@
               <button class="btn btn-sm btn-danger" data-key="power">Питание</button>
             </div>
 
+            <h3>Штатный BLE-пульт (YNDX) и Bluetooth</h3>
+            <div class="btn-row">
+              <button class="btn btn-sm" id="btnPairBleRemote" type="button">🔗 Автопоиск пульта</button>
+              <button class="btn btn-sm btn-accent" id="btnFindBleRemote" type="button">🔊 Найти пульт (Зуммер)</button>
+              <button class="btn btn-sm" id="btnRemoteBtToggle" type="button">ᛒ BT-колонка</button>
+            </div>
+
             <h3>Управление телевизором (HDMI)</h3>
             <div class="btn-row">
               <button class="btn btn-sm" data-cec="wakeup">Включить ТВ</button>
@@ -186,7 +242,10 @@
           <div class="card">
             <div class="row-between">
               <h2>Голосовой ассистент «Алиса»</h2>
-              <span class="badge" id="badgeWakeWord">Голос: --</span>
+              <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                <span class="badge" id="badgeAgentMode">Агент: выкл</span>
+                <span class="badge" id="badgeWakeWord">Голос: --</span>
+              </div>
             </div>
             <div class="status-banner" id="aliceStatusBanner">Инициализация...</div>
 
@@ -284,6 +343,14 @@
                 <input type="text" id="newMemoryNote" placeholder="Добавить факт («Любимый чай: зелёный»)..." />
                 <button class="btn btn-sm btn-accent" id="btnAddMemoryNote" type="button">+ Запомнить</button>
               </div>
+            </div>
+
+            <div class="form-row toggle-row" style="margin-top:12px; padding:10px 12px; border-radius:12px; background:rgba(86,216,255,0.07); border:1px solid rgba(110,218,255,0.20);">
+              <div>
+                <label for="astAgentMode" style="font-weight:600; color:#f1f5f9;">Режим Агента (ADB и система)</label>
+                <div class="hint" style="margin-top:2px;">Алиса получает полный доступ к ADB / root-командам для автоматизации любых действий на станции и рисует задачи на экранчике.</div>
+              </div>
+              <input type="checkbox" id="astAgentMode" />
             </div>
 
             <div class="btn-row">
@@ -537,7 +604,10 @@
 
             <div class="card">
               <h2>Передний экранчик</h2>
-              <div class="status-banner" id="fb5StatusBanner">Проверка экранчика...</div>
+              <div class="row-between" style="gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+                <div class="status-banner" id="fb5StatusBanner" style="margin:0; flex:1;">Проверка экранчика...</div>
+                <button class="btn btn-sm" id="btnRecoverScreen" type="button" title="Принудительно переинициализировать матрицу (fb5)">🔧 Восстановить (fb5)</button>
+              </div>
 
               <div class="form-row">
                 <label>Что показывать</label>
@@ -566,7 +636,8 @@
                 <div class="form-row">
                   <label>Визуализатор музыки</label>
                   <select id="visualizerStyle">
-                    <option value="nexus">Nexus 3D Аномалия (CodePen)</option>
+                    <option value="dots">3D Сфера-точки (Halftone)</option>
+                    <option value="nexus">Nexus 3D Аномалия</option>
                     <option value="specterr">Specterr Неоновый круг</option>
                     <option value="particles">Частицы / Шар</option>
                     <option value="bars">Столбики (Bars)</option>
@@ -628,7 +699,7 @@
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.3.2</span>
+                <span class="badge ok" id="otaVersionBadge">v1.5.0</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -702,6 +773,7 @@
               <div class="btn-row">
                 <button class="btn btn-accent" id="btnSaveAll">Применить и сохранить</button>
                 <button class="btn btn-sm" id="btnSmartOpenWizard" type="button">✨ Мастер настройки</button>
+                <button class="btn btn-sm" id="btnStartupShow" type="button">🎇 Стартовое шоу</button>
                 <button class="btn btn-sm btn-danger" id="btnRebootStation" type="button">⏻ Перезагрузить</button>
               </div>
               <details class="adv-details">
@@ -840,7 +912,7 @@
           <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.3.2</span>
+          <span class="badge ok" id="wizFwBadge">v1.5.0</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>
@@ -877,13 +949,21 @@
           </div>
 
           <div class="form-row" style="margin-top:12px;">
+            <label>Штатный BLE-пульт (YNDX) — автопоиск и проверка</label>
+            <div class="btn-row" style="margin-top:6px;">
+              <button class="btn btn-sm btn-accent" id="btnWizPairBle" type="button">🔗 Автопоиск BLE-пульта</button>
+              <button class="btn btn-sm" id="btnWizFindBle" type="button">🔊 Найти (Зуммер)</button>
+            </div>
+          </div>
+
+          <div class="form-row" style="margin-top:12px;">
             <label>Private DNS (для стабильной работы Алисы)</label>
             <div class="input-send-row">
               <input type="text" id="wizDnsHost" placeholder="dns.comss.one (пусто = стандартный)" value="dns.comss.one" />
               <button class="btn btn-sm" id="btnWizApplyDns" type="button">Сохранить DNS</button>
             </div>
           </div>
-          <p class="hint">Совет: если вы открыли эту страницу по QR-коду с телевизора, удобно вставить ключи и пароли прямо с телефона.</p>
+          <p class="hint">Совет: на Шаге 3 вход в Яндекс Музыку выполняется прямо на экране станции по полному QR-коду.</p>
         </div>
 
         <!-- STEP 2 -->
@@ -928,16 +1008,12 @@
         <!-- STEP 3 -->
         <div class="wiz-pane" id="wizStep3">
           <div class="status-banner" id="wizMusicBanner">Яндекс Музыка: проверка статуса...</div>
-          <div class="form-row">
-            <label>Вход в Яндекс Музыку по токену (опционально)</label>
-            <div class="input-send-row">
-              <input type="password" id="wizYmToken" placeholder="y0_..." autocomplete="off" />
-              <button class="btn btn-sm btn-accent" id="btnWizYmOAuth" type="button">Войти</button>
-            </div>
+          <div class="status-banner ok" style="margin-bottom:12px;">
+            📺 Авторизация Яндекс Музыки на этом шаге выполняется <b>только с самой станции</b> — на экране ТВ откроется страница входа с полным масштабированным QR-кодом.
           </div>
-          <div class="btn-row" style="margin-bottom:12px;">
-            <button class="btn btn-sm" id="btnWizYmTv" type="button">Открыть вход на ТВ</button>
-            <button class="btn btn-sm btn-accent" id="btnWizYmWave" type="button">🌊 Включить «Мою волну»</button>
+          <div class="btn-row" style="margin-bottom:14px;">
+            <button class="btn btn-accent" id="btnWizYmTv" type="button">📺 Открыть QR-вход на ТВ</button>
+            <button class="btn" id="btnWizYmWave" type="button">🌊 Проверить «Мою волну»</button>
           </div>
           <div class="grid-2-tight">
             <div class="form-row">
@@ -1016,7 +1092,7 @@
           <button class="btn btn-sm" id="btnWizPrev" type="button">← Назад</button>
           <button class="btn btn-sm" id="btnWizSkip" type="button">Пропустить</button>
         </div>
-        <span class="hint" id="wizProgressText">Шаг 1 из 4</span>
+        <span class="hint" id="wizProgressText">Шаг 1 из 5</span>
         <div class="btn-row" style="margin-top:0;">
           <button class="btn btn-accent" id="btnWizNext" type="button">Далее →</button>
           <button class="btn btn-accent" id="btnWizFinish" type="button" style="display:none;">✨ Завершить настройку</button>

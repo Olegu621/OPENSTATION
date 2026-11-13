@@ -187,6 +187,7 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
         std::lock_guard<std::mutex> lk(cfg_mu_);
         cfg_ = cfg;
     }
+    mic_muted_.store(cfg.mic_muted);
     pcm_cb_ = std::move(pcm_cb);
     spec_cb_ = std::move(spec_cb);
     wav_ring_.assign(kWavRingMax, 0);
@@ -245,12 +246,14 @@ void AudioEngine::update_config(const AudioConfig& cfg) {
                  (cfg_.pdm_filter != cfg.pdm_filter);
         cfg_ = cfg;
     }
+    mic_muted_.store(cfg.mic_muted);
     if (reopen) {
         reopen_capture_.store(true);
     }
 }
 
 void AudioEngine::set_mic_muted(bool muted) {
+    mic_muted_.store(muted);
     std::lock_guard<std::mutex> lk(cfg_mu_);
     cfg_.mic_muted = muted;
 }
@@ -811,9 +814,13 @@ void AudioEngine::capture_loop() {
         }
 
         AAudioStream* stream = nullptr;
-        // Proven on Station Max: GENERIC 1ch @ 16k triggers AudioFlinger + libyandexvqe hardware DSP.
+        // Prioritize VOICE_RECOGNITION preset (preset 6) so Android AudioPolicy/AudioFlinger
+        // never mutes or preempts background hotword/assistant capture when third-party apps
+        // (YouTube, Kinopoisk, video/audio players) are running in foreground.
         struct TryCfg { int ch; int rate; int32_t preset; const char* tag; };
         const TryCfg attempts[] = {
+            {1, 16000, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION, "aaudio_1ch_16k_voicerec"},
+            {1, 48000, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION, "aaudio_1ch_48k_voicerec"},
             {1, 16000, AAUDIO_INPUT_PRESET_GENERIC, "aaudio_1ch_16k_vqe"},
             {1, 48000, AAUDIO_INPUT_PRESET_GENERIC, "aaudio_1ch_48k_vqe"},
             {1, 16000, -1, "aaudio_1ch_16k"},
@@ -833,10 +840,12 @@ void AudioEngine::capture_loop() {
         if (!stream) {
             {
                 std::lock_guard<std::mutex> lk(stat_mu_);
-                capture_backend_ = "error_retrying";
+                capture_backend_ = "alsa_fallback";
             }
-            LOGW("AudioEngine", "Cannot open AAudio capture stream, retrying in 1.5s");
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            LOGW("AudioEngine", "Cannot open AAudio capture stream, trying direct ALSA fallback...");
+            run_alsa_capture_session();
+            if (!capture_enabled_.load() || reopen_capture_.load() || !running_.load()) continue;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             continue;
         }
 
@@ -877,10 +886,32 @@ void AudioEngine::capture_loop() {
         LOGI("AudioEngine", "Capture started (%s, %d Hz, %d ch)", opened_tag, rate, ch);
         int32_t chunk_frames = std::max<int32_t>(160, rate / 50); // 20 ms
         std::vector<int16_t> buf(static_cast<size_t>(chunk_frames) * ch);
+        int consecutive_zero_chunks = 0;
+        bool try_alsa_on_silence = false;
 
         while (running_.load() && capture_enabled_.load() && !reopen_capture_.load()) {
             aaudio_result_t n = g_aa.stream_read(stream, buf.data(), chunk_frames, 200000000LL);
             if (n > 0) {
+                int16_t max_abs = 0;
+                const size_t nsamples = static_cast<size_t>(n) * static_cast<size_t>(ch);
+                for (size_t i = 0; i < nsamples; i += std::max(1, ch)) {
+                    int16_t v = buf[i];
+                    int16_t a = (v == INT16_MIN) ? INT16_MAX : static_cast<int16_t>(std::abs(v));
+                    if (a > max_abs) {
+                        max_abs = a;
+                        break;
+                    }
+                }
+                if (max_abs == 0 && !mic_muted_.load()) {
+                    ++consecutive_zero_chunks;
+                    if (consecutive_zero_chunks >= 75) {
+                        LOGW("AudioEngine", "Capture stream %s digitally silenced by Android AudioFlinger (75 zero chunks); recovering via ALSA/reopen", opened_tag);
+                        try_alsa_on_silence = true;
+                        break;
+                    }
+                } else {
+                    consecutive_zero_chunks = 0;
+                }
                 process_frame(buf.data(), static_cast<size_t>(n), ch, rate);
             } else if (n < 0) {
                 LOGW("AudioEngine", "AAudio read disconnected (%d: %s), reopening", n, g_aa.err_str(n));
@@ -891,6 +922,9 @@ void AudioEngine::capture_loop() {
         g_aa.stream_requestStop(stream);
         g_aa.stream_close(stream);
         active_channels_.store(0);
+        if (try_alsa_on_silence && running_.load() && capture_enabled_.load() && !reopen_capture_.load()) {
+            run_alsa_capture_session();
+        }
     }
 }
 
@@ -1023,6 +1057,105 @@ void AudioEngine::play_timer_alarm() {
                 pcm[idx + 1] = v;
             }
         }
+    }
+    play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
+}
+
+void AudioEngine::play_startup_chime() {
+    // Rich Station Max boot signature: 52->65 Hz woofer bloom + Liquid Glass major-9 arpeggio (~2.4s @ 48 kHz)
+    const int sr = 48000;
+    const int total = sr * 24 / 10; // 2.4s
+    std::vector<int16_t> pcm(static_cast<size_t>(total) * 2, 0);
+
+    struct Note { double freq; double start_s; double dur_s; double amp; double pan; };
+    const Note notes[] = {
+        {130.81, 0.04, 2.20, 4200.0,  0.00}, // C3 foundation
+        {261.63, 0.14, 1.90, 3200.0, -0.25}, // C4
+        {392.00, 0.28, 1.80, 3000.0,  0.25}, // G4
+        {493.88, 0.44, 1.75, 2900.0, -0.35}, // B4
+        {587.33, 0.60, 1.65, 2800.0,  0.35}, // D5
+        {659.25, 0.78, 1.55, 2600.0, -0.15}, // E5
+        {783.99, 0.96, 1.38, 2500.0,  0.15}, // G5
+        {1046.50,1.16, 1.18, 2100.0,  0.00}, // C6 shimmer
+    };
+
+    double sub_phase = 0.0;
+    for (int i = 0; i < total; ++i) {
+        double t = static_cast<double>(i) / sr;
+        // Sub-bass warm sweep 48 -> 65.4 Hz
+        double sub_f = 48.0 + 17.41 * std::min(1.0, t / 0.85);
+        sub_phase += 2.0 * kPi * sub_f / sr;
+        double sub_env = (t < 0.06) ? (t / 0.06) : std::exp(-(t - 0.06) * 1.45);
+        double sub_s = std::sin(sub_phase) * sub_env * 5200.0;
+
+        double l_sum = sub_s;
+        double r_sum = sub_s;
+        for (const auto& n : notes) {
+            if (t >= n.start_s && t < n.start_s + n.dur_s) {
+                double dt = t - n.start_s;
+                double atk = std::min(1.0, dt / 0.018);
+                double rel = std::min(1.0, (n.start_s + n.dur_s - t) / 0.28);
+                double dec = std::exp(-dt * 2.1);
+                double env = atk * rel * dec;
+                double s = (std::sin(2.0 * kPi * n.freq * dt) + 0.18 * std::sin(4.0 * kPi * n.freq * dt)) * env * n.amp;
+                double g_l = 0.5 * (1.0 - n.pan * 0.6);
+                double g_r = 0.5 * (1.0 + n.pan * 0.6);
+                l_sum += s * g_l * 1.6;
+                r_sum += s * g_r * 1.6;
+            }
+        }
+        pcm[i * 2] = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(l_sum)), -31000, 31000));
+        pcm[i * 2 + 1] = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(r_sum)), -31000, 31000));
+    }
+    play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
+}
+
+void AudioEngine::play_bt_chime(const std::string& kind) {
+    const int sr = 48000;
+    struct BtTone { double freq; double start_s; double dur_s; double amp; };
+    std::vector<BtTone> tones;
+    double dur_s = 0.55;
+    if (kind == "discoverable" || kind == "pairing") {
+        tones = {
+            {587.33, 0.00, 0.14, 4800.0},
+            {880.00, 0.11, 0.16, 4800.0},
+            {1174.66,0.23, 0.30, 4200.0},
+        };
+        dur_s = 0.56;
+    } else if (kind == "off" || kind == "disconnected") {
+        tones = {
+            {783.99, 0.00, 0.13, 4500.0},
+            {523.25, 0.11, 0.16, 4500.0},
+            {392.00, 0.24, 0.28, 4200.0},
+        };
+        dur_s = 0.55;
+    } else { // connected / enable
+        tones = {
+            {261.63, 0.00, 0.48, 3000.0},
+            {523.25, 0.00, 0.18, 4600.0},
+            {659.25, 0.12, 0.20, 4600.0},
+            {1046.50,0.24, 0.34, 4200.0},
+        };
+        dur_s = 0.62;
+    }
+
+    const int total = static_cast<int>(sr * dur_s);
+    std::vector<int16_t> pcm(static_cast<size_t>(total) * 2, 0);
+    for (int i = 0; i < total; ++i) {
+        double t = static_cast<double>(i) / sr;
+        double sum = 0.0;
+        for (const auto& tn : tones) {
+            if (t >= tn.start_s && t < tn.start_s + tn.dur_s) {
+                double dt = t - tn.start_s;
+                double atk = std::min(1.0, dt / 0.008);
+                double rel = std::min(1.0, (tn.start_s + tn.dur_s - t) / 0.08);
+                double dec = std::exp(-dt * 4.5);
+                sum += std::sin(2.0 * kPi * tn.freq * dt) * atk * rel * dec * tn.amp;
+            }
+        }
+        int16_t v = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(sum)), -30000, 30000));
+        pcm[i * 2] = v;
+        pcm[i * 2 + 1] = v;
     }
     play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
 }

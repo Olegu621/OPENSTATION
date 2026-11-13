@@ -20,6 +20,12 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -60,6 +66,16 @@
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode"
             android:exported="false"
             android:launchMode="singleTask" />
+
+        <activity
+            android:name=".MarketActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode"
+            android:exported="false"
+            android:launchMode="singleTask" />
+
+        <receiver
+            android:name=".market.MarketInstallReceiver"
+            android:exported="false" />
 
         <activity
             android:name=".VoiceAssistActivity"

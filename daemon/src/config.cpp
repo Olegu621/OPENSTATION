@@ -168,8 +168,8 @@ void DaemonConfig::sanitize_and_validate() {
     if (!is_one_of(led_screen.clock_style, {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"})) {
         led_screen.clock_style = "classic";
     }
-    if (!is_one_of(led_screen.visualizer_style, {"nexus", "specterr", "particles", "bars", "wave", "fireflies", "aurora", "matrix", "anomaly"})) {
-        led_screen.visualizer_style = "nexus";
+    if (!is_one_of(led_screen.visualizer_style, {"dots", "nexus", "specterr", "particles", "bars", "wave", "fireflies", "aurora", "matrix", "anomaly"})) {
+        led_screen.visualizer_style = "dots";
     }
     if (led_screen.text.size() > 256) led_screen.text.resize(256);
     if (led_screen.color.empty()) led_screen.color = "#ffffff";
@@ -388,6 +388,7 @@ json::Value DaemonConfig::to_json() const {
     ast["kwsThreads"] = Value::make_int(assistant.kws_threads);
     ast["chimeEnabled"] = Value::make_bool(assistant.chime_enabled);
     ast["googleSearch"] = Value::make_bool(assistant.google_search);
+    ast["agentMode"] = Value::make_bool(assistant.agent_mode);
     ast["echoGuard"] = Value::make_bool(assistant.echo_guard);
     ast["preRollMs"] = Value::make_int(assistant.pre_roll_ms);
     ast["followUpSec"] = Value::make_int(assistant.follow_up_sec);
@@ -557,6 +558,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ast->get("kwsThreads"); x && x->is_num()) assistant.kws_threads = x->as_int();
         if (auto* x = ast->get("chimeEnabled"); x && x->is_bool()) assistant.chime_enabled = x->as_bool();
         if (auto* x = ast->get("googleSearch"); x && x->is_bool()) assistant.google_search = x->as_bool();
+        if (auto* x = ast->get("agentMode"); x && x->is_bool()) assistant.agent_mode = x->as_bool();
         if (auto* x = ast->get("echoGuard"); x && x->is_bool()) assistant.echo_guard = x->as_bool();
         if (auto* x = ast->get("preRollMs"); x && x->is_num()) assistant.pre_roll_ms = x->as_int();
         if (auto* x = ast->get("followUpSec"); x && x->is_num()) assistant.follow_up_sec = x->as_int();

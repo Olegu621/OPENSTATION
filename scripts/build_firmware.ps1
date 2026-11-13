@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.3.6",
-    [string]$Changelog = "OpenStation Max v1.3.6: исправления безопасности и надёжности — защита Web API и секретов, безопасные инструменты ассистента, стабильность OTA и конфигурации, локальный Android IPC, сервисная прошивка и развёртывание.",
+    [string]$Version = "1.5.0",
+    [string]$Changelog = "OpenStation Max v1.5.0: новый 3D Halftone-визуализатор «3D Точки», улучшенная навигация по экранам лаунчера, веб-пульт без запроса токена и обновлённый установщик прошивки в 1 клик.",
     [switch]$Clean
 )
 
@@ -34,6 +34,9 @@ function Resolve-Java17Home {
     $candidates = New-Object System.Collections.Generic.List[string]
     if ($env:JAVA_HOME) { $candidates.Add($env:JAVA_HOME) }
     $candidates.Add("C:\Android\jdk17")
+    if ($env:LOCALAPPDATA) {
+        Get-ChildItem (Join-Path $env:LOCALAPPDATA "Programs") -Directory -Filter "*jdk*17*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { $candidates.Add($_.FullName) }
+    }
     foreach ($dir in @("C:\Program Files\Eclipse Adoptium", "C:\Program Files\Java", "C:\Program Files\Microsoft")) {
         if (Test-Path $dir) {
             Get-ChildItem $dir -Directory -Filter "*17*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { $candidates.Add($_.FullName) }
@@ -80,6 +83,7 @@ foreach ($nc in $ndkCandidates) {
 if (-not $ndk) { throw "Android NDK не найден в $sdkRoot\ndk\*." }
 $gradlePaths = @(Get-ChildItem "C:\Android\gradle*\bin\gradle.bat" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) +
                @(Get-ChildItem "C:\Gradle\*\bin\gradle.bat" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) +
+               @(Get-ChildItem "$env:USERPROFILE\.gradle\wrapper\dists\gradle-*\*\*\bin\gradle.bat" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName) +
                @("$RootDir\launcher\gradlew.bat")
 $gradle = Resolve-FirstTool -Paths $gradlePaths -CommandName "gradle.bat" -HelpMsg "Gradle не найден."
 
@@ -106,14 +110,18 @@ if ($needCmakeCfg) {
     Write-Host "[1/4] CMake уже сконфигурирован (инкрементальная сборка)..." -ForegroundColor Gray
 }
 
-Write-Host "[2/4] Сборка и оптимизация размера openstationd (Release + strip)..." -ForegroundColor Yellow
-& $cmake --build $buildDir --target openstationd
+Write-Host "[2/4] Сборка и оптимизация размера openstationd + bootlogod (Release + strip)..." -ForegroundColor Yellow
+& $cmake --build $buildDir
 if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
 
 $stripExe = Get-ChildItem "$ndk\toolchains\llvm\prebuilt\*\bin\llvm-strip.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($stripExe) {
     & $stripExe.FullName --strip-unneeded "$buildDir\openstationd"
     if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed" }
+    if (Test-Path "$buildDir\bootlogod") {
+        & $stripExe.FullName --strip-unneeded "$buildDir\bootlogod"
+        if ($LASTEXITCODE -ne 0) { throw "llvm-strip bootlogod failed" }
+    }
 }
 
 $env:JAVA_HOME = $javaHome
@@ -146,9 +154,11 @@ New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
 
 $sources = @(
     @{ Key = "daemon";        FileName = "openstationd";            Src = "$buildDir\openstationd" },
+    @{ Key = "bootlogod";     FileName = "bootlogod";               Src = "$buildDir\bootlogod" },
     @{ Key = "launcher";      FileName = "OpenStationLauncher.apk"; Src = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk" },
     @{ Key = "ime";           FileName = "OpenStationIME.apk";      Src = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk" },
-    @{ Key = "bootanimation"; FileName = "bootanimation.zip";       Src = "$RootDir\firmware\bootanimation.zip" }
+    @{ Key = "bootanimation"; FileName = "bootanimation.zip";       Src = "$RootDir\firmware\bootanimation.zip" },
+    @{ Key = "bootlogo";      FileName = "logo.img";                Src = "$RootDir\firmware\logo.img" }
 )
 
 $filesManifest = [ordered]@{}

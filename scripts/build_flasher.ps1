@@ -13,7 +13,7 @@ if (-not (Test-Path $csc)) {
 }
 
 Write-Host "Compiling OpenStationFlasher.exe..." -ForegroundColor Cyan
-& $csc /nologo /target:winexe /optimize+ /out:"$out" `
+& $csc /nologo /target:winexe /optimize+ /codepage:65001 /out:"$out" `
     "/r:$wpf\PresentationCore.dll" `
     "/r:$wpf\PresentationFramework.dll" `
     "/r:$wpf\WindowsBase.dll" `
@@ -21,6 +21,7 @@ Write-Host "Compiling OpenStationFlasher.exe..." -ForegroundColor Cyan
     "/r:$net\System.Management.dll" `
     "/r:$net\System.dll" `
     "/r:$net\System.Core.dll" `
+    "/r:$net\System.IO.Compression.dll" `
     "/r:$net\System.IO.Compression.FileSystem.dll" `
     "$src"
 

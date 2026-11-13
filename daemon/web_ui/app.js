@@ -14,22 +14,6 @@
   let otaPendingRestart = false;
   let bootanimBusy = false;
   let wifiAdbBusy = false;
-  const AUTH_TOKEN_KEY = "openstation.webui.token";
-
-  function isLoopbackHost() {
-    return ["localhost", "127.0.0.1", "::1"].includes((location.hostname || "").toLowerCase());
-  }
-
-  function getAuthToken() {
-    if (isLoopbackHost()) return "";
-    let token = localStorage.getItem(AUTH_TOKEN_KEY) || "";
-    if (!/^[0-9a-f]{64}$/.test(token)) {
-      token = (window.prompt("Введите ключ веб-пульта. На ПК выполните: adb shell su -c cat /data/local/openstation/webui.token") || "").trim();
-      if (!/^[0-9a-f]{64}$/.test(token)) throw new Error("Нужен 64-символьный ключ веб-пульта из /data/local/openstation/webui.token");
-      localStorage.setItem(AUTH_TOKEN_KEY, token);
-    }
-    return token;
-  }
 
   const COMPONENT_RU = {
     daemon: "Система",
@@ -96,8 +80,6 @@
 
   async function api(path, method = "GET", body = null) {
     const opts = { method, headers: {} };
-    const authToken = getAuthToken();
-    if (authToken) opts.headers.Authorization = "Bearer " + authToken;
     if (body !== null) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
@@ -142,7 +124,7 @@
         color: $("scrColor")?.value || "#ffffff",
         brightness: parseInt($("scrBri")?.value ?? "100", 10),
         clockStyle: $("clockStyle")?.value || "classic",
-        visualizerStyle: $("visualizerStyle")?.value || "particles",
+        visualizerStyle: $("visualizerStyle")?.value || "dots",
         autoMusicVisualizer: $("autoMusicVisualizer") ? $("autoMusicVisualizer").checked : true
       };
       if ($("scrAutoBri")) ls.autoBrightness = $("scrAutoBri").checked;
@@ -192,6 +174,7 @@
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
+      if ($("astAgentMode")) ast.agentMode = $("astAgentMode").checked;
       ast.memoryNotes = currentMemoryNotes;
       payload.assistant = ast;
     }
@@ -500,7 +483,7 @@
 
   function applyOtaState(ota, fwVer) {
     ota = ota || {};
-    const instVer = ota.installedVersion || fwVer || "1.3.0";
+    const instVer = ota.installedVersion || fwVer || "1.5.0";
     if ($("otaVersionBadge")) {
       $("otaVersionBadge").textContent = `v${instVer}`;
     }
@@ -583,6 +566,12 @@
       bww.textContent = ww.ready ? "Голосовой запуск: ВКЛ" : "Голосовой запуск: выкл";
       bww.className = "badge " + (ww.ready ? "ok" : "warn");
     }
+    const agentOn = (ast && typeof ast.agentMode === "boolean") ? ast.agentMode : !!cfgAst?.agentMode;
+    const bag = $("badgeAgentMode");
+    if (bag) {
+      bag.textContent = agentOn ? "Агент ADB: ВКЛ" : "Агент ADB: выкл";
+      bag.className = "badge " + (agentOn ? "live" : "");
+    }
     const ban = $("aliceStatusBanner");
     if (ban) {
       if (ast?.lastError) {
@@ -639,11 +628,16 @@
     }
 
     if ($("fb5StatusBanner")) {
+      const rec = typeof hw.fb5Recoveries === "number" ? hw.fb5Recoveries : 0;
       if (hw.fb5Present) {
-        $("fb5StatusBanner").textContent = "Экранчик часов активен";
+        $("fb5StatusBanner").textContent = rec > 0
+          ? `Экранчик часов активен · автовосстановлений: ${rec}`
+          : "Экранчик часов активен";
         $("fb5StatusBanner").className = "status-banner ok";
       } else {
-        $("fb5StatusBanner").textContent = "Передний экранчик отключён";
+        $("fb5StatusBanner").textContent = rec > 0
+          ? `Передний экранчик восстанавливается (${rec})...`
+          : "Передний экранчик отключён";
         $("fb5StatusBanner").className = "status-banner warn";
       }
     }
@@ -654,12 +648,12 @@
       $("btnQuickMute").className = "btn btn-sm btn-danger" + (muted ? " active" : "");
     }
 
-    const bt = data.bluetooth;
+    const bt = d.bluetooth || {};
     if ($("btnQuickBt")) {
-      const btOn = !!(bt?.enabled);
-      const btDisc = !!(bt?.discoverable);
+      const btOn = !!(bt.enabled);
+      const btDisc = !!(bt.discoverable);
       if (btDisc) {
-        const rem = bt.discoverableRemainingSec;
+        const rem = bt.discoverableRemainingSec ?? 0;
         $("btnQuickBt").textContent = `ᛒ BT: Виден (${rem}с)`;
         $("btnQuickBt").className = "btn btn-sm btn-accent active";
       } else if (btOn) {
@@ -669,6 +663,14 @@
         $("btnQuickBt").textContent = "ᛒ BT: ВЫКЛ";
         $("btnQuickBt").className = "btn btn-sm";
       }
+    }
+    if ($("btnRemoteBtToggle")) {
+      const btOn = !!(bt.enabled);
+      const btDisc = !!(bt.discoverable);
+      $("btnRemoteBtToggle").textContent = btDisc
+        ? "ᛒ BT-колонка: Видна"
+        : (btOn ? "ᛒ BT-колонка: ВКЛ" : "ᛒ BT-колонка: ВЫКЛ");
+      $("btnRemoteBtToggle").className = "btn btn-sm" + (btOn ? " btn-accent" : "");
     }
 
     // Mic & VQE DSP monitor
@@ -731,7 +733,7 @@
 
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
       otaPendingRestart = false;
-      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.3.0") + " активна!");
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.5.0") + " активна!");
     }
     updateAliceLiveBox(ast.liveUserText || "", ast.liveModelText || "");
     if (Array.isArray(ast.history)) {
@@ -833,6 +835,7 @@
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
+        if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode === true;
         if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 8;
         if ($("astMaxSess")) $("astMaxSess").value = cfg.assistant.maxSessionSec ?? 120;
         if (Array.isArray(cfg.assistant.memoryNotes)) {
@@ -1237,6 +1240,23 @@
 
   if ($("btnSaveAll")) $("btnSaveAll").addEventListener("click", () => pushConfig(true));
   if ($("btnSaveAlice")) $("btnSaveAlice").addEventListener("click", () => pushConfig(true));
+  if ($("astAgentMode")) {
+    $("astAgentMode").addEventListener("change", async () => {
+      const enabled = $("astAgentMode").checked;
+      try {
+        const res = await api("/api/assistant/agent_mode", "POST", { enabled });
+        if (state && state.config && state.config.assistant) state.config.assistant.agentMode = !!res.agentMode;
+        if (state && state.assistant) state.assistant.agentMode = !!res.agentMode;
+        applyAliceBanner(state?.assistant?.state || "idle", state?.assistant, state?.config?.assistant);
+        showToast(res.agentMode
+          ? "Режим Агента включён — Алиса может выполнять ADB и системные команды"
+          : "Режим Агента выключен");
+      } catch (e) {
+        $("astAgentMode").checked = !enabled;
+        showToast("Не удалось переключить Режим Агента: " + (e?.message || e), true);
+      }
+    });
+  }
   if ($("btnSaveSmartHome")) $("btnSaveSmartHome").addEventListener("click", () => pushConfig(true));
 
   if ($("btnToggleKeyVis")) {
@@ -1495,8 +1515,6 @@
       showToast("Загрузка заставки на станцию...");
       try {
         const headers = { "Content-Type": "application/zip" };
-        const authToken = getAuthToken();
-        if (authToken) headers.Authorization = "Bearer " + authToken;
         const res = await fetch("/api/bootanim/upload", {
           method: "POST",
           headers,
@@ -1615,6 +1633,299 @@
   }
   if ($("btnRefreshApps")) $("btnRefreshApps").addEventListener("click", loadApps);
 
+  // Touchpad Mode & Mouse Control (via WS / /api/remote/mouse)
+  function setRemoteInputMode(mode) {
+    const useTouch = mode === "touchpad";
+    document.querySelectorAll("#remoteInputMode .seg").forEach((b) => {
+      b.classList.toggle("active", b.dataset.rmode === (useTouch ? "touchpad" : "dpad"));
+    });
+    if ($("remoteDpadWrap")) $("remoteDpadWrap").style.display = useTouch ? "none" : "block";
+    if ($("remoteTouchpadWrap")) $("remoteTouchpadWrap").style.display = useTouch ? "block" : "none";
+    try { localStorage.setItem("os_remote_mode", useTouch ? "touchpad" : "dpad"); } catch {}
+  }
+
+  document.querySelectorAll("#remoteInputMode .seg").forEach((btn) => {
+    btn.addEventListener("click", () => setRemoteInputMode(btn.dataset.rmode));
+  });
+  try {
+    const savedMode = localStorage.getItem("os_remote_mode");
+    if (savedMode === "touchpad") setRemoteInputMode("touchpad");
+  } catch {}
+
+  function sendMouseMove(dx, dy) {
+    if (!dx && !dy) return;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ cmd: "mouse_move", dx, dy }));
+    } else {
+      api("/api/remote/mouse", "POST", { dx, dy }).catch(() => {});
+    }
+  }
+
+  function sendMouseClick(button = 0, count = 1) {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ cmd: "mouse_click", button, count }));
+    } else {
+      api("/api/remote/mouse", "POST", { click: true, button, count }).catch(() => {});
+    }
+  }
+
+  function sendMouseScroll(dy) {
+    if (!dy) return;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ cmd: "mouse_scroll", dy }));
+    } else {
+      api("/api/remote/mouse", "POST", { scroll: dy }).catch(() => {});
+    }
+  }
+
+  if ($("touchSensitivity")) {
+    $("touchSensitivity").addEventListener("input", () => {
+      if ($("lblTouchSens")) $("lblTouchSens").textContent = parseFloat($("touchSensitivity").value).toFixed(1) + "×";
+    });
+  }
+  if ($("btnMouseLeft")) $("btnMouseLeft").addEventListener("click", () => sendMouseClick(0, 1));
+  if ($("btnMouseDouble")) $("btnMouseDouble").addEventListener("click", () => sendMouseClick(0, 2));
+  if ($("btnMouseRight")) $("btnMouseRight").addEventListener("click", () => sendMouseClick(1, 1));
+  if ($("btnScrollUp")) $("btnScrollUp").addEventListener("click", () => sendMouseScroll(2));
+  if ($("btnScrollDown")) $("btnScrollDown").addEventListener("click", () => sendMouseScroll(-2));
+
+  if ($("touchpadSurface")) {
+    const pad = $("touchpadSurface");
+    const badge = $("touchpadStateBadge");
+    const pointers = new Map();
+    let accDx = 0;
+    let accDy = 0;
+    let accScroll = 0;
+    let rafId = 0;
+    let gestureStartMs = 0;
+    let maxPointers = 0;
+    let totalTravel = 0;
+
+    function flushMouse() {
+      rafId = 0;
+      const dx = Math.trunc(accDx);
+      const dy = Math.trunc(accDy);
+      if (dx !== 0 || dy !== 0) {
+        accDx -= dx;
+        accDy -= dy;
+        sendMouseMove(dx, dy);
+      }
+      const sc = Math.trunc(accScroll);
+      if (sc !== 0) {
+        accScroll -= sc;
+        sendMouseScroll(sc);
+      }
+    }
+
+    function scheduleFlush() {
+      if (!rafId) rafId = requestAnimationFrame(flushMouse);
+    }
+
+    pad.addEventListener("pointerdown", (e) => {
+      if (e.button === 2) {
+        e.preventDefault();
+        sendMouseClick(1, 1);
+        return;
+      }
+      e.preventDefault();
+      try { pad.setPointerCapture(e.pointerId); } catch {}
+      if (pointers.size === 0) {
+        gestureStartMs = performance.now();
+        maxPointers = 1;
+        totalTravel = 0;
+      }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      maxPointers = Math.max(maxPointers, pointers.size);
+      pad.classList.add("active");
+      if (badge) badge.textContent = pointers.size >= 2 ? "Скролл / ПКМ" : "Курсор";
+    });
+
+    pad.addEventListener("pointermove", (e) => {
+      const prev = pointers.get(e.pointerId);
+      if (!prev) return;
+      const rawDx = e.clientX - prev.x;
+      const rawDy = e.clientY - prev.y;
+      prev.x = e.clientX;
+      prev.y = e.clientY;
+      totalTravel += Math.hypot(rawDx, rawDy);
+
+      const sens = $("touchSensitivity") ? parseFloat($("touchSensitivity").value) || 1.5 : 1.5;
+      if (pointers.size >= 2) {
+        accScroll += (-rawDy * sens) / 22;
+      } else {
+        const gain = sens * 1.45;
+        accDx += rawDx * gain;
+        accDy += rawDy * gain;
+      }
+      scheduleFlush();
+    });
+
+    function onPointerEnd(e) {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.delete(e.pointerId);
+      try { pad.releasePointerCapture(e.pointerId); } catch {}
+      if (pointers.size === 0) {
+        pad.classList.remove("active");
+        if (badge) badge.textContent = "Готов";
+        const elapsed = performance.now() - gestureStartMs;
+        if (totalTravel < 8 && elapsed < 260) {
+          sendMouseClick(maxPointers >= 2 ? 1 : 0, 1);
+        }
+        maxPointers = 0;
+      }
+    }
+
+    pad.addEventListener("pointerup", onPointerEnd);
+    pad.addEventListener("pointercancel", onPointerEnd);
+    pad.addEventListener("contextmenu", (e) => e.preventDefault());
+    pad.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      sendMouseScroll(e.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+  }
+
+  // APK Installer (drag & drop + progress via /api/apps/install)
+  let apkInstalling = false;
+  function uploadAndInstallApk(file) {
+    if (!file) return;
+    if (apkInstalling) {
+      showToast("Установка APK уже выполняется...", true);
+      return;
+    }
+    if (!/\.apk$/i.test(file.name || "")) {
+      showToast("Выберите файл с расширением .apk", true);
+      return;
+    }
+    if (file.size > 160 * 1024 * 1024) {
+      showToast("APK слишком большой (максимум 160 МБ)", true);
+      return;
+    }
+
+    apkInstalling = true;
+    const progWrap = $("apkProgressWrap");
+    const progFill = $("apkProgressFill");
+    const progLbl = $("apkProgressLabel");
+    const statusBox = $("apkInstallStatus");
+    if (progWrap) progWrap.style.display = "block";
+    if (progFill) progFill.style.width = "0%";
+    if (progLbl) progLbl.textContent = `Загрузка ${file.name}: 0%`;
+    if (statusBox) {
+      statusBox.style.display = "block";
+      statusBox.className = "status-banner live";
+      statusBox.textContent = `Передача ${file.name} на станцию...`;
+    }
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/apps/install", true);
+    xhr.timeout = 120000;
+    xhr.setRequestHeader("Content-Type", "application/vnd.android.package-archive");
+
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable) return;
+      const pct = Math.min(100, Math.round((ev.loaded / ev.total) * 100));
+      if (progFill) progFill.style.width = `${pct}%`;
+      if (progLbl) {
+        progLbl.textContent = pct >= 100
+          ? "Файл передан — выполняется установка на станции..."
+          : `Загрузка ${file.name}: ${pct}%`;
+      }
+    };
+
+    xhr.onload = () => {
+      apkInstalling = false;
+      let resp = {};
+      try { resp = JSON.parse(xhr.responseText || "{}"); } catch {}
+      const ok = xhr.status >= 200 && xhr.status < 300 && resp.ok !== false;
+      if (progFill) progFill.style.width = ok ? "100%" : "0%";
+      if (statusBox) {
+        statusBox.className = "status-banner " + (ok ? "ok" : "err");
+        statusBox.textContent = ok
+          ? `✓ Приложение ${file.name} установлено${resp.output ? ": " + resp.output.trim() : ""}`
+          : `Ошибка установки: ${resp.output || resp.error || "HTTP " + xhr.status}`;
+      }
+      showToast(ok ? `✓ ${file.name} установлено!` : "Не удалось установить APK", !ok);
+      if (ok) loadApps();
+    };
+
+    xhr.onerror = xhr.ontimeout = () => {
+      apkInstalling = false;
+      if (statusBox) {
+        statusBox.className = "status-banner err";
+        statusBox.textContent = "Ошибка передачи APK или превышен таймаут ожидания";
+      }
+      showToast("Ошибка передачи APK на станцию", true);
+    };
+
+    xhr.send(file);
+  }
+
+  if ($("btnChooseApk") && $("apkFileInput")) {
+    $("btnChooseApk").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $("apkFileInput").value = "";
+      $("apkFileInput").click();
+    });
+  }
+  if ($("apkDropzone") && $("apkFileInput")) {
+    $("apkDropzone").addEventListener("click", () => {
+      $("apkFileInput").value = "";
+      $("apkFileInput").click();
+    });
+    $("apkDropzone").addEventListener("dragover", (e) => {
+      e.preventDefault();
+      $("apkDropzone").classList.add("dragover");
+    });
+    $("apkDropzone").addEventListener("dragleave", () => {
+      $("apkDropzone").classList.remove("dragover");
+    });
+    $("apkDropzone").addEventListener("drop", (e) => {
+      e.preventDefault();
+      $("apkDropzone").classList.remove("dragover");
+      const file = e.dataTransfer?.files?.[0];
+      if (file) uploadAndInstallApk(file);
+    });
+    $("apkFileInput").addEventListener("change", () => {
+      const file = $("apkFileInput").files?.[0];
+      if (file) uploadAndInstallApk(file);
+    });
+  }
+
+  // BLE Remote Pair / Find, Matrix Recovery, Startup Show
+  async function triggerPairRemote() {
+    try {
+      const r = await api("/api/remote/pair", "POST", {});
+      showToast(r.ok !== false ? "Запущен автопоиск штатного BLE-пульта YNDX..." : (r.error || "Не удалось запустить поиск"), r.ok === false);
+    } catch (e) { showToast("Ошибка BLE-поиска: " + e.message, true); }
+  }
+  async function triggerFindRemote() {
+    try {
+      const r = await api("/api/remote/find", "POST", {});
+      showToast(r.ok !== false ? "Отправлен звуковой сигнал поиска на BLE-пульт" : (r.error || "Пульт не подключён"), r.ok === false);
+    } catch (e) { showToast("Ошибка поиска пульта: " + e.message, true); }
+  }
+  if ($("btnPairBleRemote")) $("btnPairBleRemote").addEventListener("click", triggerPairRemote);
+  if ($("btnWizPairBle")) $("btnWizPairBle").addEventListener("click", triggerPairRemote);
+  if ($("btnFindBleRemote")) $("btnFindBleRemote").addEventListener("click", triggerFindRemote);
+  if ($("btnWizFindBle")) $("btnWizFindBle").addEventListener("click", triggerFindRemote);
+  if ($("btnRemoteBtToggle")) $("btnRemoteBtToggle").addEventListener("click", () => $("btnQuickBt")?.click());
+
+  if ($("btnRecoverScreen")) {
+    $("btnRecoverScreen").addEventListener("click", async () => {
+      try {
+        const r = await api("/api/leds/recover", "POST", {});
+        showToast(`Экранчик (fb5) переинициализирован (всего восстановлений: ${r.recoveries ?? 1})`);
+      } catch (e) { showToast("Ошибка восстановления fb5: " + e.message, true); }
+    });
+  }
+  if ($("btnStartupShow")) {
+    $("btnStartupShow").addEventListener("click", async () => {
+      try {
+        await api("/api/system/startup_show", "POST", {});
+        showToast("Запущено стартовое свето-звуковое шоу!");
+      } catch (e) { showToast("Ошибка запуска шоу: " + e.message, true); }
+    });
+  }
+
   function connectWs() {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
@@ -1629,11 +1940,7 @@
       ws = null;
     }
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    let authToken;
-    try { authToken = getAuthToken(); } catch (e) { showToast(e.message, true); return; }
-    ws = authToken
-      ? new WebSocket(proto + location.host + "/ws", [authToken])
-      : new WebSocket(proto + location.host + "/ws");
+    ws = new WebSocket(proto + location.host + "/ws");
     ws.binaryType = "arraybuffer";
     ws.onerror = () => {
       try { ws?.close(); } catch {}
@@ -1653,7 +1960,7 @@
             applyOtaState(msg.data, state?.firmwareVersion);
             if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
               otaPendingRestart = false;
-              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.3.0"));
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.5.0"));
             }
           } else if (msg.type === "assistant_event") {
             const fakeAst = Object.assign({}, state?.assistant || {}, {
@@ -1754,10 +2061,10 @@
     const m = d.music || {};
 
     if ($("wizFwBadge")) {
-      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.2.3"}`;
+      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.5.0"}`;
     }
     if ($("sysAutoInfo")) {
-      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.2.3"} · Все службы работают автономно внутри станции (${d.ip || "local"}).`;
+      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.5.0"} · Все службы работают автономно внутри станции (${d.ip || "local"}).`;
     }
     if ($("wizDiagIp")) $("wizDiagIp").textContent = d.ip || "127.0.0.1";
     if ($("wizDiagMdns")) $("wizDiagMdns").textContent = `${d.hostname || "station-max"}.local`;
@@ -1786,7 +2093,7 @@
         $("wizMusicBanner").textContent = `✓ Яндекс Музыка: @${m.userLogin || "OK"}${m.hasPlus ? " · Плюс" : ""}`;
         $("wizMusicBanner").className = "status-banner ok";
       } else {
-        $("wizMusicBanner").textContent = "Аккаунт Яндекс Музыки не подключён (опционально — можно войти токеном или с ТВ).";
+        $("wizMusicBanner").textContent = "Аккаунт Яндекс Музыки не подключён — выполните вход по QR-коду на экране станции (ТВ).";
         $("wizMusicBanner").className = "status-banner warn";
       }
     }
@@ -2066,7 +2373,7 @@
     });
   }
   async function triggerOtaInstall(force) {
-    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.2.3";
+    const ver = state?.ota?.latestVersion || state?.firmwareVersion || "1.5.0";
     const msg = force
       ? `Скачать и переустановить OpenStation Max v${ver}? Все ваши ключи и настройки сохранятся.`
       : `Установить обновление OpenStation Max v${ver}? Все ваши ключи и настройки сохранятся.`;

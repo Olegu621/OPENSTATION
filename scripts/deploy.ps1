@@ -121,6 +121,9 @@ function Resolve-Java17Home {
     $candidates = New-Object System.Collections.Generic.List[string]
     if ($env:JAVA_HOME) { $candidates.Add($env:JAVA_HOME) }
     $candidates.Add("C:\Android\jdk17")
+    if ($env:LOCALAPPDATA) {
+        Get-ChildItem (Join-Path $env:LOCALAPPDATA "Programs") -Directory -Filter "*jdk*17*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { $candidates.Add($_.FullName) }
+    }
     foreach ($dir in @("C:\Program Files\Eclipse Adoptium", "C:\Program Files\Java", "C:\Program Files\Microsoft")) {
         if (Test-Path $dir) {
             Get-ChildItem $dir -Directory -Filter "*17*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | ForEach-Object { $candidates.Add($_.FullName) }
@@ -266,9 +269,11 @@ if ($Interactive -and -not $DeviceSerial) {
 }
 
 $DaemonBin = "$RootDir\daemon\build\openstationd"
+$BootLogodBin = "$RootDir\daemon\build\bootlogod"
 $ImeApk = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk"
 $LauncherApk = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk"
 $BootAnimZip = "$RootDir\firmware\bootanimation.zip"
+$BootLogoImg = "$RootDir\firmware\logo.img"
 
 if (-not $UseFirmware -and -not $UsePrebuilt -and -not $SkipBuild) {
     if (-not (Test-HasBuildToolchain) -and (Test-HasFirmwarePackage)) {
@@ -287,10 +292,10 @@ if ($UseFirmware) {
     $manifest = Get-Content -Raw $manifestPath -Encoding UTF8 | ConvertFrom-Json
     Write-Host ("  Версия прошивки: {0} ({1}, autonomous={2})" -f $manifest.version, $manifest.device, $manifest.autonomous) -ForegroundColor Gray
 
-    foreach ($key in @("daemon", "launcher", "ime", "bootanimation")) {
+    foreach ($key in @("daemon", "launcher", "ime", "bootanimation", "bootlogod", "bootlogo")) {
         $entry = $manifest.files.$key
         if (-not $entry) {
-            if ($key -eq "bootanimation") { continue }
+            if ($key -in @("bootanimation", "bootlogod", "bootlogo")) { continue }
             throw "В manifest.json отсутствует запись '$key'"
         }
         $fpath = Join-Path $fwDir $entry.fileName
@@ -307,6 +312,12 @@ if ($UseFirmware) {
     $ImeApk = Join-Path $fwDir $manifest.files.ime.fileName
     if ($manifest.files.PSObject.Properties.Name -contains "bootanimation" -and $manifest.files.bootanimation) {
         $BootAnimZip = Join-Path $fwDir $manifest.files.bootanimation.fileName
+    }
+    if ($manifest.files.PSObject.Properties.Name -contains "bootlogod" -and $manifest.files.bootlogod) {
+        $BootLogodBin = Join-Path $fwDir $manifest.files.bootlogod.fileName
+    }
+    if ($manifest.files.PSObject.Properties.Name -contains "bootlogo" -and $manifest.files.bootlogo) {
+        $BootLogoImg = Join-Path $fwDir $manifest.files.bootlogo.fileName
     }
     $SkipBuild = $true
 }
@@ -391,6 +402,10 @@ if (-not $SkipBuild) {
     if ($stripExe) {
         & $stripExe.FullName --strip-unneeded "$buildDir\openstationd"
         if ($LASTEXITCODE -ne 0) { throw "llvm-strip failed" }
+        if (Test-Path "$buildDir\bootlogod") {
+            & $stripExe.FullName --strip-unneeded "$buildDir\bootlogod"
+            if ($LASTEXITCODE -ne 0) { throw "llvm-strip bootlogod failed" }
+        }
     }
 
     $env:JAVA_HOME = $javaHome
@@ -519,7 +534,7 @@ if [ ! -f /data/local/openstation/backup/hardvol_sy.xml ] && [ -f /vendor/etc/ha
     chmod 644 /data/local/openstation/backup/hardvol_sy.xml 2>/dev/null || true
 fi
 chmod 755 /data/local/openstation /data/local/openstation/backup
-for bf in rc_local.sh hardvol_sy.xml bootanimation.zip.stock device_owner_2.xml device_owner.xml device_policies.xml users_0.xml orig_ime.txt orig_setup.txt; do
+for bf in rc_local.sh hardvol_sy.xml bootanimation.zip.stock bootlogod.stock logo.img.stock device_owner_2.xml device_owner.xml device_policies.xml users_0.xml orig_ime.txt orig_setup.txt; do
     if [ -f "/data/local/openstation/backup/$bf" ]; then
         echo "$bf"
     fi
@@ -789,6 +804,99 @@ rm -f /data/local/tmp/openstation_bootanim.zip
     if ($baOut) { Write-Host "  $baOut" -ForegroundColor Gray }
     if (($baOut -match "BOOTANIM_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\bootanimation.zip.stock"))) {
         Invoke-Adb @("pull", "/data/local/openstation/backup/bootanimation.zip.stock", "$BackupLocalDir\bootanimation.zip.stock")
+    }
+}
+
+if ($BootLogodBin -and (Test-Path $BootLogodBin)) {
+    $bldHash = (Get-FileHash -Path $BootLogodBin -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host "Установка матричного бут-демона (/sbin/bootlogod)..." -ForegroundColor Gray
+    Invoke-Adb @("push", $BootLogodBin, "/data/local/tmp/openstation_bootlogod")
+    $bldScript = (@'
+set -e
+NEW_SHA="__NEW_SHA__"
+PREV_SHA=$(cat /data/local/openstation/bootlogod_openstation.sha256 2>/dev/null | tr -d ' \r\n')
+CUR_SHA=""
+if [ -f /sbin/bootlogod ]; then
+    CUR_SHA=$(sha256sum /sbin/bootlogod | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n')
+fi
+mkdir -p /data/local/openstation/backup
+if [ ! -s /data/local/openstation/backup/bootlogod.stock ] && [ -f /sbin/bootlogod ]; then
+    if [ "$CUR_SHA" != "$NEW_SHA" ] && [ "$CUR_SHA" != "$PREV_SHA" ]; then
+        cp -f /sbin/bootlogod /data/local/openstation/backup/bootlogod.stock
+        chmod 755 /data/local/openstation/backup/bootlogod.stock
+        echo "BOOTLOGOD_STOCK_BACKED_UP=$CUR_SHA"
+    fi
+fi
+if [ "$CUR_SHA" != "$NEW_SHA" ]; then
+    mount -o rw,remount / 2>/dev/null || mount -o remount,rw /
+    cleanup_bld() {
+        rm -f /sbin/bootlogod.tmp
+        sync
+        mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
+    }
+    trap cleanup_bld EXIT
+    cp -f /data/local/tmp/openstation_bootlogod /sbin/bootlogod.tmp
+    chown 0:0 /sbin/bootlogod.tmp 2>/dev/null || true
+    chmod 755 /sbin/bootlogod.tmp
+    chcon u:object_r:rootfs:s0 /sbin/bootlogod.tmp 2>/dev/null || true
+    mv -f /sbin/bootlogod.tmp /sbin/bootlogod
+    chown 0:0 /sbin/bootlogod 2>/dev/null || true
+    chmod 755 /sbin/bootlogod
+    chcon u:object_r:rootfs:s0 /sbin/bootlogod 2>/dev/null || true
+    restorecon /sbin/bootlogod 2>/dev/null || true
+    sync
+    mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
+    trap - EXIT
+    AFTER_SHA=$(sha256sum /sbin/bootlogod | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n')
+    [ "$AFTER_SHA" = "$NEW_SHA" ] || { echo "BOOTLOGOD_SHA_MISMATCH $AFTER_SHA != $NEW_SHA" >&2; exit 1; }
+    echo "BOOTLOGOD_INSTALLED=$NEW_SHA"
+else
+    echo "BOOTLOGOD_UP_TO_DATE=$NEW_SHA"
+fi
+printf '%s\n' "$NEW_SHA" > /data/local/openstation/bootlogod_openstation.sha256
+chmod 644 /data/local/openstation/bootlogod_openstation.sha256
+rm -f /data/local/tmp/openstation_bootlogod
+'@).Replace("__NEW_SHA__", $bldHash)
+    $bldOut = (Invoke-AdbSh $bldScript | Out-String).Trim()
+    if ($bldOut) { Write-Host "  $bldOut" -ForegroundColor Gray }
+    if (($bldOut -match "BOOTLOGOD_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\bootlogod.stock"))) {
+        Invoke-Adb @("pull", "/data/local/openstation/backup/bootlogod.stock", "$BackupLocalDir\bootlogod.stock")
+    }
+}
+
+if ($BootLogoImg -and (Test-Path $BootLogoImg)) {
+    $logoHash = (Get-FileHash -Path $BootLogoImg -Algorithm SHA256).Hash.ToLowerInvariant()
+    $logoLen = [int64](Get-Item $BootLogoImg).Length
+    Write-Host "Установка раннего HDMI логотипа (/dev/block/logo)..." -ForegroundColor Gray
+    Invoke-Adb @("push", $BootLogoImg, "/data/local/tmp/openstation_logo.img")
+    $logoScript = (@'
+set -e
+NEW_SHA="__NEW_SHA__"
+LOGO_SZ="__LOGO_SZ__"
+mkdir -p /data/local/openstation/backup
+if [ ! -s /data/local/openstation/backup/logo.img.stock ] && [ -b /dev/block/logo ]; then
+    dd if=/dev/block/logo of=/data/local/openstation/backup/logo.img.stock bs=4096 2>/dev/null
+    chmod 644 /data/local/openstation/backup/logo.img.stock
+    echo "LOGO_STOCK_BACKED_UP=1"
+fi
+PREV_SHA=$(cat /data/local/openstation/logo_openstation.sha256 2>/dev/null | tr -d ' \r\n')
+BLOCKS=$(( (LOGO_SZ + 4095) / 4096 ))
+CUR_SHA=$(dd if=/dev/block/logo bs=4096 count=$BLOCKS 2>/dev/null | head -c "$LOGO_SZ" | sha256sum | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n' || true)
+if [ "$CUR_SHA" != "$NEW_SHA" ] && [ -b /dev/block/logo ]; then
+    dd if=/data/local/tmp/openstation_logo.img of=/dev/block/logo bs=4096 conv=fsync 2>/dev/null || dd if=/data/local/tmp/openstation_logo.img of=/dev/block/logo bs=4096 2>/dev/null
+    sync
+    printf '%s\n' "$NEW_SHA" > /data/local/openstation/logo_openstation.sha256
+    chmod 644 /data/local/openstation/logo_openstation.sha256
+    echo "LOGO_FLASHED=$NEW_SHA"
+else
+    echo "LOGO_UP_TO_DATE=$NEW_SHA"
+fi
+rm -f /data/local/tmp/openstation_logo.img
+'@).Replace("__NEW_SHA__", $logoHash).Replace("__LOGO_SZ__", [string]$logoLen)
+    $logoOut = (Invoke-AdbSh $logoScript | Out-String).Trim()
+    if ($logoOut) { Write-Host "  $logoOut" -ForegroundColor Gray }
+    if (($logoOut -match "LOGO_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\logo.img.stock"))) {
+        Invoke-Adb @("pull", "/data/local/openstation/backup/logo.img.stock", "$BackupLocalDir\logo.img.stock")
     }
 }
 
@@ -1450,10 +1558,18 @@ if (-not $manifestPushed) {
         $baHash = (Get-FileHash -Path $BootAnimZip -Algorithm SHA256).Hash.ToLowerInvariant()
         $genFiles["bootanimation"] = [ordered]@{ fileName = "bootanimation.zip"; size = [int64](Get-Item $BootAnimZip).Length; sha256 = $baHash }
     }
+    if ($BootLogodBin -and (Test-Path $BootLogodBin)) {
+        $bldHash = (Get-FileHash -Path $BootLogodBin -Algorithm SHA256).Hash.ToLowerInvariant()
+        $genFiles["bootlogod"] = [ordered]@{ fileName = "bootlogod"; size = [int64](Get-Item $BootLogodBin).Length; sha256 = $bldHash }
+    }
+    if ($BootLogoImg -and (Test-Path $BootLogoImg)) {
+        $lHash = (Get-FileHash -Path $BootLogoImg -Algorithm SHA256).Hash.ToLowerInvariant()
+        $genFiles["bootlogo"] = [ordered]@{ fileName = "logo.img"; size = [int64](Get-Item $BootLogoImg).Length; sha256 = $lHash }
+    }
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.3.6"
+        version      = "1.5.0"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = $genFiles

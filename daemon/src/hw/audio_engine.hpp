@@ -45,6 +45,8 @@ public:
     void play_wake_chime();
     void play_error_chime();
     void play_timer_alarm();
+    void play_startup_chime();
+    void play_bt_chime(const std::string& kind);
     bool is_playing() const { return playing_active_.load(); }
     bool is_playback_or_tail_active(int tail_ms = 350) const;
     float playback_level() const { return playback_rms_.load(); }
@@ -78,6 +80,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> capture_enabled_{true};
+    std::atomic<bool> mic_muted_{false};
     std::atomic<bool> reopen_capture_{false};
     std::atomic<bool> playing_active_{false};
     std::atomic<uint64_t> playback_epoch_{0};

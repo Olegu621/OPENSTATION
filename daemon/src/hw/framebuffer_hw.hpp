@@ -46,6 +46,15 @@ public:
     void trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_ms = 600);
     void trigger_screen_text(const std::string& text, uint8_t r = 0, uint8_t g = 212, uint8_t b = 255, int duration_ms = 3500);
     void trigger_weather(int temp_c, const std::string& cond_code, int duration_ms = 12000);
+    void trigger_bluetooth_visual(const std::string& bt_state, int duration_ms = 6500);
+    void trigger_startup_show(int duration_ms = 5500);
+    void trigger_task_icon(const std::string& icon_id,
+                           uint8_t r = 0,
+                           uint8_t g = 220,
+                           uint8_t b = 255,
+                           int duration_ms = 5500,
+                           const std::string& custom_pixels = "");
+    void force_recover_screen();
     // Calibration helper: idx >= 0 highlights a single physical LED (before ring_offset)
     // and idx == -2 runs RGB byte-order test ([0..7]=R, [8..15]=G, [16..23]=B).
     void trigger_calibration(int cal_mode, int duration_ms = 4000);
@@ -53,6 +62,7 @@ public:
     double current_lux() const { return last_lux_.load(); }
     int effective_brightness() const { return eff_brightness_.load(); }
     bool screen_present() const { return fb5_present_.load(); }
+    int screen_recoveries() const { return fb5_recoveries_.load(); }
     bool needs_spectrum() const { return needs_spectrum_.load(std::memory_order_relaxed); }
 
     json::Value get_status_json();
@@ -100,6 +110,7 @@ private:
     std::array<float, 24> spectrum_{};
     std::array<Rgb, 24> ring_pixels_{};
     VoiceVisualState voice_state_ = VoiceVisualState::Idle;
+    std::chrono::steady_clock::time_point voice_state_start_{};
     bool mic_muted_ = false;
 
     std::chrono::steady_clock::time_point osd_until_{};
@@ -119,6 +130,22 @@ private:
     std::chrono::steady_clock::time_point weather_start_{};
     int weather_temp_c_ = 0;
     std::string weather_cond_ = "clear";
+
+    std::chrono::steady_clock::time_point bt_until_{};
+    std::chrono::steady_clock::time_point bt_start_{};
+    std::string bt_visual_state_;
+
+    std::chrono::steady_clock::time_point startup_until_{};
+    std::chrono::steady_clock::time_point startup_start_{};
+    std::chrono::steady_clock::time_point task_icon_until_{};
+    std::chrono::steady_clock::time_point task_icon_start_{};
+    std::string task_icon_id_;
+    Rgb task_icon_col_{0, 224, 255};
+    std::string task_icon_custom_;
+    std::atomic<bool> force_recover_requested_{false};
+    std::atomic<int> fb5_recoveries_{0};
+    std::chrono::steady_clock::time_point last_fb5_ok_tp_{};
+    bool fb5_expected_ = false;
 
     // Front 25x16 smooth transition + particle/trail canvas state (worker thread owned)
     struct LedParticle {

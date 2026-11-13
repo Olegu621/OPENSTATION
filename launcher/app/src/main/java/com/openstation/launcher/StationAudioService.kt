@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -17,6 +19,7 @@ import android.media.audiofx.Visualizer
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
@@ -100,8 +103,16 @@ class StationAudioService : Service() {
     private var legacyEq: Equalizer? = null
     private var legacyBass: BassBoost? = null
     private var visualizer: Visualizer? = null
+    private val handler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var overlayManager: AliceOverlayManager? = null
+    private var volumeOverlayManager: VolumeOverlayManager? = null
+    var bleRemoteManager: BleRemoteManager? = null
+        private set
+    @Volatile
+    private var lastBtEventMs = 0L
+    @Volatile
+    private var lastBtEventKind = ""
     @Volatile
     private var zeroSpectrumSent = false
     private val volPushLock = Any()
@@ -113,12 +124,52 @@ class StationAudioService : Service() {
 
     private val bandFreqs = floatArrayOf(31f, 62f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f)
 
+    private val btEventReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+            val devName = try { dev?.name ?: "Устройство" } catch (_: Throwable) { "Устройство" }
+            val devType = try { dev?.type ?: BluetoothDevice.DEVICE_TYPE_UNKNOWN } catch (_: Throwable) { BluetoothDevice.DEVICE_TYPE_UNKNOWN }
+            if (bleRemoteManager?.isYandexRemoteName(devName) == true || devType == BluetoothDevice.DEVICE_TYPE_LE) {
+                return
+            }
+
+            val evKind = when (action) {
+                BluetoothDevice.ACTION_ACL_CONNECTED -> "connected"
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> "disconnected"
+                "android.bluetooth.a2dp-sink.profile.action.CONNECTION_STATE_CHANGED" -> {
+                    when (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)) {
+                        BluetoothProfile.STATE_CONNECTED -> "connected"
+                        BluetoothProfile.STATE_DISCONNECTED -> "disconnected"
+                        else -> ""
+                    }
+                }
+                else -> ""
+            }
+            if (evKind.isEmpty()) return
+            val nowMs = SystemClock.elapsedRealtime()
+            if (evKind == lastBtEventKind && (nowMs - lastBtEventMs) < 1200L) return
+            lastBtEventKind = evKind
+            lastBtEventMs = nowMs
+
+            if (evKind == "connected") {
+                volumeOverlayManager?.showToastPill("BLUETOOTH ПОДКЛЮЧЁН", "$devName · Станция готова к воспроизведению", "#10D281", 3200L)
+            } else {
+                volumeOverlayManager?.showToastPill("BLUETOOTH ОТКЛЮЧЁН", devName, "#F87171", 2600L)
+            }
+            thread(isDaemon = true) {
+                postJsonToDaemon("/api/bluetooth/device_event", JSONObject().put("event", evKind).put("device", devName))
+            }
+        }
+    }
+
     private val volumeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val stream = intent?.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1) ?: -1
             if (stream == AudioManager.STREAM_MUSIC || stream == -1) {
                 val fromDaemon = (SystemClock.elapsedRealtime() - lastRemoteVolCmdMs) < 900L
                 if (fromDaemon) return
+                showCurrentVolumeOverlay()
                 val h = volPushHandler
                 if (h != null) {
                     h.removeCallbacks(pendingVolPush)
@@ -144,6 +195,8 @@ class StationAudioService : Service() {
             setLauncherForeground(isLauncherForeground)
             start()
         }
+        volumeOverlayManager = VolumeOverlayManager(this).apply { start() }
+        bleRemoteManager = BleRemoteManager(this)
         startForegroundNotification()
         running = true
         volPushThread = HandlerThread("StationVolPush").apply { start() }.also {
@@ -157,6 +210,16 @@ class StationAudioService : Service() {
             registerReceiver(volumeReceiver, vf)
         } catch (t: Throwable) {
             Log.w(TAG, "register volumeReceiver failed: ${t.message}")
+        }
+        try {
+            val bf = IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                addAction("android.bluetooth.a2dp-sink.profile.action.CONNECTION_STATE_CHANGED")
+            }
+            registerReceiver(btEventReceiver, bf)
+        } catch (t: Throwable) {
+            Log.w(TAG, "register btEventReceiver failed: ${t.message}")
         }
         initEqualizer()
         applyEqPreset(currentPreset)
@@ -196,7 +259,12 @@ class StationAudioService : Service() {
         if (instance === this) instance = null
         try { overlayManager?.stop() } catch (_: Throwable) {}
         overlayManager = null
+        try { volumeOverlayManager?.stop() } catch (_: Throwable) {}
+        volumeOverlayManager = null
+        try { bleRemoteManager?.release() } catch (_: Throwable) {}
+        bleRemoteManager = null
         try { unregisterReceiver(volumeReceiver) } catch (_: Throwable) {}
+        try { unregisterReceiver(btEventReceiver) } catch (_: Throwable) {}
         try { volPushHandler?.removeCallbacks(pendingVolPush) } catch (_: Throwable) {}
         try { volPushThread?.quitSafely() } catch (_: Throwable) {}
         volPushHandler = null
@@ -402,6 +470,7 @@ class StationAudioService : Service() {
                     val dir = obj.optInt("dir", 1)
                     val steps = obj.optInt("steps", 1).coerceIn(1, 5)
                     val showUi = obj.optBoolean("showUi", false)
+                    val showOsd = obj.optBoolean("showOsd", true)
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                     val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
                     val direction = if (dir >= 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
@@ -409,16 +478,52 @@ class StationAudioService : Service() {
                         audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, flags)
                     }
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
+                    if (showOsd) showCurrentVolumeOverlay()
                 }
                 "volume_set" -> {
                     val pct = obj.optInt("percent", 50).coerceIn(0, 100)
                     val showUi = obj.optBoolean("showUi", false)
+                    val showOsd = obj.optBoolean("showOsd", true)
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                     val maxV = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
                     val idx = ((pct / 100.0) * maxV).roundToInt().coerceIn(0, maxV)
                     val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx, flags)
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
+                    if (showOsd) {
+                        val muted = audioManager.isStreamMute(AudioManager.STREAM_MUSIC)
+                        volumeOverlayManager?.showVolume(pct, muted)
+                    }
+                }
+                "go_home" -> {
+                    handler.post { bringLauncherHome() }
+                }
+                "find_remote" -> {
+                    volumeOverlayManager?.showToastPill("ПОИСК ПУЛЬТА", "Отправляю BLE-сигнал зуммера на пульт...", "#E8C686", 2400L)
+                    bleRemoteManager?.triggerBuzzer { ok, msg ->
+                        volumeOverlayManager?.showToastPill(
+                            if (ok) "ПУЛЬТ ОТКЛИКНУЛСЯ" else "ПУЛЬТ НЕ НАЙДЕН",
+                            msg,
+                            if (ok) "#E8C686" else "#F87171",
+                            3500L
+                        )
+                    }
+                }
+                "pair_remote" -> {
+                    bleRemoteManager?.startAutoScanAndPair(20000L) { st, detail ->
+                        val col = when (st) {
+                            "connected" -> "#10D281"
+                            "error", "not_found" -> "#F87171"
+                            else -> "#00D4FF"
+                        }
+                        volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, col, 3200L)
+                    }
+                }
+                "refresh_apps" -> {
+                    handler.post { MainActivity.refreshAppsFromService() }
+                }
+                "startup_show" -> {
+                    handler.post { MainActivity.triggerStartupShow() }
                 }
                 "bluetooth" -> {
                     val act = obj.optString("action", "discoverable")
@@ -514,9 +619,12 @@ class StationAudioService : Service() {
                     }
 
                     handler.post {
-                        try {
-                            Toast.makeText(this, "Bluetooth: колонка готова к подключению (OpenStation Max)", Toast.LENGTH_LONG).show()
-                        } catch (_: Throwable) {}
+                        volumeOverlayManager?.showToastPill(
+                            "BLUETOOTH КОЛОНКА",
+                            "Видима как OpenStation Max ($durationSec сек)",
+                            "#00D4FF",
+                            3500L
+                        )
                     }
                 }
                 "disable", "off" -> {
@@ -531,9 +639,12 @@ class StationAudioService : Service() {
                     adapter.disable()
                     Log.i(TAG, "Bluetooth adapter disabled")
                     handler.post {
-                        try {
-                            Toast.makeText(this, "Bluetooth выключен", Toast.LENGTH_SHORT).show()
-                        } catch (_: Throwable) {}
+                        volumeOverlayManager?.showToastPill(
+                            "BLUETOOTH ВЫКЛЮЧЕН",
+                            "Режим беспроводной колонки отключён",
+                            "#F87171",
+                            2600L
+                        )
                     }
                 }
             }
@@ -589,6 +700,50 @@ class StationAudioService : Service() {
                 } catch (_: InterruptedException) {}
             }
         }
+    }
+
+    private fun showCurrentVolumeOverlay() {
+        try {
+            val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val maxV = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
+            val muted = audioManager.isStreamMute(AudioManager.STREAM_MUSIC)
+            val pct = if (muted || cur <= 0) 0 else ((cur * 100.0) / maxV).roundToInt().coerceIn(1, 100)
+            volumeOverlayManager?.showVolume(pct, muted)
+        } catch (_: Throwable) {}
+    }
+
+    private fun bringLauncherHome() {
+        try {
+            val i = Intent(this, MainActivity::class.java).apply {
+                action = Intent.ACTION_MAIN
+                addCategory(Intent.CATEGORY_HOME)
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                )
+                putExtra("go_home", true)
+            }
+            startActivity(i)
+        } catch (t: Throwable) {
+            Log.w(TAG, "bringLauncherHome failed: ${t.message}")
+        }
+    }
+
+    private fun postJsonToDaemon(path: String, body: JSONObject) {
+        try {
+            val bytes = body.toString().toByteArray(Charsets.UTF_8)
+            val conn = (URL("http://127.0.0.1:8080$path").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 800
+                readTimeout = 800
+                setRequestProperty("Content-Type", "application/json")
+            }
+            conn.outputStream.use { it.write(bytes) }
+            conn.responseCode
+            conn.disconnect()
+        } catch (_: Throwable) {}
     }
 
     private fun syncInitialAssistantState() {

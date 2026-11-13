@@ -312,15 +312,18 @@ def generate_bootanimation(out_path: Path, sample_dir: Path | None = None) -> tu
 
         for i in range(PART0_FRAMES):
             t = i / float(PART0_FRAMES - 1)
-            fade_all = min(1.0, i / 4.0)
-            intro_scale = 0.25 + 0.75 * ease_out_cubic(min(1.0, t / 0.54))
-            ring_reveal = ease_out_cubic(min(1.0, max(0.0, (t - 0.04) / 0.56)))
-            title_alpha = ease_in_out_sine(max(0.0, min(1.0, (t - 0.24) / 0.35)))
-            sub_t = max(0.0, min(1.0, (t - 0.42) / 0.35))
-            sub_alpha = ease_in_out_sine(sub_t)
-            sub_slide_px = 12.0 * (1.0 - ease_out_cubic(sub_t))
-            phase = -2.0 * math.pi * (1.0 - t)
-            flash_strength = math.exp(-((t - 0.30) / 0.10) ** 2) * 0.40
+            # Frame 000 starts 100% seamless with U-Boot static 'bootup' logo (phase=0, full emblem),
+            # then smoothly awakens an orbital surge + caustic halo into the continuous part1 loop.
+            fade_all = 1.0
+            intro_scale = 1.0 + 0.045 * math.sin(math.pi * t)
+            ring_reveal = 1.0
+            title_alpha = 1.0
+            sub_alpha = 1.0
+            sub_slide_px = 0.0
+            # Ease phase smoothly from 0 (static U-Boot match) up to a full 2*pi rotation
+            phase_ease = ease_in_out_sine(t)
+            phase = 2.0 * math.pi * phase_ease
+            flash_strength = math.exp(-((t - 0.34) / 0.14) ** 2) * 0.48 * (0.15 + 0.85 * min(1.0, i / 5.0))
 
             img = render_frame(
                 dx=dx,

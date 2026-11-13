@@ -76,7 +76,6 @@ private:
 
     int port_ = 8080;
     int listen_fd_ = -1;
-    std::string auth_token_;
     ApiHandler api_cb_;
     WsCmdHandler ws_cb_;
 

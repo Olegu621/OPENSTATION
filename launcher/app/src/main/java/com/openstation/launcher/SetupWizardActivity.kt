@@ -72,6 +72,8 @@ class SetupWizardActivity : Activity() {
     private lateinit var tvDiagDns: TextView
     private lateinit var tvDiagAudio: TextView
     private lateinit var tvDiagHw: TextView
+    private lateinit var tvStep1RemoteStatus: TextView
+    private var bleAutoStarted = false
 
     // Step 2: Alice / Gemini Live
     private lateinit var tvStep2GeminiStatus: TextView
@@ -140,6 +142,10 @@ class SetupWizardActivity : Activity() {
         updateStepUi(focusContent = true)
         updateQrCode(detectLocalIp())
         pollDaemonStatus()
+        if (!manualLaunch && !bleAutoStarted) {
+            bleAutoStarted = true
+            handler.postDelayed({ startRemoteAutoPair() }, 1800L)
+        }
     }
 
     override fun onResume() {
@@ -285,7 +291,17 @@ class SetupWizardActivity : Activity() {
         val leftCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
-            setBackgroundResource(R.drawable.bg_card_bork_hero)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.parseColor("#D40E172B"),
+                    Color.parseColor("#E0080D1A")
+                )
+            ).apply {
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), Color.parseColor("#4400D4FF"))
+            }
+            elevation = dp(12).toFloat()
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.37f).apply {
                 marginEnd = dp(14)
             }
@@ -398,7 +414,17 @@ class SetupWizardActivity : Activity() {
         val rightCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(14), dp(18), dp(14))
-            setBackgroundResource(R.drawable.bg_card_duo_widget)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.parseColor("#D00E1629"),
+                    Color.parseColor("#DC090F1E")
+                )
+            ).apply {
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), Color.parseColor("#38FFFFFF"))
+            }
+            elevation = dp(12).toFloat()
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.63f)
         }
 
@@ -511,11 +537,38 @@ class SetupWizardActivity : Activity() {
         grid.addView(r2)
         col.addView(grid)
 
+        tvStep1RemoteStatus = TextView(this).apply {
+            text = "🎮 BLE-пульт YNDX: ожидание автопоиска..."
+            setTextColor(Color.parseColor("#38BDF8"))
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#2A0C192E"))
+                setStroke(dp(1), Color.parseColor("#5500D4FF"))
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(8)
+            }
+        }
+        col.addView(tvStep1RemoteStatus)
+
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(4), 0, dp(6))
         }
-        btnRow.addView(makeActionPill("📶 Настройки Wi-Fi") {
+        btnRow.addView(makeActionPill("🔍 Найти BLE-пульт") {
+            startRemoteAutoPair()
+        }.apply {
+            (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8)
+        })
+        btnRow.addView(makeActionPill("🔔 Найти (Зуммер)") {
+            triggerRemoteBuzz()
+        }.apply {
+            (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8)
+        })
+        btnRow.addView(makeActionPill("📶 Wi-Fi") {
             try {
                 startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             } catch (_: Throwable) {
@@ -524,7 +577,7 @@ class SetupWizardActivity : Activity() {
         }.apply {
             (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8)
         })
-        btnRow.addView(makeActionPill("🌐 Включить DNS dns.comss.one") {
+        btnRow.addView(makeActionPill("🌐 DNS comss.one") {
             applyPrivateDns("hostname", "dns.comss.one")
         })
         col.addView(btnRow)
@@ -737,19 +790,19 @@ class SetupWizardActivity : Activity() {
     private fun buildStep3Pane(): ScrollView {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(makePaneHeading(
-            "Шаг 3 · Яндекс Музыка и Звук Hi-Fi",
-            "Войдите в аккаунт для «Моей волны» и настройте акустический тракт Станции Макс."
+            "Шаг 3 · Яндекс Музыка (вход на экране станции)",
+            "Авторизация выполняется прямо с экрана станции по полному QR-коду с уменьшенным масштабом."
         ))
 
         tvStep3MusicStatus = TextView(this).apply {
-            text = "Яндекс Музыка: проверка..."
+            text = "Яндекс Музыка: проверка статуса..."
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 12.5f
             setPadding(dp(12), dp(9), dp(12), dp(9))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#221E293B"))
-                setStroke(dp(1), Color.parseColor("#44FFFFFF"))
-                cornerRadius = dp(10).toFloat()
+                setColor(Color.parseColor("#2A0C192E"))
+                setStroke(dp(1), Color.parseColor("#55A855F7"))
+                cornerRadius = dp(12).toFloat()
             }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(8)
@@ -763,7 +816,7 @@ class SetupWizardActivity : Activity() {
                 bottomMargin = dp(10)
             }
         }
-        ymBtns.addView(makeActionPill("🎵 Войти / Плеер Музыки", goldHighlight = true) {
+        ymBtns.addView(makeActionPill("🎵 Войти с экрана (полный QR)", goldHighlight = true) {
             try {
                 startActivity(Intent(this, YandexMusicActivity::class.java).putExtra("tab", "auth"))
             } catch (t: Throwable) {
@@ -892,12 +945,16 @@ class SetupWizardActivity : Activity() {
             pushConfigPatch(JSONObject().put("ledRing", JSONObject().put("autoBrightness", curAutoBri)), "Автояркость обновлена")
             syncChoicesHighlight()
         }.apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8) }
-        val btnCecOn = makeActionPill("📺 Проверить Вкл ТВ (CEC)") {
+        val btnCecOn = makeActionPill("📺 Проверить ТВ (CEC)") {
             postAsync("http://127.0.0.1:8080/api/remote/cec", """{"cmd":"wakeup"}""")
             Toast.makeText(this, "HDMI-CEC Wake отправлен ТВ", Toast.LENGTH_SHORT).show()
+        }.apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8) }
+        val btnShowBoot = makeActionPill("✨ Стартовое шоу") {
+            postAsync("http://127.0.0.1:8080/api/system/startup_show", "{}")
         }
         extraRow.addView(btnAutoBri)
         extraRow.addView(btnCecOn)
+        extraRow.addView(btnShowBoot)
         col.addView(extraRow)
 
         val cecHint = TextView(this).apply {
@@ -1337,9 +1394,10 @@ class SetupWizardActivity : Activity() {
             tvStep3MusicStatus.text = "✓ Вход выполнен: @${curMusicUser.ifBlank { "OK" }}$plusStr"
             tvStep3MusicStatus.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
-            tvStep3MusicStatus.text = "Аккаунт Яндекс Музыки не подключён — нажмите «Войти / Плеер Музыки» или отправьте OAuth-токен с телефона."
-            tvStep3MusicStatus.setTextColor(Color.parseColor("#FDE68A"))
+            tvStep3MusicStatus.text = "Вход не выполнен — нажмите «Войти с экрана (полный QR)» выше."
+            tvStep3MusicStatus.setTextColor(Color.parseColor("#E8C686"))
         }
+        refreshBleRemoteStatusText()
 
         // Step 5 Summary
         tvStep5Summary.text = buildString {
@@ -1419,10 +1477,12 @@ class SetupWizardActivity : Activity() {
     private fun makeDiagCard(label: String, valueTv: TextView, marginEndDp: Int): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(11), dp(8), dp(11), dp(8))
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#AA0D1628"))
-            setStroke(dp(1), Color.parseColor("#2AFFFFFF"))
-            cornerRadius = dp(11).toFloat()
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.parseColor("#B8111C33"), Color.parseColor("#C40B1323"))
+        ).apply {
+            setStroke(dp(1), Color.parseColor("#3A38BDF8"))
+            cornerRadius = dp(14).toFloat()
         }
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             if (marginEndDp > 0) marginEnd = dp(marginEndDp)
@@ -1471,6 +1531,54 @@ class SetupWizardActivity : Activity() {
             v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(90).start()
         }
         setOnClickListener { onClick() }
+    }
+
+    private fun startRemoteAutoPair() {
+        val mgr = StationAudioService.instance?.bleRemoteManager
+        if (mgr == null) {
+            handler.postDelayed({ StationAudioService.instance?.bleRemoteManager?.let { startRemoteAutoPair() } }, 1000L)
+            return
+        }
+        mgr.startAutoScanAndPair(20000L) { st, detail ->
+            handler.post {
+                if (::tvStep1RemoteStatus.isInitialized) {
+                    val col = when (st) {
+                        "connected" -> "#6EE7B7"
+                        "error", "not_found" -> "#FDE68A"
+                        else -> "#38BDF8"
+                    }
+                    tvStep1RemoteStatus.text = "🎮 $detail"
+                    tvStep1RemoteStatus.setTextColor(Color.parseColor(col))
+                }
+            }
+        }
+    }
+
+    private fun triggerRemoteBuzz() {
+        val mgr = StationAudioService.instance?.bleRemoteManager
+        if (mgr == null) {
+            Toast.makeText(this, "BLE-служба ещё запускается...", Toast.LENGTH_SHORT).show()
+            return
+        }
+        mgr.triggerBuzzer { ok, msg ->
+            handler.post {
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                if (::tvStep1RemoteStatus.isInitialized) {
+                    tvStep1RemoteStatus.text = (if (ok) "🔔 " else "🎮 ") + msg
+                }
+            }
+        }
+    }
+
+    private fun refreshBleRemoteStatusText() {
+        val mgr = StationAudioService.instance?.bleRemoteManager ?: return
+        val st = mgr.getRemoteStatus()
+        if (::tvStep1RemoteStatus.isInitialized && st.bonded) {
+            val bat = if (st.batteryPct >= 0) " · Заряд ${st.batteryPct}%" else ""
+            val stateStr = if (st.connected) "Подключён" else "Сопряжён (спящий режим)"
+            tvStep1RemoteStatus.text = "✓ Пульт ${st.name}: $stateStr$bat"
+            tvStep1RemoteStatus.setTextColor(Color.parseColor("#6EE7B7"))
+        }
     }
 
     private fun pushConfigPatch(patch: JSONObject, toastMsg: String) {

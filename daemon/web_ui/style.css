@@ -1,18 +1,19 @@
 :root {
-  --lg-bg-color: rgba(255, 255, 255, 0.22);
-  --lg-highlight: rgba(255, 255, 255, 0.75);
+  --lg-bg-color: rgba(14, 22, 42, 0.42);
+  --lg-highlight: rgba(255, 255, 255, 0.72);
   --lg-text: #ffffff;
-  --lg-hover-glow: rgba(255, 255, 255, 0.4);
+  --lg-hover-glow: rgba(0, 212, 255, 0.36);
   --lg-red: #fb4268;
   --lg-grey: #5b5b5b;
 
-  --bg: #07090e;
-  --card: rgba(255, 255, 255, 0.10);
-  --border: rgba(255, 255, 255, 0.18);
+  --bg: #070b14;
+  --card: rgba(13, 21, 39, 0.62);
+  --border: rgba(255, 255, 255, 0.14);
   --text: #f1f5f9;
   --muted: #cbd5e1;
   --accent: #00d4ff;
-  --accent2: #8b5cf6;
+  --accent2: #a855f7;
+  --gold: #e8c686;
   --danger: #fb4268;
   --ok: #10b981;
 }
@@ -23,11 +24,12 @@ body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", Roboto, sans-serif;
   background:
-    radial-gradient(ellipse 65% 50% at 15% 10%, rgba(0, 180, 255, 0.16) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 85% 90%, rgba(139, 92, 246, 0.18) 0%, transparent 60%),
-    linear-gradient(rgba(7, 9, 14, 0.82), rgba(7, 9, 14, 0.88)),
-    url("https://images.unsplash.com/photo-1551384963-cccb0b7ed94b?q=80&w=3247&auto=format&fit=crop") center/cover;
-  animation: bg-move 6s ease-in-out infinite alternate;
+    radial-gradient(ellipse 70% 55% at 12% 10%, rgba(0, 212, 255, 0.17) 0%, transparent 62%),
+    radial-gradient(ellipse 65% 55% at 88% 85%, rgba(168, 85, 247, 0.18) 0%, transparent 62%),
+    radial-gradient(ellipse 50% 40% at 52% 45%, rgba(232, 198, 134, 0.06) 0%, transparent 65%),
+    linear-gradient(160deg, #060911 0%, #090f1e 52%, #070b14 100%);
+  background-size: 112% 112%;
+  animation: bg-move 9s ease-in-out infinite alternate;
   color: var(--text);
   min-height: 100vh;
   background-attachment: fixed;
@@ -1133,4 +1135,93 @@ textarea { resize: vertical; line-height: 1.45; }
 .memory-note-del:hover {
   background: rgba(239, 68, 68, 0.20);
   transform: scale(1.15);
+}
+
+/* Liquid Glass Touchpad Surface */
+.touchpad-surface {
+  position: relative;
+  height: 215px;
+  margin: 8px 0 6px 0;
+  border-radius: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background:
+    radial-gradient(circle at 50% 35%, rgba(0, 212, 255, 0.11), transparent 68%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.06), rgba(168, 85, 247, 0.05));
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.22),
+    inset 0 -10px 26px rgba(0, 0, 0, 0.42),
+    0 14px 30px rgba(0, 0, 0, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.touchpad-surface.active {
+  border-color: rgba(0, 212, 255, 0.65);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.34),
+    0 0 26px rgba(0, 212, 255, 0.22);
+}
+.touchpad-hint-title {
+  font-size: 0.94rem;
+  font-weight: 600;
+  color: #f8fafc;
+  margin-bottom: 4px;
+}
+.touchpad-cursor-badge {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: rgba(0, 212, 255, 0.14);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  color: #cffafe;
+}
+
+/* Liquid Glass APK Dropzone */
+.apk-installer {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.apk-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border-radius: 20px;
+  border: 1.5px dashed rgba(0, 212, 255, 0.38);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.apk-dropzone:hover,
+.apk-dropzone.dragover {
+  border-color: rgba(0, 212, 255, 0.85);
+  background: rgba(0, 212, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 212, 255, 0.16);
+}
+.apk-dropzone-icon {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+.apk-dropzone-meta {
+  flex: 1;
+  min-width: 0;
+}
+.apk-dropzone-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #f8fafc;
 }
