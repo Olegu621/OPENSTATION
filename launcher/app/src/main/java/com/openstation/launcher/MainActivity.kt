@@ -796,8 +796,10 @@ class MainActivity : Activity() {
 
     private fun makeTile(iconRes: Int, title: String, iconDrawable: Drawable? = null, onClick: () -> Unit): LinearLayout =
         LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(16), dp(18), dp(16))
+            // Icon left, title right: a 96dp-tall card with a tiny corner icon read as empty.
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
             background = Theme.focusable(Color.argb(107, 12, 12, 18), dpf(20), dp(3))
             isFocusable = true
             isClickable = true
@@ -805,11 +807,14 @@ class MainActivity : Activity() {
             val iv = if (iconDrawable != null) {
                 ImageView(context).apply { setImageDrawable(iconDrawable); scaleType = ImageView.ScaleType.FIT_CENTER }
             } else {
-                icon(iconRes, 26, Theme.TEXT)
+                // Same 56dp footprint as app icons: glyph on a soft chip.
+                icon(iconRes, 30, Theme.TEXT).apply {
+                    background = GradientDrawable().apply { setColor(Color.argb(28, 255, 255, 255)); cornerRadius = dpf(16) }
+                    setPadding(dp(13), dp(13), dp(13), dp(13))
+                }
             }
-            addView(iv, llp(dp(26), dp(26)))
-            addView(View(context), llp(1, 0, 1f))
-            addView(label(title, 16f, Theme.TEXT, 600))
+            addView(iv, llp(dp(56), dp(56)))
+            addView(label(title, 17f, Theme.TEXT, 600, lines = 2), llp(0, -2, 1f) { marginStart = dp(14) })
         }
 
     private fun renderDashboardTiles() {
