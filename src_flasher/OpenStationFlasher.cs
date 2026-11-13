@@ -19,8 +19,8 @@ using System.Windows.Media;
 [assembly: AssemblyTitle("OpenStation Max Installer")]
 [assembly: AssemblyDescription("One-Click Installer powered by yasta_flasher engine")]
 [assembly: AssemblyProduct("OpenStation Max")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.5.1.0")]
+[assembly: AssemblyFileVersion("1.5.1.0")]
 
 namespace OpenStationFlasher
 {
@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "v1.5.0";
+        private const string FW_VERSION = "v1.5.1";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -169,15 +169,14 @@ namespace OpenStationFlasher
                 "OpenStation"
             );
 
-            string[] candidates = new string[]
+            string[] localRepoCandidates = new string[]
             {
                 exeDir,
                 Directory.GetParent(exeDir) != null ? Directory.GetParent(exeDir).FullName : exeDir,
-                Directory.GetCurrentDirectory(),
-                appData
+                Directory.GetCurrentDirectory()
             };
 
-            foreach (string c in candidates)
+            foreach (string c in localRepoCandidates)
             {
                 if (File.Exists(Path.Combine(c, "service_flash", "flash_service.py")) &&
                     File.Exists(Path.Combine(c, "service_flash", "update.exe")))
@@ -642,14 +641,15 @@ namespace OpenStationFlasher
             try
             {
                 using (var searcher = new ManagementObjectSearcher(
-                    "SELECT Name, Status FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_1B8E&PID_C003%'"))
+                    "SELECT Name, Status, Service FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_1B8E&PID_C003%'"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
                     {
                         snap.UsbConnected = true;
                         string name = Convert.ToString(obj["Name"] ?? "WorldCup Device");
                         string st = Convert.ToString(obj["Status"] ?? "");
-                        snap.UsbDesc = (name + " " + st).Trim();
+                        string svc = Convert.ToString(obj["Service"] ?? "");
+                        snap.UsbDesc = (name + " " + st + (string.IsNullOrEmpty(svc) ? "" : " [" + svc + "]")).Trim();
                         if (st.Equals("OK", StringComparison.OrdinalIgnoreCase))
                             snap.DriverOk = true;
                         break;
@@ -834,10 +834,33 @@ namespace OpenStationFlasher
         {
             string flashPy = Path.Combine(_toolsRoot, "service_flash", "flash_service.py");
             string updateExe = Path.Combine(_toolsRoot, "service_flash", "update.exe");
-            if (File.Exists(flashPy) && File.Exists(updateExe)) return;
+            string verFile = Path.Combine(_toolsRoot, "service_flash", "tools_version.txt");
 
-            SetProgress(4, "Загрузка утилит прошивки (yasta_flasher + update.exe)...");
-            AppendLog("Локальные утилиты не найдены — загрузка набора инструментов с GitHub Releases...");
+            string appData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "OpenStation"
+            );
+            bool isAppDataCache = string.Equals(
+                Path.GetFullPath(_toolsRoot).TrimEnd('\\'),
+                Path.GetFullPath(appData).TrimEnd('\\'),
+                StringComparison.OrdinalIgnoreCase
+            );
+
+            bool versionMatches = false;
+            if (File.Exists(verFile))
+            {
+                try
+                {
+                    versionMatches = string.Equals(File.ReadAllText(verFile).Trim(), FW_VERSION, StringComparison.OrdinalIgnoreCase);
+                }
+                catch { }
+            }
+
+            if (File.Exists(flashPy) && File.Exists(updateExe) && (!isAppDataCache || versionMatches))
+                return;
+
+            SetProgress(4, "Обновление утилит прошивки (" + FW_VERSION + ")...");
+            AppendLog("Загрузка актуального набора утилит прошивки (" + FW_VERSION + ") с GitHub Releases...");
 
             string json = HttpGetString(GITHUB_LATEST_API);
             var m = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]*OpenStationMax-FlasherTools[^\"]*\\.zip)\"", RegexOptions.IgnoreCase);
@@ -860,6 +883,7 @@ namespace OpenStationFlasher
                     entry.ExtractToFile(dest, true);
                 }
             }
+            try { File.WriteAllText(verFile, FW_VERSION + "\n", Encoding.UTF8); } catch { }
             try { File.Delete(zipPath); } catch { }
         }
 

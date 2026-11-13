@@ -20,14 +20,13 @@ from pyamlboot import pyamlboot
 
 def resolve_usb_backend():
     if os.name == "nt":
-        is_64 = platform.machine().endswith("64") or sys.maxsize > 2**32
+        is_64 = sys.maxsize > 2**32
         candidates = []
         if is_64:
             candidates.append(os.path.join(SCRIPT_DIR, "Drivers", "amd64", "libusb0.dll"))
-            candidates.append(os.path.join(SCRIPT_DIR, "Drivers", "amd64", "libusbK.dll"))
         else:
             candidates.append(os.path.join(SCRIPT_DIR, "Drivers", "x86", "libusb0_x86.dll"))
-            candidates.append(os.path.join(SCRIPT_DIR, "Drivers", "x86", "libusbK_x86.dll"))
+            candidates.append(os.path.join(SCRIPT_DIR, "libusb0.dll"))
         for dll in candidates:
             if os.path.isfile(dll):
                 dll_dir = os.path.dirname(dll)
@@ -112,6 +111,7 @@ def boot_single_image(backend, img_path, retries=2):
     attempt = 0
     while attempt < retries:
         attempt += 1
+        dev = None
         try:
             dev = pyamlboot.AmlogicSoC(backend=backend)
             try:
@@ -166,14 +166,24 @@ def boot_single_image(backend, img_path, retries=2):
                     print(f"  USB Error during AMLC transfer ({amlc_err}/4): {e}")
                     if amlc_err >= 4:
                         raise
+                    if dev is not None:
+                        dev.close()
+                        dev = None
                     time.sleep(2)
                     dev = reset_usb_connection(backend)
                     continue
 
         except Exception as e:
             print(f"  [!] Ошибка при загрузке {os.path.basename(img_path)} (попытка {attempt}/{retries}): {e}")
-            if attempt < retries:
-                time.sleep(3)
+        finally:
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+                dev = None
+        if attempt < retries:
+            time.sleep(3)
 
     return False
 

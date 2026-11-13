@@ -69,6 +69,23 @@ class AmlogicSoC(object):
         if self.dev is None:
             raise ValueError('Device not found')
 
+        try:
+            self.dev.default_timeout = 3000
+        except Exception:
+            pass
+
+    def close(self):
+        if getattr(self, "dev", None) is not None:
+            try:
+                usb.util.release_interface(self.dev, 0)
+            except Exception:
+                pass
+            try:
+                usb.util.dispose_resources(self.dev)
+            except Exception:
+                pass
+            self.dev = None
+
     def writeSimpleMemory(self, address, data):
         """Write a chunk of data to memory"""
         if len(data) > 64:
@@ -362,7 +379,7 @@ class AmlogicSoC(object):
                                wIndex = 0,
                                data_or_wLength = None)
 
-        data = epin.read(AMLC_AMLS_BLOCK_LENGTH, 100)
+        data = epin.read(AMLC_AMLS_BLOCK_LENGTH, 2000)
         (tag, length, offset) = unpack('<4s4xII', data[0:16])
 
         if not "AMLC" in ''.join(map(chr,tag)):
@@ -370,7 +387,7 @@ class AmlogicSoC(object):
 
         # Ack the request
         okay = pack('<4sIII', bytes("OKAY", 'ascii'), 0, 0, 0)
-        epout.write(okay, 1000)
+        epout.write(okay, 3000)
 
         return (length, offset)
 

@@ -27,8 +27,11 @@ namespace {
 
 constexpr const char* kDaemonBinPath = "/data/local/openstation/openstationd";
 constexpr const char* kLocalManifestPath = "/data/local/openstation/firmware_manifest.json";
+constexpr const char* kSystemManifestPath = "/system/openstation/firmware_manifest.json";
 constexpr const char* kOtaTmpDir = "/data/local/openstation/ota_tmp";
 constexpr const char* kOtaApplyScriptPath = "/data/local/openstation/ota_apply.sh";
+constexpr const char* kPendingApksDir = "/data/local/openstation/pending_apks";
+constexpr const char* kApkRepairRebootMarkerPath = "/data/local/openstation/apk_repair_reboot_tried";
 constexpr const char* kBootAnimSystemPath = "/system/media/bootanimation.zip";
 constexpr const char* kBootAnimStockBackupPath = "/data/local/openstation/backup/bootanimation.zip.stock";
 constexpr const char* kBootAnimRomStockPath = "/system/openstation/bootanimation.zip.stock";
@@ -492,6 +495,136 @@ bool install_bootanim_file_atomic(const std::string& src_path,
     return true;
 }
 
+bool is_sig_mismatch_error(const std::string& pm_out) {
+    return pm_out.find("INSTALL_FAILED_UPDATE_INCOMPATIBLE") != std::string::npos ||
+           pm_out.find("INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES") != std::string::npos ||
+           pm_out.find("signatures do not match") != std::string::npos;
+}
+
+bool parse_dumpsys_package(const std::string& pkg_name, bool& out_installed, std::string& out_version_name) {
+    out_installed = false;
+    out_version_name.clear();
+    int rc = -1;
+    std::string out;
+    if (!run_shell_capture("dumpsys package " + escape_sh_single(pkg_name), 10, rc, out) || rc != 0) {
+        return false;
+    }
+    if (out.empty() ||
+        out.find("Unable to find package") != std::string::npos ||
+        out.find("Package [" + pkg_name + "]") == std::string::npos) {
+        return true;
+    }
+    out_installed = true;
+    size_t pos = out.find("versionName=");
+    if (pos != std::string::npos) {
+        pos += 12;
+        size_t end = pos;
+        while (end < out.size() && out[end] != '\r' && out[end] != '\n' &&
+               out[end] != ' ' && out[end] != '\t') {
+            ++end;
+        }
+        out_version_name = out.substr(pos, end - pos);
+    }
+    return true;
+}
+
+void apply_post_install_pkg_setup(const std::string& pkg_name) {
+    int dummy_rc = 0;
+    std::string dummy_out;
+    if (pkg_name == "com.openstation.ime") {
+        run_shell_capture(
+            "/system/bin/ime enable com.openstation.ime/.OpenStationImeService; "
+            "/system/bin/ime set com.openstation.ime/.OpenStationImeService",
+            10, dummy_rc, dummy_out);
+    } else if (pkg_name == "com.openstation.launcher") {
+        run_shell_capture(
+            "pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true; "
+            "appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true; "
+            "appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true; "
+            "cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || "
+            "pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true; "
+            "am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.openstation.launcher/.MainActivity",
+            15, dummy_rc, dummy_out);
+    }
+}
+
+enum class ApkInstallResult {
+    Ok,
+    NeedsRebootForSystemApp,
+    Failed
+};
+
+ApkInstallResult install_apk_with_sig_fallback(const std::string& apk_path,
+                                               const std::string& pkg_name,
+                                               const std::string& system_app_dir_name,
+                                               const std::string& expected_version,
+                                               bool allow_system_replace_reboot,
+                                               int timeout_sec,
+                                               std::string& out_err) {
+    out_err.clear();
+    std::string sh_apk = escape_sh_single(apk_path);
+    std::string sh_pkg = escape_sh_single(pkg_name);
+
+    int rc = -1;
+    std::string out;
+    bool ok = run_shell_capture("/system/bin/pm install -r -g -d " + sh_apk, timeout_sec, rc, out);
+    if (ok && rc == 0 && out.find("Failure") == std::string::npos) {
+        apply_post_install_pkg_setup(pkg_name);
+        return ApkInstallResult::Ok;
+    }
+
+    if (is_sig_mismatch_error(out)) {
+        LOGW("OTA", "Signature mismatch installing %s; trying uninstall + clean install", pkg_name.c_str());
+        int u_rc = -1;
+        std::string u_out;
+        run_shell_capture("/system/bin/pm uninstall " + sh_pkg, 30, u_rc, u_out);
+
+        rc = -1;
+        out.clear();
+        ok = run_shell_capture("/system/bin/pm install -g -d " + sh_apk, timeout_sec, rc, out);
+        if (ok && rc == 0 && out.find("Failure") == std::string::npos) {
+            apply_post_install_pkg_setup(pkg_name);
+            return ApkInstallResult::Ok;
+        }
+
+        // System-resident APK (/system/app/OpenStation*) cannot be uninstalled via pm; stage removal + reboot once
+        std::string sys_dir = "/system/app/" + system_app_dir_name;
+        struct stat st {};
+        if (allow_system_replace_reboot && stat(sys_dir.c_str(), &st) == 0) {
+            std::string marker_key = expected_version + ":" + pkg_name;
+            std::string prev_marker;
+            read_file_bytes(kApkRepairRebootMarkerPath, prev_marker, 256);
+            if (prev_marker.find(marker_key) == std::string::npos) {
+                std::string new_marker = prev_marker + marker_key + "\n";
+                write_file_atomic(kApkRepairRebootMarkerPath, new_marker.data(), new_marker.size(), 0644);
+
+                std::string pending_path = std::string(kPendingApksDir) + "/" + pkg_name + ".apk";
+                int src_rc = -1;
+                std::string src_out;
+                std::string prep_cmd =
+                    "mkdir -p " + std::string(kPendingApksDir) + " && "
+                    "cp -f " + sh_apk + " " + escape_sh_single(pending_path) + ".tmp && "
+                    "chmod 644 " + escape_sh_single(pending_path) + ".tmp && "
+                    "mv -f " + escape_sh_single(pending_path) + ".tmp " + escape_sh_single(pending_path) + " && sync";
+                if (run_shell_capture(prep_cmd, 20, src_rc, src_out) && src_rc == 0 &&
+                    OtaManager::compute_file_sha256(pending_path) == OtaManager::compute_file_sha256(apk_path)) {
+                    std::string rm_sys_cmd =
+                        "mount -o rw,remount / 2>/dev/null || mount -o remount,rw /; "
+                        "rm -rf " + escape_sh_single(sys_dir) + " /data/app/*" + pkg_name + "* /data/system/package_cache/* 2>/dev/null || true; "
+                        "sync; "
+                        "mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true";
+                    run_shell_capture(rm_sys_cmd, 20, src_rc, src_out);
+                    LOGW("OTA", "Staged %s for post-reboot clean install after removing %s", pkg_name.c_str(), sys_dir.c_str());
+                    return ApkInstallResult::NeedsRebootForSystemApp;
+                }
+            }
+        }
+    }
+
+    out_err = out.empty() ? ("pm exit code " + std::to_string(rc)) : out;
+    return ApkInstallResult::Failed;
+}
+
 } // namespace
 
 OtaManager::~OtaManager() {
@@ -679,9 +812,27 @@ void OtaManager::start(const std::string& current_version,
 
     std::lock_guard<std::mutex> tlk(thread_mu_);
     auto_thread_ = std::thread([this]() {
-        // Delay initial GitHub check by 25s so Wi-Fi & DNS stabilize cleanly after boot
-        for (int i = 0; i < 125 && !stop_req_.load(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        // Wait for any just-finished ota_apply.sh and Android PackageManager boot completion
+        for (int i = 0; i < 50 && !stop_req_.load(); ++i) {
+            bool apply_gone = (access(kOtaApplyScriptPath, F_OK) != 0);
+            int bc_rc = -1;
+            std::string bc_out;
+            bool boot_done = apply_gone &&
+                             run_shell_capture("getprop sys.boot_completed", 3, bc_rc, bc_out) &&
+                             bc_out.find('1') != std::string::npos;
+            if (boot_done && i >= 10) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        if (stop_req_.load()) return;
+
+        if (!op_active_.exchange(true)) {
+            repair_mismatched_apks_on_boot();
+            op_active_.store(false);
+        }
+
+        // Wait remaining brief delay so Wi-Fi & DNS stabilize cleanly before auto-check
+        for (int i = 0; i < 60 && !stop_req_.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         if (stop_req_.load()) return;
 
@@ -740,7 +891,74 @@ std::vector<std::string> OtaManager::build_artifact_urls(const OtaArtifactInfo& 
     }
     urls.push_back("https://raw.githubusercontent.com/" + repo + "/" + branch + "/firmware/" + art.file_name + q);
     urls.push_back("https://github.com/" + repo + "/raw/" + branch + "/firmware/" + art.file_name + q);
+    if (!ver.empty()) {
+        urls.push_back("https://raw.githubusercontent.com/" + repo + "/v" + ver + "/firmware/" + art.file_name + q);
+    }
     return urls;
+}
+
+bool OtaManager::download_verified_artifact(const OtaArtifactInfo& art,
+                                             const std::vector<std::string>& urls,
+                                             const std::string& dst_path,
+                                             uint32_t file_mode,
+                                             std::string& out_err) {
+    out_err = "Нет ответа от GitHub";
+    for (const auto& u : urls) {
+        if (stop_req_.load()) {
+            out_err = "Операция остановлена";
+            return false;
+        }
+        HttpClientRequest req;
+        req.method = "GET";
+        req.url = u;
+        req.timeout_ms = 120000;
+        req.max_redirects = 5;
+        req.max_body_bytes = kMaxArtifactBytes;
+        req.verify_tls = true;
+        req.abort_req = &stop_req_;
+        HttpClientResponse r = http_perform(req);
+        if (!r.ok || r.status_code != 200) {
+            out_err = !r.error.empty() ? r.error : ("HTTP " + std::to_string(r.status_code));
+            continue;
+        }
+        if (r.truncated || (art.size > 0 && static_cast<int64_t>(r.body.size()) != art.size)) {
+            out_err = "Размер " + art.file_name + " не совпал (" +
+                      std::to_string(r.body.size()) + " != " + std::to_string(art.size) + ")";
+            continue;
+        }
+        std::string sha = compute_bytes_sha256(r.body.data(), r.body.size());
+        if (sha != art.sha256) {
+            out_err = "SHA-256 не совпал для " + art.file_name;
+            continue;
+        }
+        if (art.file_name.size() >= 4 &&
+            art.file_name.substr(art.file_name.size() - 4) == ".apk") {
+            if (r.body.size() < 4 || r.body[0] != 'P' || r.body[1] != 'K' ||
+                static_cast<unsigned char>(r.body[2]) != 0x03 ||
+                static_cast<unsigned char>(r.body[3]) != 0x04) {
+                out_err = "Файл " + art.file_name + " не является корректным APK/ZIP";
+                continue;
+            }
+        }
+        if (art.key == "bootanimation") {
+            std::string zerr;
+            if (!validate_bootanimation_zip_bytes(r.body.data(), r.body.size(), zerr)) {
+                out_err = zerr;
+                continue;
+            }
+        }
+        if (!write_file_atomic(dst_path, r.body.data(), r.body.size(), static_cast<mode_t>(file_mode))) {
+            out_err = "Ошибка записи на диск: " + dst_path;
+            continue;
+        }
+        if (compute_file_sha256(dst_path) != art.sha256) {
+            out_err = "Повреждение записи на /data для " + art.file_name;
+            continue;
+        }
+        out_err.clear();
+        return true;
+    }
+    return false;
 }
 
 void OtaManager::emit_status() {
@@ -1033,6 +1251,152 @@ bool OtaManager::check_now() {
     return true;
 }
 
+void OtaManager::repair_mismatched_apks_on_boot() {
+    int dummy_rc = 0;
+    std::string dummy_out;
+
+    // 1. Install any pending APKs left after a one-time /system/app removal reboot
+    bool had_pending = false;
+    bool pending_all_ok = true;
+    struct PendingSpec {
+        const char* pkg;
+        const char* sys_dir;
+        std::string path;
+    };
+    const std::vector<PendingSpec> pendings = {
+        {"com.openstation.launcher", "OpenStationLauncher", std::string(kPendingApksDir) + "/com.openstation.launcher.apk"},
+        {"com.openstation.ime", "OpenStationIME", std::string(kPendingApksDir) + "/com.openstation.ime.apk"},
+    };
+    for (const auto& ps : pendings) {
+        if (!file_exists_nonempty(ps.path.c_str())) continue;
+        had_pending = true;
+        std::string err;
+        ApkInstallResult r = install_apk_with_sig_fallback(
+            ps.path, ps.pkg, ps.sys_dir, installed_version_, false, 120, err);
+        if (r == ApkInstallResult::Ok) {
+            unlink(ps.path.c_str());
+            LOGI("OTA", "Installed staged post-reboot APK %s", ps.pkg);
+        } else {
+            pending_all_ok = false;
+            LOGW("OTA", "Failed staged post-reboot APK %s: %s", ps.pkg, err.c_str());
+        }
+    }
+    if (had_pending && pending_all_ok) {
+        rmdir(kPendingApksDir);
+        unlink(kApkRepairRebootMarkerPath);
+    }
+
+    // 2. Compare installed Android APKs against expected manifest (fixes partial v1.3.x -> v1.5.1 OTA upgrades)
+    std::string raw;
+    if (!read_file_bytes(kLocalManifestPath, raw) && !read_file_bytes(kSystemManifestPath, raw)) {
+        return;
+    }
+    json::Value mv;
+    if (!json::Parser::parse(raw, mv) || !mv.is_obj()) return;
+    std::string manifest_ver = mv.get("version") ? mv.get("version")->as_str("") : "";
+    if (manifest_ver.empty()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        manifest_ver = installed_version_;
+    }
+    const json::Value* files = mv.get("files");
+    if (!files || !files->is_obj()) return;
+
+    auto extract_apk_art = [&](const char* key, const char* def_fn, OtaArtifactInfo& out_art) -> bool {
+        const json::Value* obj = files->get(key);
+        if (!obj || !obj->is_obj()) return false;
+        out_art.key = key;
+        out_art.file_name = obj->get("fileName") ? obj->get("fileName")->as_str("") : def_fn;
+        out_art.size = obj->get("size") ? obj->get("size")->as_i64(0) : 0;
+        out_art.sha256 = obj->get("sha256") ? to_lower_hex(obj->get("sha256")->as_str("")) : "";
+        out_art.url = obj->get("url") ? obj->get("url")->as_str("") : "";
+        return is_safe_filename(out_art.file_name) && out_art.size > 0 && is_valid_sha256_hex(out_art.sha256);
+    };
+
+    OtaArtifactInfo launcher_art, ime_art;
+    bool has_launcher_art = extract_apk_art("launcher", "OpenStationLauncher.apk", launcher_art);
+    bool has_ime_art = extract_apk_art("ime", "OpenStationIME.apk", ime_art);
+
+    bool launcher_ok = false, ime_ok = false;
+    std::string launcher_ver, ime_ver;
+    bool check_launcher = has_launcher_art && parse_dumpsys_package("com.openstation.launcher", launcher_ok, launcher_ver);
+    bool check_ime = has_ime_art && parse_dumpsys_package("com.openstation.ime", ime_ok, ime_ver);
+
+    bool repair_launcher = check_launcher && (!launcher_ok || (!launcher_ver.empty() && compare_semver(launcher_ver, manifest_ver) < 0));
+    bool repair_ime = check_ime && !ime_ok;
+    if (!repair_launcher && !repair_ime) {
+        return;
+    }
+
+    OtaConfig c_snap;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        c_snap = cfg_;
+    }
+
+    struct RepairTarget {
+        OtaArtifactInfo art;
+        const char* pkg;
+        const char* sys_dir;
+    };
+    std::vector<RepairTarget> targets;
+    if (repair_ime) targets.push_back({ime_art, "com.openstation.ime", "OpenStationIME"});
+    if (repair_launcher) targets.push_back({launcher_art, "com.openstation.launcher", "OpenStationLauncher"});
+
+    LOGW("OTA", "Detected APK mismatch on boot (launcher='%s' expected='%s', ime_present=%d); self-healing...",
+         launcher_ok ? launcher_ver.c_str() : "missing", manifest_ver.c_str(), ime_ok ? 1 : 0);
+
+    run_shell_capture("mkdir -p /data/local/openstation/ota_tmp", 5, dummy_rc, dummy_out);
+    bool needs_reboot = false;
+
+    for (const auto& t : targets) {
+        if (stop_req_.load()) break;
+        std::string dst_path = std::string(kOtaTmpDir) + "/" + t.art.file_name;
+        bool ready = (compute_file_sha256(dst_path) == t.art.sha256);
+
+        if (!ready) {
+            auto urls = build_artifact_urls(t.art, c_snap.repo, c_snap.branch, manifest_ver);
+            std::string dl_err;
+            for (int attempt = 0; attempt < 3 && !ready && !stop_req_.load(); ++attempt) {
+                if (attempt > 0) {
+                    for (int s = 0; s < 25 && !stop_req_.load(); ++s) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    }
+                }
+                ready = download_verified_artifact(t.art, urls, dst_path, 0644, dl_err);
+            }
+            if (!ready) {
+                LOGW("OTA", "Self-heal could not fetch %s (%s)", t.art.file_name.c_str(), dl_err.c_str());
+                continue;
+            }
+        }
+
+        std::string inst_err;
+        ApkInstallResult res = install_apk_with_sig_fallback(
+            dst_path, t.pkg, t.sys_dir, manifest_ver, true, 120, inst_err);
+        if (res == ApkInstallResult::Ok) {
+            LOGI("OTA", "Self-heal installed %s cleanly to match v%s", t.pkg, manifest_ver.c_str());
+        } else if (res == ApkInstallResult::NeedsRebootForSystemApp) {
+            needs_reboot = true;
+        } else {
+            LOGW("OTA", "Self-heal install failed for %s: %s", t.pkg, inst_err.c_str());
+        }
+    }
+
+    run_shell_capture("rm -rf /data/local/openstation/ota_tmp && sync", 5, dummy_rc, dummy_out);
+    if (needs_reboot) {
+        LOGW("OTA", "Rebooting once to complete system APK certificate replacement...");
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        run_shell_capture("/system/bin/reboot", 5, dummy_rc, dummy_out);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        refresh_local_hashes_locked();
+    }
+    emit_status();
+}
+
 OtaInstallStartResult OtaManager::start_install(bool force) {
     if (op_active_.exchange(true)) {
         return {false, "Обновление или проверка уже выполняются"};
@@ -1162,66 +1526,10 @@ void OtaManager::run_install_sync(bool force) {
         emit_status();
 
         auto urls = build_artifact_urls(art, c_snap.repo, c_snap.branch, target_ver);
-        std::string dl_err = "Нет ответа от GitHub";
-        bool dl_ok = false;
-
-        for (const auto& u : urls) {
-            if (stop_req_.load()) break;
-            HttpClientRequest req;
-            req.method = "GET";
-            req.url = u;
-            req.timeout_ms = 120000;
-            req.max_redirects = 5;
-            req.max_body_bytes = kMaxArtifactBytes;
-            req.verify_tls = true;
-            req.abort_req = &stop_req_;
-            HttpClientResponse r = http_perform(req);
-            if (!r.ok || r.status_code != 200) {
-                dl_err = !r.error.empty() ? r.error : ("HTTP " + std::to_string(r.status_code));
-                continue;
-            }
-            if (r.truncated || static_cast<int64_t>(r.body.size()) != art.size) {
-                dl_err = "Размер " + art.file_name + " не совпал (" +
-                         std::to_string(r.body.size()) + " != " + std::to_string(art.size) + ")";
-                continue;
-            }
-            std::string sha = compute_bytes_sha256(r.body.data(), r.body.size());
-            if (sha != art.sha256) {
-                dl_err = "SHA-256 не совпал для " + art.file_name;
-                continue;
-            }
-            if (art.file_name.size() >= 4 &&
-                art.file_name.substr(art.file_name.size() - 4) == ".apk") {
-                if (r.body.size() < 4 || r.body[0] != 'P' || r.body[1] != 'K' ||
-                    static_cast<unsigned char>(r.body[2]) != 0x03 ||
-                    static_cast<unsigned char>(r.body[3]) != 0x04) {
-                    dl_err = "Файл " + art.file_name + " не является корректным APK/ZIP";
-                    continue;
-                }
-            }
-            if (art.key == "bootanimation") {
-                std::string zerr;
-                if (!validate_bootanimation_zip_bytes(r.body.data(), r.body.size(), zerr)) {
-                    dl_err = zerr;
-                    continue;
-                }
-            }
-            std::string dst_path = std::string(kOtaTmpDir) + "/" + art.file_name;
-            mode_t mode = (art.key == "daemon") ? 0755 : 0644;
-            if (!write_file_atomic(dst_path, r.body.data(), r.body.size(), mode)) {
-                dl_err = "Ошибка записи на диск: " + dst_path;
-                continue;
-            }
-            std::string disk_sha = compute_file_sha256(dst_path);
-            if (disk_sha != art.sha256) {
-                dl_err = "Повреждение записи на /data для " + art.file_name;
-                continue;
-            }
-            dl_ok = true;
-            break;
-        }
-
-        if (!dl_ok) {
+        std::string dst_path = std::string(kOtaTmpDir) + "/" + art.file_name;
+        uint32_t mode = (art.key == "daemon") ? 0755u : 0644u;
+        std::string dl_err;
+        if (!download_verified_artifact(art, urls, dst_path, mode, dl_err)) {
             run_shell_capture("rm -rf /data/local/openstation/ota_tmp", 5, dummy_rc, dummy_out);
             fail_ota("Ошибка скачивания " + art.file_name + ": " + dl_err);
             return;
@@ -1265,22 +1573,26 @@ void OtaManager::run_install_sync(bool force) {
     }
     emit_status();
 
+    bool reboot_after_apply = false;
+
     // 1. Install IME synchronously if changed
     if (need_ime) {
-        int rc = -1;
-        std::string out;
-        bool ok = run_shell_capture(
-            "/system/bin/pm install -r -g -d /data/local/openstation/ota_tmp/OpenStationIME.apk",
-            90, rc, out);
-        if (!ok || rc != 0 || out.find("Failure") != std::string::npos) {
+        std::string ime_err;
+        ApkInstallResult ime_res = install_apk_with_sig_fallback(
+            "/data/local/openstation/ota_tmp/OpenStationIME.apk",
+            "com.openstation.ime",
+            "OpenStationIME",
+            target_ver,
+            true,
+            90,
+            ime_err);
+        if (ime_res == ApkInstallResult::NeedsRebootForSystemApp) {
+            reboot_after_apply = true;
+        } else if (ime_res != ApkInstallResult::Ok) {
             run_shell_capture("rm -rf /data/local/openstation/ota_tmp", 5, dummy_rc, dummy_out);
-            fail_ota("Ошибка установки OpenStationIME.apk: " + out);
+            fail_ota("Ошибка установки OpenStationIME.apk: " + ime_err);
             return;
         }
-        run_shell_capture(
-            "/system/bin/ime enable com.openstation.ime/.OpenStationImeService; "
-            "/system/bin/ime set com.openstation.ime/.OpenStationImeService",
-            10, dummy_rc, dummy_out);
     }
 
     // 1b. Install OpenStation bootanimation.zip synchronously if changed
@@ -1316,24 +1628,22 @@ void OtaManager::run_install_sync(bool force) {
             }
             emit_status();
 
-            int rc = -1;
-            std::string out;
-            bool ok = run_shell_capture(
-                "/system/bin/pm install -r -g -d /data/local/openstation/ota_tmp/OpenStationLauncher.apk",
-                120, rc, out);
-            if (!ok || rc != 0 || out.find("Failure") != std::string::npos) {
+            std::string l_err;
+            ApkInstallResult l_res = install_apk_with_sig_fallback(
+                "/data/local/openstation/ota_tmp/OpenStationLauncher.apk",
+                "com.openstation.launcher",
+                "OpenStationLauncher",
+                target_ver,
+                true,
+                120,
+                l_err);
+            if (l_res == ApkInstallResult::NeedsRebootForSystemApp) {
+                reboot_after_apply = true;
+            } else if (l_res != ApkInstallResult::Ok) {
                 run_shell_capture("rm -rf /data/local/openstation/ota_tmp", 5, dummy_rc, dummy_out);
-                fail_ota("Ошибка установки OpenStationLauncher.apk: " + out);
+                fail_ota("Ошибка установки OpenStationLauncher.apk: " + l_err);
                 return;
             }
-            run_shell_capture(
-                "pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true; "
-                "appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true; "
-                "appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true; "
-                "cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || "
-                "pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true; "
-                "am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.openstation.launcher/.MainActivity",
-                15, dummy_rc, dummy_out);
         }
 
         if (rename(tmp_manifest_path.c_str(), kLocalManifestPath) != 0) {
@@ -1341,6 +1651,19 @@ void OtaManager::run_install_sync(bool force) {
         }
         chmod(kLocalManifestPath, 0644);
         run_shell_capture("rm -rf /data/local/openstation/ota_tmp && sync", 5, dummy_rc, dummy_out);
+
+        if (reboot_after_apply) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                state_ = "restarting";
+                progress_pct_ = 98;
+                progress_text_ = "Перезагрузка для завершения замены системного APK...";
+            }
+            emit_status();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            run_shell_capture("/system/bin/reboot", 5, dummy_rc, dummy_out);
+            return;
+        }
 
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -1392,7 +1715,15 @@ void OtaManager::run_install_sync(bool force) {
     script += "export LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64\n";
     script += "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1\n";
     if (need_launcher) {
-        script += "pm install -r -g -d /data/local/openstation/ota_tmp/OpenStationLauncher.apk\n";
+        script += "LAUNCHER_APK=/data/local/openstation/ota_tmp/OpenStationLauncher.apk\n";
+        script += "PM_OUT=$(/system/bin/pm install -r -g -d \"$LAUNCHER_APK\" 2>&1) || true\n";
+        script += "echo \"$PM_OUT\"\n";
+        script += "case \"$PM_OUT\" in\n";
+        script += "  *INSTALL_FAILED_UPDATE_INCOMPATIBLE*|*INCONSISTENT_CERTIFICATES*|*\"signatures do not match\"*)\n";
+        script += "    /system/bin/pm uninstall com.openstation.launcher 2>&1 || true\n";
+        script += "    /system/bin/pm install -g -d \"$LAUNCHER_APK\" 2>&1 || true\n";
+        script += "    ;;\n";
+        script += "esac\n";
         script += "pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true\n";
         script += "appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true\n";
         script += "appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true\n";
@@ -1401,6 +1732,9 @@ void OtaManager::run_install_sync(bool force) {
     }
     script += "rm -rf /data/local/openstation/ota_tmp\n";
     script += "rm -f /data/local/openstation/ota_apply.sh\n";
+    if (reboot_after_apply) {
+        script += "sync && sleep 1 && /system/bin/reboot\n";
+    }
     script += "echo \"=== OpenStation OTA Completed ===\"\n";
 
     if (!write_file_atomic(kOtaApplyScriptPath, script.data(), script.size(), 0755)) {

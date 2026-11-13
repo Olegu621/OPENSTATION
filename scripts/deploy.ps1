@@ -1569,7 +1569,7 @@ if (-not $manifestPushed) {
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.5.0"
+        version      = "1.5.1"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = $genFiles
@@ -1580,8 +1580,25 @@ if (-not $manifestPushed) {
 
 $check = Invoke-AdbSh @'
 set -e
-pm install -r -g -d /data/local/tmp/OpenStationIME.apk
-pm install -r -g -d /data/local/tmp/OpenStationLauncher.apk
+install_apk_safe() {
+    apk="$1"
+    pkg="$2"
+    out=$(pm install -r -g -d "$apk" 2>&1) || true
+    echo "$out"
+    case "$out" in
+        *Success*) return 0 ;;
+        *INSTALL_FAILED_UPDATE_INCOMPATIBLE*|*INCONSISTENT_CERTIFICATES*)
+            pm uninstall "$pkg" >/dev/null 2>&1 || true
+            pm install -g -d "$apk"
+            return $?
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+install_apk_safe /data/local/tmp/OpenStationIME.apk com.openstation.ime
+install_apk_safe /data/local/tmp/OpenStationLauncher.apk com.openstation.launcher
 rm -f /data/local/tmp/OpenStationIME.apk /data/local/tmp/OpenStationLauncher.apk
 pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true
 appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true

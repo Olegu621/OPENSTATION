@@ -6,9 +6,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.5.0",
-    [string]$Changelog = "OpenStation Max v1.5.0: новый 3D Halftone-визуализатор «3D Точки», улучшенная навигация по экранам лаунчера, веб-пульт без запроса токена и обновлённый установщик прошивки в 1 клик.",
-    [switch]$Clean
+    [string]$Version = "1.5.1",
+    [string]$Changelog = "OpenStation Max v1.5.1: исправлен OTA-переход с v1.3.x при смене подписи APK (автовосстановление OpenStationLauncher/IME) и полностью переработан USB-загрузчик в установщике (изолированные процессы, нативный update.exe bl2_boot, поддержка libusb0/WinUSB и автообновление утилит).",
+    [switch]$Clean,
+    [switch]$RebuildIme
 )
 
 $ErrorActionPreference = "Stop"
@@ -127,16 +128,23 @@ if ($stripExe) {
 $env:JAVA_HOME = $javaHome
 $env:ANDROID_HOME = $sdkRoot
 
-Write-Host "[3/4] Сборка OpenStationIME и OpenStationLauncher..." -ForegroundColor Yellow
-Push-Location "$RootDir\ime"
-try {
-    if ($Clean) {
-        & $gradle clean assembleDebug --no-daemon --console=plain
-    } else {
-        & $gradle assembleDebug --no-daemon --console=plain
-    }
-    if ($LASTEXITCODE -ne 0) { throw "OpenStationIME Gradle build failed" }
-} finally { Pop-Location }
+$fwImePrebuilt = "$RootDir\firmware\OpenStationIME.apk"
+if ($RebuildIme -or -not (Test-Path $fwImePrebuilt)) {
+    Write-Host "[3/4] Сборка OpenStationIME и OpenStationLauncher..." -ForegroundColor Yellow
+    Push-Location "$RootDir\ime"
+    try {
+        if ($Clean) {
+            & $gradle clean assembleDebug --no-daemon --console=plain
+        } else {
+            & $gradle assembleDebug --no-daemon --console=plain
+        }
+        if ($LASTEXITCODE -ne 0) { throw "OpenStationIME Gradle build failed" }
+    } finally { Pop-Location }
+    $imeSrcPath = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk"
+} else {
+    Write-Host "[3/4] Сборка OpenStationLauncher (OpenStationIME.apk без изменений — сохранён для совместимости OTA v1.3.x)..." -ForegroundColor Yellow
+    $imeSrcPath = $fwImePrebuilt
+}
 
 Push-Location "$RootDir\launcher"
 try {
@@ -156,7 +164,7 @@ $sources = @(
     @{ Key = "daemon";        FileName = "openstationd";            Src = "$buildDir\openstationd" },
     @{ Key = "bootlogod";     FileName = "bootlogod";               Src = "$buildDir\bootlogod" },
     @{ Key = "launcher";      FileName = "OpenStationLauncher.apk"; Src = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk" },
-    @{ Key = "ime";           FileName = "OpenStationIME.apk";      Src = "$RootDir\ime\app\build\outputs\apk\debug\app-debug.apk" },
+    @{ Key = "ime";           FileName = "OpenStationIME.apk";      Src = $imeSrcPath },
     @{ Key = "bootanimation"; FileName = "bootanimation.zip";       Src = "$RootDir\firmware\bootanimation.zip" },
     @{ Key = "bootlogo";      FileName = "logo.img";                Src = "$RootDir\firmware\logo.img" }
 )

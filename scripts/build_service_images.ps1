@@ -59,6 +59,17 @@ function Resolve-BaseRomDir {
             return (Resolve-Path $c).Path
         }
     }
+    $romFallback = Join-Path $RootDir "rom"
+    if ((Test-Path (Join-Path $romFallback "vbmeta.img")) -and
+        (Test-Path (Join-Path $romFallback "vendor.img")) -and
+        (Test-Path (Join-Path $romFallback "system.img"))) {
+        $tmpBase = Join-Path ([System.IO.Path]::GetTempPath()) "openstation_base_rom"
+        New-Item -ItemType Directory -Force -Path $tmpBase | Out-Null
+        foreach ($fn in @("vbmeta.img", "vendor.img", "system.img")) {
+            Copy-Item -Force (Join-Path $romFallback $fn) (Join-Path $tmpBase $fn)
+        }
+        return $tmpBase
+    }
     throw "Не найдены базовые образы YAOSX 1.99 (vbmeta.img, vendor.img, system.img). Поместите их в base_rom\ или передайте -BaseDir <путь>."
 }
 

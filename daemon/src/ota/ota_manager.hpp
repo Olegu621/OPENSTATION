@@ -62,6 +62,12 @@ public:
 private:
     void refresh_local_hashes_locked();
     bool fetch_and_parse_manifest(std::string& out_err);
+    bool download_verified_artifact(const OtaArtifactInfo& art,
+                                    const std::vector<std::string>& urls,
+                                    const std::string& dst_path,
+                                    uint32_t file_mode,
+                                    std::string& out_err);
+    void repair_mismatched_apks_on_boot();
     void run_check_sync();
     void run_install_sync(bool force);
     void emit_status();

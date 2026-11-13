@@ -35,12 +35,14 @@ if SCRIPT_DIR not in sys.path:
 GITHUB_REPO = "Olegu621/OPENSTATION"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
-# Ensure bundled DLLs (libusb0, AmlLibusb, UsbRomDrv) resolve seamlessly on Windows
-for _dll_dir in (
-    SCRIPT_DIR,
-    os.path.join(SCRIPT_DIR, "Drivers", "amd64"),
-    os.path.join(SCRIPT_DIR, "Drivers", "x86"),
-):
+# Ensure bundled libusb0 DLL matches Python pointer width (never mix 32-bit SCRIPT_DIR ahead of 64-bit Python)
+_IS_PY_64 = sys.maxsize > 2**32
+_DLL_DIRS = (
+    (os.path.join(SCRIPT_DIR, "Drivers", "amd64"),)
+    if _IS_PY_64
+    else (os.path.join(SCRIPT_DIR, "Drivers", "x86"), SCRIPT_DIR)
+)
+for _dll_dir in _DLL_DIRS:
     if os.path.isdir(_dll_dir):
         if hasattr(os, "add_dll_directory"):
             try:
@@ -115,14 +117,14 @@ def get_adb_exe() -> str:
 
 
 def check_usb_device() -> dict:
-    info = {"usb_connected": False, "usb_stage": "none", "usb_desc": ""}
-    # 1. PnP check (works even if libusb filter not attached yet)
+    """Detect Amlogic 1B8E:C003 purely via Windows PnP (never open libusb handles during polling)."""
+    info = {"usb_connected": False, "usb_stage": "none", "usb_desc": "", "usb_service": ""}
     if os.name == "nt":
         try:
             ps = (
-                "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.InstanceId -match 'VID_1B8E&PID_C003' } | "
-                "Select-Object -First 1 -Property FriendlyName,Status | ConvertTo-Json -Compress"
+                "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.DeviceID -like '*VID_1B8E&PID_C003*' } | "
+                "Select-Object -First 1 -Property Name,Status,Service | ConvertTo-Json -Compress"
             )
             p = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps],
@@ -133,26 +135,16 @@ def check_usb_device() -> dict:
             out = safe_decode(p.stdout).strip()
             if out and out.startswith("{"):
                 data = json.loads(out)
-                status = str(data.get("Status", ""))
-                name = str(data.get("FriendlyName", "WorldCup Device"))
+                status = str(data.get("Status") or "")
+                name = str(data.get("Name") or "WorldCup Device")
+                svc = str(data.get("Service") or "")
                 info["usb_connected"] = True
-                info["usb_desc"] = f"{name} ({status})".strip()
+                info["usb_service"] = svc
+                svc_tag = f", {svc}" if svc else ""
+                info["usb_desc"] = f"{name} ({status}{svc_tag})".strip()
                 info["usb_stage"] = "rom_or_uboot"
         except Exception:
             pass
-
-    # 2. Direct pyusb identify check (distinguishes BootROM vs U-Boot stage cleanly)
-    try:
-        import usb.core
-
-        dev = usb.core.find(idVendor=0x1B8E, idProduct=0xC003)
-        if dev is not None:
-            info["usb_connected"] = True
-            if not info["usb_desc"]:
-                info["usb_desc"] = "Amlogic USB (1B8E:C003)"
-            info["usb_stage"] = "ready"
-    except Exception:
-        pass
     return info
 
 
@@ -280,6 +272,7 @@ def aml_bulkcmd(cmd: str, timeout: int = 30, ignore_error: bool = False) -> str:
     update = get_update_exe()
     p = subprocess.run(
         [update, "bulkcmd", cmd],
+        cwd=SCRIPT_DIR,
         capture_output=True,
         timeout=timeout,
         **hidden_subprocess_kwargs(),
@@ -304,58 +297,266 @@ def apply_unlock_minimum():
     aml_bulkcmd("saveenv", ignore_error=True)
 
 
-def boot_uboot_via_yasta(revision: str = "auto") -> bool:
-    """Load temporary U-Boot using yasta_flasher's pyamlboot_local with 3x retry + 4s wait."""
-    bundle_path = os.path.join(SCRIPT_DIR, "aml_bundle.img")
-    if not os.path.isfile(bundle_path):
-        bundle_path = os.path.join(SCRIPT_DIR, "aml.img")
+def is_uboot_alive(timeout: int = 4) -> bool:
+    """Return True if station is already running U-Boot WorldCup burn mode and accepts bulkcmd."""
+    try:
+        update = get_update_exe()
+        p = subprocess.run(
+            [update, "bulkcmd", "mmc dev 1"],
+            cwd=SCRIPT_DIR,
+            capture_output=True,
+            timeout=timeout,
+            **hidden_subprocess_kwargs(),
+        )
+        return p.returncode == 0
+    except Exception:
+        return False
 
-    from pyamlboot_local.boot import main as send_aml_bundle
 
-    max_tries = 3
-    for attempt in range(1, max_tries + 1):
-        try:
-            if attempt > 1:
-                emit(f"Повтор загрузки U-Boot ({attempt}/{max_tries})...")
-                time.sleep(2.5)
-            emit(f"Загрузка временного U-Boot ({os.path.basename(bundle_path)})...")
-            send_aml_bundle(bundle_path)
-            emit("[OK] Временный U-Boot запущен, ожидание USB-стека (4 сек)...")
-            time.sleep(4.0)
+def wait_uboot_alive(wait_sec: float = 7.0) -> bool:
+    deadline = time.monotonic() + wait_sec
+    time.sleep(2.5)
+    while time.monotonic() < deadline:
+        if is_uboot_alive(timeout=4):
             return True
-        except Exception as ex:
-            emsg = str(ex)
-            transient = any(
-                s in emsg.lower()
-                for s in (
-                    "timeout",
-                    "reap_async",
-                    "aborted",
-                    "i/o",
-                    "control_msg",
-                    "no such device",
-                    "not found",
-                    "no backend",
-                    "already",
-                )
-            )
-            emit(f"  [!] Попытка {attempt}: {emsg[:140]}")
-            if attempt >= max_tries or not transient:
-                break
+        time.sleep(0.8)
+    return is_uboot_alive(timeout=4)
 
-    # Fallback to revision-aware boot-g12.py (covers 00053 hardware if aml_bundle failed)
+
+def warn_conflicting_usb_tools() -> None:
+    if os.name != "nt":
+        return
+    try:
+        p = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            timeout=4,
+            **hidden_subprocess_kwargs(),
+        )
+        txt = safe_decode(p.stdout).lower()
+        for proc in ("usb_burning_tool.exe", "worldcup", "aml_upgrade"):
+            if proc in txt:
+                emit(f"[!] ВНИМАНИЕ: Обнаружен конфликтующий процесс ({proc}). Закройте Amlogic USB Burning Tool и при повторе переподключите станцию.")
+                break
+    except Exception:
+        pass
+
+
+def get_pyusb_backends(preferred_service: str = "") -> list:
+    import usb.backend.libusb0 as libusb0_be
+    import usb.backend.libusb1 as libusb1_be
+
+    backends = []
+
+    def try_libusb0():
+        if os.name == "nt":
+            dlls = (
+                [os.path.join(SCRIPT_DIR, "Drivers", "amd64", "libusb0.dll")]
+                if _IS_PY_64
+                else [
+                    os.path.join(SCRIPT_DIR, "Drivers", "x86", "libusb0_x86.dll"),
+                    os.path.join(SCRIPT_DIR, "libusb0.dll"),
+                ]
+            )
+            for dll in dlls:
+                if os.path.isfile(dll):
+                    be = libusb0_be.get_backend(find_library=lambda _n, p=dll: p)
+                    if be is not None:
+                        backends.append(("libusb0", be))
+                        return
+        be = libusb0_be.get_backend()
+        if be is not None:
+            backends.append(("libusb0", be))
+
+    def try_libusb1():
+        be = libusb1_be.get_backend()
+        if be is not None:
+            backends.append(("libusb1", be))
+
+    if preferred_service.lower() in ("winusb", "libusbk"):
+        try_libusb1()
+        try_libusb0()
+    else:
+        try_libusb0()
+        try_libusb1()
+    return backends
+
+
+def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
+    """Single isolated BootROM -> U-Boot transfer attempt (always releases handle on exit)."""
+    from pyamlboot_local import proto
+
+    with open(img_path, "rb") as f:
+        data = f.read()
+
+    backends = get_pyusb_backends(preferred_service)
+    if not backends:
+        raise RuntimeError("Не найден USB backend libusb0/libusb1.")
+
+    last_ex = None
+    for be_name, backend in backends:
+        soc = None
+        try:
+            soc = proto.AmlogicSoC(backend=backend)
+            try:
+                soc.dev.set_configuration()
+            except Exception:
+                pass
+
+            socid = soc.identify()
+            if len(socid) >= 4:
+                rom_maj, rom_min = ord(socid[0]), ord(socid[1])
+                stage_maj, stage_min = ord(socid[2]), ord(socid[3])
+                emit(f"  [{be_name}] BootROM ID: ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}")
+                if stage_maj != 0:
+                    emit(f"[OK] Станция уже в режиме U-Boot (Stage {stage_maj}.{stage_min}).")
+                    return 0
+
+            soc.writeLargeMemory(0xFFFA0000, data[0:0x10000], 4096)
+            soc.run(0xFFFA0000)
+            time.sleep(2.0)
+
+            prev_len = -1
+            prev_off = -1
+            seq = 0
+            while True:
+                length, offset = soc.getBootAMLC()
+                if length == prev_len and offset == prev_off:
+                    emit(f"[OK] Загружен {os.path.basename(img_path)} через {be_name} ({seq} блоков AMLC).")
+                    return 0
+                prev_len = length
+                prev_off = offset
+                soc.writeAMLCData(seq, offset, data[offset : offset + length])
+                seq += 1
+        except Exception as ex:
+            last_ex = ex
+            emit(f"  [!] [{be_name}] {str(ex).strip()[:160]}")
+        finally:
+            if soc is not None:
+                try:
+                    soc.close()
+                except Exception:
+                    pass
+                soc = None
+
+    if last_ex is not None:
+        raise last_ex
+    return 1
+
+
+def boot_uboot_via_yasta(revision: str = "auto") -> bool:
+    """Initialize U-Boot via isolated pyamlboot_local worker, native update.exe bl2_boot, and boot-g12.py."""
+    if is_uboot_alive(timeout=4):
+        emit("[OK] U-Boot уже активен на сервисном порту.")
+        return True
+
+    warn_conflicting_usb_tools()
+    usb_info = check_usb_device()
+    pref_svc = usb_info.get("usb_service", "")
+
+    if revision == "00053":
+        cand_names = ("aml_00053.img", "bootloader.img", "aml_bundle.img")
+    elif revision in ("0008", "00052"):
+        cand_names = ("aml_bundle.img", "aml.img", "aml_00053.img")
+    else:
+        cand_names = ("aml_bundle.img", "aml_00053.img", "aml.img")
+
+    candidates = []
+    seen = set()
+    for nm in cand_names:
+        p = os.path.join(SCRIPT_DIR, nm)
+        if os.path.isfile(p):
+            rp = os.path.realpath(p)
+            if rp not in seen:
+                seen.add(rp)
+                candidates.append(p)
+    if not candidates:
+        raise FileNotFoundError(f"Не найден образ U-Boot (aml_bundle.img / aml_00053.img) в {SCRIPT_DIR}")
+
+    # Strategy 1: Isolated child subprocesses running pyamlboot_local (kernel reclaims USB interface on exit)
+    for idx, img_path in enumerate(candidates):
+        max_tries = 2 if idx == 0 else 1
+        for attempt in range(1, max_tries + 1):
+            emit(f"Загрузка временного U-Boot ({os.path.basename(img_path)}, попытка {attempt}/{max_tries})...")
+            cmd = [sys.executable, "-u", __file__, "--usb-boot-step", img_path]
+            if pref_svc:
+                cmd.extend(["--usb-service", pref_svc])
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            p = subprocess.Popen(
+                cmd,
+                cwd=SCRIPT_DIR,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=False,
+                env=env,
+                **hidden_subprocess_kwargs(),
+            )
+            for raw_ln in p.stdout:
+                txt = safe_decode(raw_ln).strip()
+                if txt:
+                    emit(f"  {txt}")
+            p.wait(timeout=45)
+            if p.returncode == 0:
+                emit("Ожидание инициализации USB-стека U-Boot...")
+                if wait_uboot_alive(7.5):
+                    emit("[OK] Временный U-Boot готов к приёму команд.")
+                    return True
+                emit("  [!] Порт не ответил на bulkcmd 'mmc dev 1', пробуем следующий метод...")
+            time.sleep(2.5)
+
+    # Strategy 2: Native Amlogic C bootloader (update.exe bl2_boot) using bundled x86 AmlLibusb.dll + libusb0.dll
+    update = get_update_exe()
+    for img_path in candidates:
+        emit(f"Запуск нативного загрузчика update.exe bl2_boot ({os.path.basename(img_path)})...")
+        try:
+            p = subprocess.run(
+                [update, "bl2_boot", img_path],
+                cwd=SCRIPT_DIR,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=30,
+                **hidden_subprocess_kwargs(),
+            )
+            out = safe_decode((p.stdout or b"") + (p.stderr or b"")).strip()
+            for ln in out.splitlines():
+                if ln.strip():
+                    emit(f"  [BL2] {ln.strip()}")
+            if p.returncode == 0:
+                if wait_uboot_alive(7.5):
+                    emit("[OK] Нативный U-Boot запущен и готов к прошивке.")
+                    return True
+        except Exception as ex:
+            emit(f"  [!] update.exe bl2_boot: {str(ex)[:140]}")
+        time.sleep(2.0)
+
+    # Strategy 3: Legacy revision-aware boot-g12.py fallback with live unbuffered logs
     boot_g12 = os.path.join(SCRIPT_DIR, "boot-g12.py")
     if os.path.isfile(boot_g12):
         emit("Запуск резервного загрузчика boot-g12.py...")
-        p = subprocess.run(
-            [sys.executable, boot_g12, "--revision", revision, "--retries", "3"],
-            capture_output=False,
-            timeout=120,
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        p = subprocess.Popen(
+            [sys.executable, "-u", boot_g12, "--revision", revision, "--retries", "2"],
+            cwd=SCRIPT_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=False,
+            env=env,
             **hidden_subprocess_kwargs(),
         )
-        if p.returncode == 0:
-            time.sleep(4.0)
+        for raw_ln in p.stdout:
+            txt = safe_decode(raw_ln).strip()
+            if txt:
+                emit(f"  [g12] {txt}")
+        p.wait(timeout=90)
+        if p.returncode == 0 and wait_uboot_alive(7.5):
             return True
+
+    if os.name == "nt" and not is_admin():
+        emit("[!] Подсказка: попробуйте запустить OpenStationFlasher.exe от имени Администратора и переподключить Type-C кабель.")
     return False
 
 
@@ -449,6 +650,7 @@ def flash_partition(name: str, img_path: str, pct_start: int, pct_end: int) -> N
     emit(f"Запись раздела {name} ({size_mb:.1f} МБ)...")
     p = subprocess.Popen(
         [update, "partition", name, img_path],
+        cwd=SCRIPT_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=False,
@@ -492,6 +694,10 @@ def flash_partition(name: str, img_path: str, pct_start: int, pct_end: int) -> N
 
 
 def wait_for_usb_or_adb_reboot() -> None:
+    if is_uboot_alive(timeout=4):
+        emit("[OK] Станция уже в режиме U-Boot (WorldCup ready).")
+        return
+
     usb_info = check_usb_device()
     if usb_info["usb_connected"]:
         emit(f"[OK] Найдена станция: {usb_info['usb_desc']}")
@@ -507,8 +713,11 @@ def wait_for_usb_or_adb_reboot() -> None:
             timeout=10,
             **hidden_subprocess_kwargs(),
         )
-        for _ in range(25):
+        for _ in range(28):
             time.sleep(1.0)
+            if is_uboot_alive(timeout=3):
+                emit("[OK] Станция перешла в U-Boot Burn Mode.")
+                return
             usb_info = check_usb_device()
             if usb_info["usb_connected"]:
                 emit(f"[OK] Станция перешла в USB Boot: {usb_info['usb_desc']}")
@@ -598,9 +807,13 @@ def main():
     parser.add_argument("--download-latest", action="store_true", help="Принудительно скачать свежий ROM с GitHub")
     parser.add_argument("--keep-data", action="store_true", help="Не стирать пользовательские данные (data/cache)")
     parser.add_argument("--revision", default="auto", choices=["auto", "0008", "00052", "00053"])
+    parser.add_argument("--usb-boot-step", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--usb-service", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     try:
+        if args.usb_boot_step:
+            return run_usb_boot_step_inproc(args.usb_boot_step, args.usb_service)
         if args.check:
             run_check()
             return 0

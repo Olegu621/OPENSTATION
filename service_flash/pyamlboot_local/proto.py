@@ -60,13 +60,33 @@ MAX_LARGE_BLOCK_COUNT = 65535
 class AmlogicSoC(object):
     """Represents an Amlogic SoC in USB boot Mode"""
 
-    def __init__(self, idVendor=0x1b8e, idProduct=0xc003):
+    def __init__(self, idVendor=0x1b8e, idProduct=0xc003, backend=None):
         """Init with vendor/product IDs"""
 
-        self.dev = usb.core.find(idVendor=idVendor, idProduct=idProduct)
+        kwargs = {"idVendor": idVendor, "idProduct": idProduct}
+        if backend is not None:
+            kwargs["backend"] = backend
+        self.dev = usb.core.find(**kwargs)
 
         if self.dev is None:
             raise ValueError('Device not found')
+
+        try:
+            self.dev.default_timeout = 3000
+        except Exception:
+            pass
+
+    def close(self):
+        if getattr(self, "dev", None) is not None:
+            try:
+                usb.util.release_interface(self.dev, 0)
+            except Exception:
+                pass
+            try:
+                usb.util.dispose_resources(self.dev)
+            except Exception:
+                pass
+            self.dev = None
 
     def writeSimpleMemory(self, address, data):
         """Write a chunk of data to memory"""
@@ -219,7 +239,7 @@ class AmlogicSoC(object):
                                data_or_wLength = controlData)
 
         while blockCount > 0:
-            ep.write(data[offset:offset+blockLength], 1000)
+            ep.write(data[offset:offset+blockLength], 3000)
             offset = offset + blockLength
             blockCount = blockCount - 1
 
@@ -368,7 +388,7 @@ class AmlogicSoC(object):
                                wIndex = 0,
                                data_or_wLength = None)
 
-        data = epin.read(AMLC_AMLS_BLOCK_LENGTH, 100)
+        data = epin.read(AMLC_AMLS_BLOCK_LENGTH, 2000)
         (tag, length, offset) = unpack('<4s4xII', data[0:16])
 
         if not "AMLC" in ''.join(map(chr,tag)):
@@ -376,7 +396,7 @@ class AmlogicSoC(object):
 
         # Ack the request
         okay = pack('<4sIII', bytes("OKAY", 'ascii'), 0, 0, 0)
-        epout.write(okay, 1000)
+        epout.write(okay, 3000)
 
         return (length, offset)
 
@@ -417,12 +437,12 @@ class AmlogicSoC(object):
                 blockLength = AMLC_MAX_BLOCK_LENGTH
             else:
                 blockLength = remain
-            epout.write(data[dataOffset:dataOffset+blockLength], 1000)
+            epout.write(data[dataOffset:dataOffset+blockLength], 5000)
             dataOffset = dataOffset + blockLength
             blockCount = blockCount - 1
 
         # Wait for Ack
-        data = epin.read(16, 1000)
+        data = epin.read(16, 3000)
 
         if not "OKAY" in ''.join(map(chr,data[0:4])):
             raise ValueError('Invalid AMLC Data Write Ack %s' % data)
