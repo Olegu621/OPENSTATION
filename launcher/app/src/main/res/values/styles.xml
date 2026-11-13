@@ -2,8 +2,8 @@
 <resources>
     <style name="Theme.OpenStationLauncher" parent="android:Theme.DeviceDefault.NoActionBar">
         <item name="android:windowBackground">@drawable/bg_screen_gradient</item>
-        <item name="android:colorBackground">#0B0F17</item>
-        <item name="android:textColorPrimary">#F1F5F9</item>
+        <item name="android:colorBackground">#07070C</item>
+        <item name="android:textColorPrimary">#F5F5F7</item>
         <item name="android:textColorSecondary">#94A3B8</item>
     </style>
 </resources>

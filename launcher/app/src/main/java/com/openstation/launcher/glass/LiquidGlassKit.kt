@@ -1,4 +1,7 @@
-package com.openstation.launcher
+package com.openstation.launcher.glass
+
+import com.openstation.launcher.*
+import com.openstation.launcher.R
 
 import android.content.Context
 import android.graphics.Bitmap

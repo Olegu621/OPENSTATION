@@ -7,7 +7,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.text.TextUtils
-import android.util.StateSet
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -15,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.openstation.launcher.R
+import com.openstation.launcher.Theme
 
 object MarketUiKit {
 
@@ -44,80 +44,15 @@ object MarketUiKit {
         }
     }
 
-    fun makeFocusableGlassSelector(
-        ctx: Context,
-        normalStart: String = "#B8121D30",
-        normalEnd: String = "#C40A101D",
-        normalStroke: String = "#2AFFFFFF",
-        focusStroke: String = "#E8C686",
-        radiusDp: Int = 16
-    ): StateListDrawable {
-        val r = dp(ctx, radiusDp).toFloat()
-        val focused = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor("#EB20324E"), Color.parseColor("#EB101B2E"))
-        ).apply {
-            setStroke(dp(ctx, 2), Color.parseColor(focusStroke))
-            cornerRadius = r
-        }
-        val pressed = GradientDrawable().apply {
-            setColor(Color.parseColor("#DB1D3856"))
-            setStroke(dp(ctx, 2), Color.parseColor("#38BDF8"))
-            cornerRadius = r
-        }
-        val normal = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor(normalStart), Color.parseColor(normalEnd))
-        ).apply {
-            setStroke(dp(ctx, 1), Color.parseColor(normalStroke))
-            cornerRadius = r
-        }
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_focused), focused)
-            addState(intArrayOf(android.R.attr.state_pressed), pressed)
-            addState(StateSet.WILD_CARD, normal)
-        }
-    }
+    fun makeFocusableGlassSelector(ctx: Context, radiusDp: Int = 16): StateListDrawable =
+        Theme.focusable(Theme.ROW, dp(ctx, radiusDp).toFloat(), dp(ctx, 3))
 
-    fun makeDangerPillSelector(ctx: Context): StateListDrawable {
-        val r = dp(ctx, 999).toFloat()
-        val focused = GradientDrawable().apply {
-            setColor(Color.parseColor("#E67F1D1D"))
-            setStroke(dp(ctx, 2), Color.parseColor("#FDA4AF"))
-            cornerRadius = r
-        }
-        val normal = GradientDrawable().apply {
-            setColor(Color.parseColor("#B34C1D28"))
-            setStroke(dp(ctx, 1), Color.parseColor("#66FB7185"))
-            cornerRadius = r
-        }
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_focused), focused)
-            addState(StateSet.WILD_CARD, normal)
-        }
-    }
+    fun makeDangerPillSelector(ctx: Context): StateListDrawable =
+        Theme.focusable(Theme.DANGER_BG, dp(ctx, 999).toFloat(), dp(ctx, 3), Theme.DANGER_FG,
+            focusedFill = Theme.alpha(Theme.DANGER_FG, 0.30f))
 
-    fun makeCyanPillSelector(ctx: Context): StateListDrawable {
-        val r = dp(ctx, 999).toFloat()
-        val focused = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor("#F00891B2"), Color.parseColor("#F00369A1"))
-        ).apply {
-            setStroke(dp(ctx, 2), Color.WHITE)
-            cornerRadius = r
-        }
-        val normal = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor("#CC0EA5E9"), Color.parseColor("#CC0284C7"))
-        ).apply {
-            setStroke(dp(ctx, 1), Color.parseColor("#66BAE6FD"))
-            cornerRadius = r
-        }
-        return StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_focused), focused)
-            addState(StateSet.WILD_CARD, normal)
-        }
-    }
+    fun makeCyanPillSelector(ctx: Context): StateListDrawable =
+        Theme.focusable(Theme.accent, dp(ctx, 999).toFloat(), dp(ctx, 3), Color.WHITE, focusedFill = Theme.accent)
 
     fun createPill(
         ctx: Context,
@@ -136,22 +71,22 @@ object MarketUiKit {
             setPadding(dp(ctx, 15), dp(ctx, 8), dp(ctx, 15), dp(ctx, 8))
             when (style) {
                 PillStyle.GOLD -> {
-                    setTextColor(Color.parseColor("#0B0F17"))
+                    setTextColor(Theme.ON_ACCENT)
                     typeface = Typeface.DEFAULT_BOLD
                     setBackgroundResource(R.drawable.bg_pill_gold)
                 }
                 PillStyle.CYAN -> {
-                    setTextColor(Color.WHITE)
+                    setTextColor(Theme.ON_ACCENT)
                     typeface = Typeface.DEFAULT_BOLD
                     background = makeCyanPillSelector(ctx)
                 }
                 PillStyle.DANGER -> {
-                    setTextColor(Color.parseColor("#FFE4E6"))
+                    setTextColor(Theme.DANGER_FG)
                     typeface = Typeface.DEFAULT_BOLD
                     background = makeDangerPillSelector(ctx)
                 }
                 PillStyle.GLASS -> {
-                    setTextColor(Color.parseColor("#E2E8F0"))
+                    setTextColor(Theme.TEXT)
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setBackgroundResource(R.drawable.bg_pill)
                 }

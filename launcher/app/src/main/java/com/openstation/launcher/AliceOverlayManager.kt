@@ -3,15 +3,11 @@ package com.openstation.launcher
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
-import android.text.TextUtils
 import android.util.Log
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -45,10 +41,6 @@ class AliceOverlayManager(private val context: Context) {
 
     private var rootContainer: FrameLayout? = null
     private var dockCard: LinearLayout? = null
-    private var cardBg: GradientDrawable? = null
-    private var orbView: AliceOrbView? = null
-    private var stateDot: View? = null
-    private var stateDotBg: GradientDrawable? = null
     private var tvState: TextView? = null
     private var tvUserHint: TextView? = null
     private var tvReply: TextView? = null
@@ -69,7 +61,10 @@ class AliceOverlayManager(private val context: Context) {
         evaluateVisibility()
     }
 
+    private val glassImpl = if (Theme.glass) com.openstation.launcher.glass.AliceOverlayManager(context) else null
+
     fun start() {
+        glassImpl?.let { it.start(); return }
         mainHandler.post {
             LiveOrbState.addListener(stateListener)
             evaluateVisibility()
@@ -77,6 +72,7 @@ class AliceOverlayManager(private val context: Context) {
     }
 
     fun stop() {
+        glassImpl?.let { it.stop(); return }
         mainHandler.post {
             LiveOrbState.removeListener(stateListener)
             mainHandler.removeCallbacks(dismissRunnable)
@@ -86,6 +82,7 @@ class AliceOverlayManager(private val context: Context) {
     }
 
     fun setLauncherForeground(fg: Boolean) {
+        glassImpl?.let { it.setLauncherForeground(fg); return }
         launcherForeground = fg
         mainHandler.post {
             if (fg) {
@@ -100,6 +97,7 @@ class AliceOverlayManager(private val context: Context) {
     }
 
     fun evaluateVisibility() {
+        glassImpl?.let { it.evaluateVisibility(); return }
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post { evaluateVisibility() }
             return
@@ -136,32 +134,19 @@ class AliceOverlayManager(private val context: Context) {
         }
     }
 
-    private fun dp(v: Int): Int =
-        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), context.resources.displayMetrics).toInt()
+    private fun dp(v: Int): Int = context.dp(v) // same 1280x720 mockup scale as the launcher screens
 
     private fun ensureViews() {
         if (rootContainer != null) return
 
+        // AliceOverlay.dc.html: bottom glass bar (left/right 90, bottom 44, height 128, radius 32)
         val container = FrameLayout(context)
-        val cardShape = GradientDrawable(
-            GradientDrawable.Orientation.LEFT_RIGHT,
-            intArrayOf(
-                Color.parseColor("#EB090E1A"),
-                Color.parseColor("#EE10192D"),
-                Color.parseColor("#EB0A1120")
-            )
-        ).apply {
-            cornerRadius = dp(24).toFloat()
-            setStroke(dp(1), Color.parseColor("#7AE8C686"))
-        }
-        cardBg = cardShape
-
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = cardShape
-            elevation = dp(14).toFloat()
-            setPadding(dp(12), dp(8), dp(20), dp(8))
+            background = Theme.rounded(Color.argb(199, 14, 14, 20), dp(32).toFloat())
+            elevation = dp(20).toFloat()
+            setPadding(dp(24), 0, dp(32), 0)
             isClickable = true
             isFocusable = false
             setOnClickListener {
@@ -177,91 +162,41 @@ class AliceOverlayManager(private val context: Context) {
 
         val orb = AliceOrbView(context).apply {
             compactGlowBoost = 1f
-            layoutParams = LinearLayout.LayoutParams(dp(58), dp(58)).apply {
-                marginEnd = dp(14)
-            }
+            layoutParams = LinearLayout.LayoutParams(dp(84), dp(84)).apply { marginEnd = dp(24) }
         }
 
         val textCol = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-
-        val topRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val dotShape = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#38BDF8"))
-        }
-        stateDotBg = dotShape
-        val dot = View(context).apply {
-            background = dotShape
-            layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply {
-                marginEnd = dp(7)
+        val stateTv = context.eyebrow("Алиса · слушаю", Theme.accent, 13f)
+        val replyTv = context.label("", 26f, Theme.TEXT, 600, lines = 2).apply { setLineSpacing(0f, 1.15f) }
+        textCol.addView(stateTv)
+        textCol.addView(replyTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(6)
+        })
+        val userTv = context.label("", 15f, Theme.alpha(Theme.TEXT, 0.55f)).apply {
+            maxWidth = dp(320)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dp(16)
             }
         }
-
-        val stateTv = TextView(context).apply {
-            text = "АЛИСА · СЛУШАЮ"
-            setTextColor(Color.parseColor("#E8C686"))
-            textSize = 11f
-            letterSpacing = 0.08f
-            typeface = Typeface.DEFAULT_BOLD
-            maxLines = 1
-        }
-
-        val userTv = TextView(context).apply {
-            text = ""
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 11.5f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(12)
-            }
-        }
-
-        topRow.addView(dot)
-        topRow.addView(stateTv)
-        topRow.addView(userTv)
-
-        val replyTv = TextView(context).apply {
-            text = ""
-            setTextColor(Color.parseColor("#F8FAFC"))
-            textSize = 14.5f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(2), 0, 0)
-        }
-
-        textCol.addView(topRow)
-        textCol.addView(replyTv)
 
         card.addView(orb)
         card.addView(textCol)
+        card.addView(userTv)
 
         container.addView(
             card,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(76),
-                Gravity.BOTTOM
-            ).apply {
-                leftMargin = dp(42)
-                rightMargin = dp(42)
-                bottomMargin = dp(16)
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(128), Gravity.BOTTOM).apply {
+                leftMargin = dp(90)
+                rightMargin = dp(90)
+                bottomMargin = dp(44)
             }
         )
 
         rootContainer = container
         dockCard = card
-        orbView = orb
-        stateDot = dot
         tvState = stateTv
         tvUserHint = userTv
         tvReply = replyTv
@@ -272,57 +207,19 @@ class AliceOverlayManager(private val context: Context) {
         val userTxt = LiveOrbState.liveUserText.trim()
         val display = LiveOrbState.bestDisplayText()
 
-        val accent: Int
-        val borderColor: Int
-        val stateLabel: String
-        val fallbackReply: String
-
-        when (st) {
-            "connecting" -> {
-                accent = Color.parseColor("#38BDF8")
-                borderColor = Color.parseColor("#8838BDF8")
-                stateLabel = "АЛИСА · ПОДКЛЮЧЕНИЕ"
-                fallbackReply = "Подключаю голосовой поток..."
-            }
-            "listening" -> {
-                accent = Color.parseColor("#2DD4BF")
-                borderColor = Color.parseColor("#992DD4BF")
-                stateLabel = "АЛИСА · СЛУШАЮ"
-                fallbackReply = if (userTxt.isNotEmpty()) "«$userTxt»" else "Говорите, я внимательно слушаю..."
-            }
-            "thinking" -> {
-                accent = Color.parseColor("#E8C686")
-                borderColor = Color.parseColor("#AAE8C686")
-                stateLabel = "АЛИСА · ДУМАЮ"
-                fallbackReply = if (userTxt.isNotEmpty()) "Обрабатываю: «$userTxt»" else "Формирую ответ..."
-            }
-            "speaking" -> {
-                accent = Color.parseColor("#C084FC")
-                borderColor = Color.parseColor("#AAC084FC")
-                stateLabel = "АЛИСА · ОТВЕЧАЮ"
-                fallbackReply = "Отвечаю голосом..."
-            }
-            "error" -> {
-                accent = Color.parseColor("#F87171")
-                borderColor = Color.parseColor("#AAF87171")
-                stateLabel = "АЛИСА · ОШИБКА"
-                fallbackReply = "Не удалось выполнить запрос"
-            }
-            else -> {
-                accent = Color.parseColor("#E8C686")
-                borderColor = Color.parseColor("#7AE8C686")
-                stateLabel = "АЛИСА"
-                fallbackReply = ""
-            }
+        val (stateLabel, fallbackReply) = when (st) {
+            "connecting" -> "Алиса · подключаюсь" to "Подключаю голосовой поток…"
+            "listening" -> "Алиса · слушаю" to (if (userTxt.isNotEmpty()) "«$userTxt»" else "Говорите…")
+            "thinking" -> "Алиса · думаю" to (if (userTxt.isNotEmpty()) "«$userTxt»" else "Формирую ответ…")
+            "speaking" -> "Алиса · отвечает" to "Отвечаю…"
+            "error" -> "Алиса · ошибка" to "Не удалось выполнить запрос"
+            else -> "Алиса" to ""
         }
+        tvState?.text = stateLabel.uppercase()
+        tvState?.setTextColor(if (st == "error") Theme.DANGER_FG else Theme.accent)
 
-        stateDotBg?.setColor(accent)
-        cardBg?.setStroke(dp(1), borderColor)
-        tvState?.text = stateLabel
-        tvState?.setTextColor(accent)
-
-        if (userTxt.isNotEmpty() && display != "«$userTxt»") {
-            tvUserHint?.text = "Вы: «$userTxt»"
+        if (userTxt.isNotEmpty() && display != "«$userTxt»" && st != "listening" && st != "thinking") {
+            tvUserHint?.text = "«$userTxt»"
             tvUserHint?.visibility = View.VISIBLE
         } else {
             tvUserHint?.text = ""
@@ -347,7 +244,7 @@ class AliceOverlayManager(private val context: Context) {
             }
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
-                dp(108),
+                dp(190),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or

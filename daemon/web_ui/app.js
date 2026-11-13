@@ -66,12 +66,19 @@
   }
 
   function switchTab(tabName) {
+    if (!$("tab-" + tabName)) tabName = "music";
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === tabName);
     });
     document.querySelectorAll(".panel").forEach((p) => {
       p.classList.toggle("active", p.id === "tab-" + tabName);
     });
+    const src = document.querySelector('.tab[data-tab="' + tabName + '"]');
+    if ($("pageTitle") && src) $("pageTitle").textContent = src.dataset.title || "";
+    [...document.body.classList].filter((c) => c.startsWith("tab-")).forEach((c) => document.body.classList.remove(c));
+    document.body.classList.add("tab-" + tabName);
+    try { localStorage.setItem("os_tab", tabName); } catch {}
+    if (tabName === "home") loadHome();
   }
 
   document.querySelectorAll(".tab").forEach((btn) => {
@@ -316,7 +323,7 @@
         qb.textContent = `⏸ ${shortT}`;
         qb.classList.remove("btn-accent");
       } else {
-        qb.textContent = "🌊 Моя волна";
+        qb.textContent = "Моя волна";
         qb.classList.remove("btn-accent");
       }
     }
@@ -362,6 +369,21 @@
     const lk = $("btnMusicLike");
     if (lk) {
       lk.classList.toggle("liked", !!m.liked);
+    }
+    // Мини-плеер (боковая панель на ПК, полоска над навигацией на телефоне)
+    document.querySelectorAll('[data-mini="title"]').forEach((e) => { e.textContent = m.title || "Моя волна"; });
+    document.querySelectorAll('[data-mini="artist"]').forEach((e) => { e.textContent = m.artist || m.sourceLabel || "Яндекс Музыка"; });
+    if (m.coverUrl) document.querySelectorAll('[data-mini="cover"]').forEach((e) => { if (e.src !== m.coverUrl) e.src = m.coverUrl; });
+    const playPath = m.playing ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M7 4l13 8-13 8z";
+    document.querySelectorAll('[data-mini="play"] path').forEach((e) => e.setAttribute("d", playPath));
+    const pct = m.durationMs > 0 ? Math.min(100, (100 * (m.positionMs || 0)) / m.durationMs) : 0;
+    document.querySelectorAll('[data-mini="progress"]').forEach((e) => { e.style.width = pct.toFixed(1) + "%"; });
+    document.body.classList.toggle("no-track", !m.title);
+
+    // Пустое состояние: не выполнен вход в Яндекс Музыку
+    if ("hasAuth" in m) {
+      if ($("musicLoginCard")) $("musicLoginCard").hidden = !!m.hasAuth;
+      if ($("musicMain")) $("musicMain").hidden = !m.hasAuth;
     }
   }
 
@@ -727,6 +749,7 @@
 
     applyAliceBanner(ast.state || "idle", ast, cfg.assistant);
     applyMusicState(d.music || {});
+    renderTimers(d);
     applyBootanimState(d.bootanim || {});
     applyOtaState(d.ota || {}, d.firmwareVersion);
     applyWifiAdbState(d.wifiAdb || {}, d);
@@ -1946,6 +1969,7 @@
       try { ws?.close(); } catch {}
     };
     ws.onclose = () => {
+      setConn(false);
       if (!wsReconnectTimer) {
         wsReconnectTimer = setTimeout(connectWs, 2000);
       }
@@ -1954,7 +1978,10 @@
       if (typeof ev.data === "string") {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === "telemetry") applyTelemetry(msg.data, state === null);
+          if (msg.type === "telemetry") { setConn(true); applyTelemetry(msg.data, state === null); }
+          else if (msg.type === "alarm_fired" || msg.type === "timer_fired") {
+            showToast(msg.type === "alarm_fired" ? `Будильник ${msg.time || ""} ${msg.label || ""}` : `Таймер «${msg.label || ""}» сработал`);
+          }
           else if (msg.type === "ota") {
             if (state) state.ota = msg.data;
             applyOtaState(msg.data, state?.firmwareVersion);
@@ -2394,16 +2421,313 @@
     if (location.hash === "#wizard") openWizard(1);
   });
 
+  // ===================== Связь со станцией =====================
+  let connFails = 0;
+  function setConn(ok) {
+    connFails = ok ? 0 : connFails + 1;
+    const off = !ok && connFails >= 2;
+    if ($("connBanner")) $("connBanner").hidden = !off;
+    if ($("connBannerSub")) $("connBannerSub").textContent = `Переподключаемся… попытка ${connFails} · ${location.host}`;
+    document.body.classList.toggle("offline", off);
+  }
+  if ($("btnConnRetry")) $("btnConnRetry").addEventListener("click", () => { connectWs(); init(); });
+
+  document.querySelectorAll("[data-mini-cmd]").forEach((b) => {
+    b.addEventListener("click", () => { const t = $(b.dataset.miniCmd); if (t) t.click(); });
+  });
+
+  // ===================== Таймеры и будильники =====================
+  const DAY_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+  const SOUND_RU = { wave: "Моя волна", calm: "Спокойная волна", chime: "Мелодия станции" };
+  let alarmsCache = [];
+  let lastTimersSig = "";
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const fmtSec = (s) => {
+    s = Math.max(0, s | 0);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    return h ? `${h}:${pad2(m)}:${pad2(r)}` : `${pad2(m)}:${pad2(r)}`;
+  };
+  function daysLabel(days) {
+    const d = Array.isArray(days) ? days.map(Boolean) : [];
+    const n = d.filter(Boolean).length;
+    if (!n) return "один раз";
+    if (n === 7) return "каждый день";
+    if (n === 5 && d.slice(0, 5).every(Boolean)) return "пн–пт";
+    if (n === 2 && d[5] && d[6]) return "сб, вс";
+    return DAY_RU.filter((_, i) => d[i]).join(", ");
+  }
+
+  async function saveAlarms(list, okMsg) {
+    try {
+      const r = await api("/api/alarms", "POST", { alarms: list });
+      alarmsCache = r.alarms || list;
+      lastTimersSig = "";
+      renderTimers(Object.assign({}, state || {}, { alarms: alarmsCache }));
+      if (okMsg) showToast(okMsg);
+    } catch (e) {
+      showToast("Будильники: " + e.message, true);
+    }
+  }
+
+  function renderTimers(d) {
+    const box = $("timerList");
+    if (!box || !d) return;
+    const timers = d.timers || d.activeTimers || [];
+    if (Array.isArray(d.alarms)) alarmsCache = d.alarms;
+    else if (Array.isArray(d.config?.alarms)) alarmsCache = d.config.alarms;
+
+    const ring = d.ringingAlarm;
+    if ($("alarmBanner")) {
+      $("alarmBanner").hidden = !ring;
+      if (ring) {
+        $("alarmBannerTitle").textContent = `Будильник ${ring.time || ""}`;
+        $("alarmBannerSub").textContent = ring.label || "Звонит сейчас";
+      }
+    }
+
+    const sig = JSON.stringify([timers, alarmsCache]);
+    if (sig === lastTimersSig) return;
+    lastTimersSig = sig;
+    box.innerHTML = "";
+    if (!timers.length && !alarmsCache.length) {
+      box.innerHTML = '<div class="hint">Нет активных таймеров и будильников.</div>';
+      return;
+    }
+    const row = (cls, time, sub, ctrl) => {
+      const it = document.createElement("div");
+      it.className = "timer-item " + cls;
+      const main = document.createElement("div");
+      main.className = "t-main";
+      const t = document.createElement("span"); t.className = "t-time"; t.textContent = time;
+      const s = document.createElement("span"); s.className = "t-sub"; s.textContent = sub;
+      main.append(t, s);
+      it.append(main, ...ctrl);
+      box.appendChild(it);
+    };
+    timers.forEach((t) => {
+      const b = document.createElement("button");
+      b.className = "btn btn-sm";
+      b.textContent = "Отменить";
+      b.addEventListener("click", () => api("/api/timers/cancel", "POST", { id: t.id })
+        .then((r) => { lastTimersSig = ""; renderTimers(Object.assign({}, state || {}, { timers: r.timers || [] })); showToast("Таймер отменён"); })
+        .catch((e) => showToast("Таймер: " + e.message, true)));
+      row("running", fmtSec(t.remainingSec), `Таймер${t.label ? " «" + t.label + "»" : ""} · из ${fmtSec(t.totalSec)}`, [b]);
+    });
+    alarmsCache.forEach((a, idx) => {
+      const sw = document.createElement("input");
+      sw.type = "checkbox";
+      sw.checked = !!a.enabled;
+      sw.setAttribute("aria-label", `Будильник ${a.time}`);
+      sw.addEventListener("change", () => {
+        const next = alarmsCache.map((x, i) => (i === idx ? Object.assign({}, x, { enabled: sw.checked }) : x));
+        saveAlarms(next);
+      });
+      const del = document.createElement("button");
+      del.className = "icon-btn";
+      del.setAttribute("aria-label", `Удалить будильник ${a.time}`);
+      del.textContent = "✕";
+      del.addEventListener("click", () => saveAlarms(alarmsCache.filter((_, i) => i !== idx), "Будильник удалён"));
+      row(a.enabled ? "" : "off", a.time || "--:--",
+        `Будильник · ${daysLabel(a.days)} · ${SOUND_RU[a.sound] || "Моя волна"}${a.label ? " · " + a.label : ""}`, [sw, del]);
+    });
+  }
+
+  let tmKind = "timer";
+  document.querySelectorAll("#tmKind .seg").forEach((b) => b.addEventListener("click", () => {
+    tmKind = b.dataset.kind;
+    document.querySelectorAll("#tmKind .seg").forEach((x) => x.classList.toggle("active", x === b));
+    if ($("tmTimerFields")) $("tmTimerFields").hidden = tmKind !== "timer";
+    if ($("tmAlarmFields")) $("tmAlarmFields").hidden = tmKind !== "alarm";
+  }));
+  document.querySelectorAll("#alDays .seg").forEach((b) => b.addEventListener("click", () => b.classList.toggle("active")));
+  if ($("btnTmAdd")) $("btnTmAdd").addEventListener("click", async () => {
+    if (tmKind === "timer") {
+      const sec = (parseInt($("tmMin").value, 10) || 0) * 60 + (parseInt($("tmSec").value, 10) || 0);
+      if (sec <= 0) { showToast("Укажите время таймера", true); return; }
+      try {
+        const r = await api("/api/timers", "POST", { seconds: sec, label: $("tmLabel").value.trim() });
+        lastTimersSig = "";
+        renderTimers(Object.assign({}, state || {}, { timers: r.timers || [] }));
+        showToast("Таймер запущен: " + fmtSec(sec));
+      } catch (e) { showToast("Таймер: " + e.message, true); }
+    } else {
+      const time = $("alTime").value;
+      if (!/^\d{2}:\d{2}$/.test(time)) { showToast("Укажите время будильника", true); return; }
+      const days = [...document.querySelectorAll("#alDays .seg")].map((b) => b.classList.contains("active"));
+      saveAlarms(alarmsCache.concat([{ time, days, label: $("alLabel").value.trim(), enabled: true, sound: $("alSound").value }]),
+        `Будильник на ${time} · ${daysLabel(days)}`);
+    }
+  });
+  if ($("btnAlarmStop")) $("btnAlarmStop").addEventListener("click", () => api("/api/alarms/stop", "POST", {}).then(() => { $("alarmBanner").hidden = true; }).catch((e) => showToast(e.message, true)));
+  if ($("btnAlarmSnooze")) $("btnAlarmSnooze").addEventListener("click", () => api("/api/alarms/snooze", "POST", { minutes: 5 }).then(() => { $("alarmBanner").hidden = true; showToast("Отложено на 5 минут"); }).catch((e) => showToast(e.message, true)));
+
+  // ===================== Умный дом (Home Assistant) =====================
+  const HA_ICONS = {
+    light: "M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.7 1 1.5 1 2.5h6c0-1 .2-1.8 1-2.5A6 6 0 0 0 12 3z",
+    switch: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM9.5 9v3M14.5 9v3M10 15.5h4",
+    fan: "M12 12m-2 0a2 2 0 1 0 4 0 2 2 0 1 0-4 0M12 10c0-4 1-7 4-7s2 5-2 7M14 12c4 0 7 1 7 4s-5 2-7-2M12 14c0 4-1 7-4 7s-2-5 2-7M10 12c-4 0-7-1-7-4s5-2 7 2",
+    cover: "M4 4h16M5 4v16M19 4v16M9 4v9M15 4v9",
+    climate: "M3 7h18v8H3zM7 19l1-2M12 19v-2M17 19l-1-2",
+    vacuum: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z",
+    media_player: "M3 5h18v12H3zM8 21h8"
+  };
+  const HA_ON = ["on", "open", "opening", "heat", "cool", "heat_cool", "auto", "dry", "fan_only", "cleaning", "playing"];
+  let haEntities = [];
+  let haRoom = "";
+  let haLoading = false;
+
+  function haSetup(show, reason) {
+    if ($("haSetupCard")) $("haSetupCard").hidden = !show;
+    if ($("haMain")) $("haMain").hidden = show;
+    const ha = state?.config?.homeAssistant || {};
+    if (show && $("haUrl") && !$("haUrl").value) $("haUrl").value = ha.url || "";
+    if (show && reason && reason !== "not_configured") showToast("Home Assistant: " + reason, true);
+  }
+
+  async function loadHome() {
+    if (haLoading) return;
+    haLoading = true;
+    try {
+      const r = await api("/api/ha/states");
+      if (r.ok === false) { haSetup(true, r.error); return; }
+      haEntities = Array.isArray(r) ? r : (r.entities || r.states || []);
+      haSetup(false);
+      if ($("haStatus")) { $("haStatus").textContent = `Home Assistant · ${haEntities.length} объектов`; $("haStatus").classList.remove("off"); }
+      renderHome();
+    } catch (e) {
+      haSetup(true, e.message);
+    } finally {
+      haLoading = false;
+    }
+  }
+
+  function haStateText(e) {
+    const s = e.state;
+    if (e.domain === "light" && s === "on") return e.brightness_pct != null ? `Вкл · ${e.brightness_pct}%` : "Вкл";
+    if (e.domain === "cover") return { open: "Открыто", closed: "Закрыто", opening: "Открывается", closing: "Закрывается" }[s] || s;
+    if (e.domain === "vacuum") return { cleaning: "Убирает", docked: "На базе", returning: "Едет на базу", paused: "Пауза", idle: "Ждёт" }[s] || s;
+    if (e.domain === "climate") return s === "off" ? "Выкл" : s;
+    if (e.domain === "media_player") return { playing: "Играет", paused: "Пауза", off: "Выкл", idle: "Ждёт" }[s] || s;
+    if (s === "unavailable") return "Недоступно";
+    return s === "on" ? "Вкл" : s === "off" ? "Выкл" : s;
+  }
+
+  function haCall(domain, service, entity_id, tile) {
+    if (tile) tile.classList.add("busy");
+    return api("/api/ha/service", "POST", { domain, service, entity_id })
+      .then(() => setTimeout(loadHome, 600))
+      .catch((err) => { showToast("Home Assistant: " + err.message, true); if (tile) tile.classList.remove("busy"); });
+  }
+
+  function haToggle(e, tile) {
+    const on = HA_ON.includes(e.state);
+    if (e.domain === "cover") return haCall("cover", on ? "close_cover" : "open_cover", e.entity_id, tile);
+    if (e.domain === "vacuum") return haCall("vacuum", e.state === "cleaning" ? "return_to_base" : "start", e.entity_id, tile);
+    if (e.domain === "climate") return haCall("climate", on ? "turn_off" : "turn_on", e.entity_id, tile);
+    if (e.domain === "media_player") return haCall("media_player", "media_play_pause", e.entity_id, tile);
+    return haCall(e.domain, "toggle", e.entity_id, tile);
+  }
+
+  function renderHome() {
+    const areas = [...new Set(haEntities.map((e) => e.area).filter(Boolean))];
+    if (haRoom && !areas.includes(haRoom)) haRoom = "";
+    const inRoom = (e) => !haRoom || e.area === haRoom;
+
+    const rooms = $("haRooms");
+    if (rooms) {
+      rooms.innerHTML = "";
+      ["", ...areas].forEach((a) => {
+        const b = document.createElement("button");
+        b.className = "seg" + (a === haRoom ? " active" : "");
+        b.textContent = a || "Все";
+        b.addEventListener("click", () => { haRoom = a; renderHome(); });
+        rooms.appendChild(b);
+      });
+      rooms.hidden = !areas.length;
+    }
+
+    const scenes = haEntities.filter((e) => e.domain === "scene" || e.domain === "script");
+    if ($("haScenesCard")) $("haScenesCard").hidden = !scenes.length;
+    const sc = $("haScenes");
+    if (sc) {
+      sc.innerHTML = "";
+      scenes.forEach((e) => {
+        const b = document.createElement("button");
+        b.className = "seg";
+        b.textContent = e.name || e.entity_id;
+        b.addEventListener("click", () => haCall(e.domain, "turn_on", e.entity_id).then(() => showToast("Сценарий: " + (e.name || e.entity_id))));
+        sc.appendChild(b);
+      });
+    }
+
+    const grid = $("haDevices");
+    if (grid) {
+      grid.innerHTML = "";
+      haEntities.filter((e) => HA_ICONS[e.domain] && inRoom(e)).forEach((e) => {
+        const on = HA_ON.includes(e.state);
+        const b = document.createElement("button");
+        b.className = "device" + (on ? " on" : "");
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+        b.innerHTML = `<svg class="ico" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${HA_ICONS[e.domain]}"/></svg>`;
+        const meta = document.createElement("span");
+        meta.style.cssText = "display:flex;flex-direction:column;gap:2px";
+        const n = document.createElement("span"); n.className = "d-name"; n.textContent = e.name || e.entity_id;
+        const st = document.createElement("span"); st.className = "d-state"; st.textContent = haStateText(e);
+        meta.append(n, st);
+        if (e.area && !haRoom) { const ar = document.createElement("span"); ar.className = "d-area"; ar.textContent = e.area; meta.append(ar); }
+        b.appendChild(meta);
+        if (e.state !== "unavailable") b.addEventListener("click", () => haToggle(e, b));
+        grid.appendChild(b);
+      });
+      if (!grid.children.length) grid.innerHTML = '<div class="hint">Нет управляемых устройств' + (haRoom ? " в этой комнате" : "") + ".</div>";
+    }
+
+    const sens = $("haSensors");
+    if (sens) {
+      sens.innerHTML = "";
+      haEntities.filter((e) => (e.domain === "sensor" || e.domain === "binary_sensor") && inRoom(e)).forEach((e) => {
+        let val = `${e.state}${e.unit ? " " + e.unit : ""}`;
+        if (e.domain === "binary_sensor") {
+          const on = e.state === "on";
+          val = e.device_class === "motion" ? (on ? "Движение" : "Тихо") : (on ? "Открыто" : "Закрыто");
+        }
+        const c = document.createElement("div");
+        c.className = "sensor";
+        const n = document.createElement("span"); n.className = "s-name"; n.textContent = e.name || e.entity_id;
+        const v = document.createElement("span"); v.className = "s-val"; v.textContent = val;
+        c.append(n, v);
+        sens.appendChild(c);
+      });
+    }
+  }
+
+  if ($("btnHaSave")) $("btnHaSave").addEventListener("click", async () => {
+    const url = $("haUrl").value.trim().replace(/\/+$/, "");
+    const token = $("haToken").value.trim();
+    if (!/^https?:\/\//.test(url)) { showToast("Адрес должен начинаться с http://", true); return; }
+    const patch = { homeAssistant: { url } };
+    if (token) patch.homeAssistant.token = token;
+    const r = await pushPartialConfig(patch, "Home Assistant сохранён");
+    if (r) { $("haToken").value = ""; loadHome(); }
+  });
+  if ($("btnHaReconfig")) $("btnHaReconfig").addEventListener("click", () => haSetup(true));
+
   async function init() {
+    let savedTab = null;
+    try { savedTab = localStorage.getItem("os_tab"); } catch {}
+    switchTab(savedTab || "music");
     try {
       const s = await api("/api/status");
+      setConn(true);
       applyTelemetry(s, true);
       if (location.hash === "#wizard" || (s.config?.setupCompleted === false && !sessionStorage.getItem("os_wiz_dismissed"))) {
         openWizard(1);
       }
       loadApps();
     } catch {
-      showToast("Нет связи со станцией, переподключение...", true);
+      setConn(false);
+      setConn(false);
     }
     connectWs();
   }

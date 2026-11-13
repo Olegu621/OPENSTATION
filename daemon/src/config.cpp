@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <sys/stat.h>
@@ -290,6 +291,49 @@ void DaemonConfig::sanitize_and_validate() {
     if (network.wifi_adb_port < 1024 || network.wifi_adb_port > 65535) {
         network.wifi_adb_port = 5555;
     }
+
+    {
+        // Alarms: drop entries with invalid H:MM / HH:MM, normalize to HH:MM, unique positive ids, max 20.
+        std::vector<AlarmEntry> clean;
+        int max_id = 0;
+        for (const auto& a : alarms) max_id = std::max(max_id, a.id);
+        for (AlarmEntry a : alarms) {
+            const std::string& t = a.time;
+            size_t colon = t.find(':');
+            bool ok = (t.size() == 4 || t.size() == 5) && colon == t.size() - 3;
+            for (size_t i = 0; ok && i < t.size(); ++i) {
+                if (i != colon && !std::isdigit(static_cast<unsigned char>(t[i]))) ok = false;
+            }
+            int h = ok ? atoi(t.substr(0, colon).c_str()) : -1;
+            int m = ok ? atoi(t.substr(colon + 1).c_str()) : -1;
+            if (h < 0 || h > 23 || m < 0 || m > 59) continue;
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%02d:%02d", h, m);
+            a.time = buf;
+            utf8_truncate(a.label, 64);
+            if (!is_one_of(a.sound, {"wave", "calm", "chime"})) a.sound = "chime";
+            bool dup = std::any_of(clean.begin(), clean.end(), [&](const AlarmEntry& c) { return c.id == a.id; });
+            if (a.id <= 0 || dup) a.id = ++max_id;
+            clean.push_back(std::move(a));
+            if (clean.size() >= 20) break;
+        }
+        alarms = std::move(clean);
+    }
+
+    {
+        auto strip = [](std::string s, size_t max_len) {
+            std::string out;
+            for (unsigned char uc : s) {
+                if (uc <= 0x20 || uc >= 0x7F) continue;
+                out.push_back(static_cast<char>(uc));
+                if (out.size() >= max_len) break;
+            }
+            return out;
+        };
+        home_assistant.url = strip(home_assistant.url, 256);
+        while (!home_assistant.url.empty() && home_assistant.url.back() == '/') home_assistant.url.pop_back();
+        home_assistant.token = strip(home_assistant.token, 2048);
+    }
 }
 
 json::Value DaemonConfig::to_json() const {
@@ -433,6 +477,27 @@ json::Value DaemonConfig::to_json() const {
     nw["wifiPowerSaveOff"] = Value::make_bool(network.wifi_power_save_off);
     root["network"] = std::move(nw);
 
+    Value al = Value::make_arr();
+    for (const auto& a : alarms) {
+        Value o = Value::make_obj();
+        o["id"] = Value::make_int(a.id);
+        o["time"] = Value::make_str(a.time);
+        Value d = Value::make_arr();
+        for (bool b : a.days) d.push(Value::make_bool(b));
+        o["days"] = std::move(d);
+        o["label"] = Value::make_str(a.label);
+        o["enabled"] = Value::make_bool(a.enabled);
+        o["sound"] = Value::make_str(a.sound);
+        al.push(std::move(o));
+    }
+    root["alarms"] = std::move(al);
+
+    // Full token is persisted here; build_status_json() replaces it with "tokenSet".
+    Value ha = Value::make_obj();
+    ha["url"] = Value::make_str(home_assistant.url);
+    ha["token"] = Value::make_str(home_assistant.token);
+    root["homeAssistant"] = std::move(ha);
+
     return root;
 }
 
@@ -546,7 +611,8 @@ void DaemonConfig::from_json(const json::Value& v) {
     if (auto* ast = v.get("assistant"); ast && ast->is_obj()) {
         if (auto* x = ast->get("enabled"); x && x->is_bool()) assistant.enabled = x->as_bool();
         if (auto* x = ast->get("mode"); x && x->is_str()) assistant.mode = x->as_str();
-        if (auto* x = ast->get("geminiApiKey"); x && x->is_str()) assistant.gemini_api_key = x->as_str();
+        // Empty = "keep the stored key": status never echoes secrets back, so clients send "" when unchanged.
+        if (auto* x = ast->get("geminiApiKey"); x && x->is_str() && !x->as_str().empty()) assistant.gemini_api_key = x->as_str();
         if (auto* x = ast->get("geminiModel"); x && x->is_str()) assistant.gemini_model = x->as_str();
         if (auto* x = ast->get("geminiProxyHost"); x && x->is_str()) assistant.gemini_proxy_host = x->as_str();
         if (auto* x = ast->get("voiceName"); x && x->is_str()) assistant.voice_name = x->as_str();
@@ -586,7 +652,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = mq->get("host"); x && x->is_str()) mqtt.host = x->as_str();
         if (auto* x = mq->get("port"); x && x->is_num()) mqtt.port = x->as_int();
         if (auto* x = mq->get("username"); x && x->is_str()) mqtt.username = x->as_str();
-        if (auto* x = mq->get("password"); x && x->is_str()) mqtt.password = x->as_str();
+        if (auto* x = mq->get("password"); x && x->is_str() && !x->as_str().empty()) mqtt.password = x->as_str();
         if (auto* x = mq->get("baseTopic"); x && x->is_str()) mqtt.base_topic = x->as_str();
         if (auto* x = mq->get("discovery"); x && x->is_bool()) mqtt.discovery = x->as_bool();
     }
@@ -605,6 +671,31 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = nw->get("wifiAdbEnabled"); x && x->is_bool()) network.wifi_adb_enabled = x->as_bool();
         if (auto* x = nw->get("wifiAdbPort"); x && x->is_num()) network.wifi_adb_port = x->as_int();
         if (auto* x = nw->get("wifiPowerSaveOff"); x && x->is_bool()) network.wifi_power_save_off = x->as_bool();
+    }
+
+    if (auto* al = v.get("alarms"); al && al->is_arr()) {
+        alarms.clear();
+        for (const auto& item : al->arr_val) {
+            AlarmEntry a;
+            a.time.clear(); // non-object / missing time -> dropped by sanitize
+            if (item.is_obj()) {
+                if (auto* x = item.get("id"); x && x->is_num()) a.id = x->as_int();
+                if (auto* x = item.get("time"); x && x->is_str()) a.time = x->as_str();
+                if (auto* d = item.get("days"); d && d->is_arr()) {
+                    for (size_t i = 0; i < 7 && i < d->arr_val.size(); ++i) a.days[i] = d->arr_val[i].as_bool(false);
+                }
+                if (auto* x = item.get("label"); x && x->is_str()) a.label = x->as_str();
+                if (auto* x = item.get("enabled"); x && x->is_bool()) a.enabled = x->as_bool();
+                if (auto* x = item.get("sound"); x && x->is_str()) a.sound = x->as_str();
+            }
+            alarms.push_back(std::move(a));
+        }
+    }
+
+    if (auto* ha = v.get("homeAssistant"); ha && ha->is_obj()) {
+        if (auto* x = ha->get("url"); x && x->is_str()) home_assistant.url = x->as_str();
+        // Token only changes when explicitly sent (status JSON never echoes it back).
+        if (auto* x = ha->get("token"); x && x->is_str()) home_assistant.token = x->as_str();
     }
 
     sanitize_and_validate();

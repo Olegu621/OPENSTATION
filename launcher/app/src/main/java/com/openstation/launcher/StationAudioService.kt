@@ -153,9 +153,9 @@ class StationAudioService : Service() {
             lastBtEventMs = nowMs
 
             if (evKind == "connected") {
-                volumeOverlayManager?.showToastPill("BLUETOOTH ПОДКЛЮЧЁН", "$devName · Станция готова к воспроизведению", "#10D281", 3200L)
+                volumeOverlayManager?.showToastPill("BLUETOOTH ПОДКЛЮЧЁН", "$devName · Станция готова к воспроизведению", durationMs = 3200L)
             } else {
-                volumeOverlayManager?.showToastPill("BLUETOOTH ОТКЛЮЧЁН", devName, "#F87171", 2600L)
+                volumeOverlayManager?.showToastPill("BLUETOOTH ОТКЛЮЧЁН", devName, danger = true, durationMs = 2600L)
             }
             thread(isDaemon = true) {
                 postJsonToDaemon("/api/bluetooth/device_event", JSONObject().put("event", evKind).put("device", devName))
@@ -188,14 +188,11 @@ class StationAudioService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Theme.init(this)
         audioManager = getSystemService(AudioManager::class.java)
         musicPlayer = YandexMusicPlayer(this)
         AliceOrbFrames.preloadAsync(this)
-        overlayManager = AliceOverlayManager(this).apply {
-            setLauncherForeground(isLauncherForeground)
-            start()
-        }
-        volumeOverlayManager = VolumeOverlayManager(this).apply { start() }
+        createOverlays()
         bleRemoteManager = BleRemoteManager(this)
         startForegroundNotification()
         running = true
@@ -252,6 +249,21 @@ class StationAudioService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    private fun createOverlays() {
+        overlayManager = AliceOverlayManager(this).apply {
+            setLauncherForeground(isLauncherForeground)
+            start()
+        }
+        volumeOverlayManager = VolumeOverlayManager(this).apply { start() }
+    }
+
+    /** Theme switch: the managers pick their Ambient/glass implementation at construction. */
+    fun recreateOverlays() {
+        try { overlayManager?.stop() } catch (_: Throwable) {}
+        try { volumeOverlayManager?.stop() } catch (_: Throwable) {}
+        createOverlays()
     }
 
     override fun onDestroy() {
@@ -452,7 +464,7 @@ class StationAudioService : Service() {
                     val city = obj.optString("city", "")
                     LiveOrbState.updateWeather(valid, temp, cond, text, city)
                     if (valid) {
-                        MainActivity.showWeatherOverlay(temp, cond, text, city)
+                        MainActivity.showWeatherOverlay(temp, cond, text, city); com.openstation.launcher.glass.MainActivity.showWeatherOverlay(temp, cond, text, city)
                     }
                 }
                 "launch" -> {
@@ -499,31 +511,27 @@ class StationAudioService : Service() {
                     handler.post { bringLauncherHome() }
                 }
                 "find_remote" -> {
-                    volumeOverlayManager?.showToastPill("ПОИСК ПУЛЬТА", "Отправляю BLE-сигнал зуммера на пульт...", "#E8C686", 2400L)
+                    volumeOverlayManager?.showToastPill("ПОИСК ПУЛЬТА", "Отправляю BLE-сигнал зуммера на пульт...", durationMs = 2400L)
                     bleRemoteManager?.triggerBuzzer { ok, msg ->
                         volumeOverlayManager?.showToastPill(
                             if (ok) "ПУЛЬТ ОТКЛИКНУЛСЯ" else "ПУЛЬТ НЕ НАЙДЕН",
                             msg,
-                            if (ok) "#E8C686" else "#F87171",
-                            3500L
+                            danger = !ok,
+                            durationMs = 3500L
                         )
                     }
                 }
                 "pair_remote" -> {
                     bleRemoteManager?.startAutoScanAndPair(20000L) { st, detail ->
-                        val col = when (st) {
-                            "connected" -> "#10D281"
-                            "error", "not_found" -> "#F87171"
-                            else -> "#00D4FF"
-                        }
-                        volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, col, 3200L)
+                        val failed = st == "error" || st == "not_found"
+                        volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, danger = failed, durationMs = 3200L)
                     }
                 }
                 "refresh_apps" -> {
-                    handler.post { MainActivity.refreshAppsFromService() }
+                    handler.post { MainActivity.refreshAppsFromService(); com.openstation.launcher.glass.MainActivity.refreshAppsFromService() }
                 }
                 "startup_show" -> {
-                    handler.post { MainActivity.triggerStartupShow() }
+                    handler.post { MainActivity.triggerStartupShow(); com.openstation.launcher.glass.MainActivity.triggerStartupShow() }
                 }
                 "bluetooth" -> {
                     val act = obj.optString("action", "discoverable")
@@ -622,8 +630,7 @@ class StationAudioService : Service() {
                         volumeOverlayManager?.showToastPill(
                             "BLUETOOTH КОЛОНКА",
                             "Видима как OpenStation Max ($durationSec сек)",
-                            "#00D4FF",
-                            3500L
+                            durationMs = 3500L
                         )
                     }
                 }
@@ -642,8 +649,8 @@ class StationAudioService : Service() {
                         volumeOverlayManager?.showToastPill(
                             "BLUETOOTH ВЫКЛЮЧЕН",
                             "Режим беспроводной колонки отключён",
-                            "#F87171",
-                            2600L
+                            danger = true,
+                            durationMs = 2600L
                         )
                     }
                 }
