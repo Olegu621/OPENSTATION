@@ -43,6 +43,7 @@
       <header class="appbar">
         <h1 class="page-title" id="pageTitle">Музыка</h1>
         <div class="badges">
+          <button class="btn btn-sm" id="btnPickStation" hidden title="Сменить станцию"></button>
           <span class="badge hide-mobile" id="badgeVol">Громкость: --%</span>
           <button class="btn btn-sm btn-danger" id="btnQuickMute">Микрофон: ВКЛ</button>
           <button class="btn btn-sm hide-mobile" id="btnQuickBt" title="Режим Bluetooth (A2DP колонка для телефона)">Bluetooth: ВЫКЛ</button>
@@ -201,50 +202,28 @@
               <button class="btn btn-sm btn-danger" data-key="power">Питание</button>
             </div>
 
-            <h3>Штатный BLE-пульт и Bluetooth</h3>
-            <div class="btn-row">
-              <button class="btn btn-sm" id="btnPairBleRemote" type="button">Автопоиск пульта</button>
-              <button class="btn btn-sm btn-accent" id="btnFindBleRemote" type="button">Найти пульт (зуммер)</button>
-              <button class="btn btn-sm" id="btnRemoteBtToggle" type="button">BT-колонка</button>
-            </div>
-
-            <h3>Управление телевизором (HDMI)</h3>
-            <div class="btn-row">
-              <button class="btn btn-sm" data-cec="wakeup">Включить ТВ</button>
-              <button class="btn btn-sm" data-cec="standby">Выключить ТВ</button>
-              <button class="btn btn-sm" data-cec="volume_up">ТВ Громк +</button>
-              <button class="btn btn-sm" data-cec="volume_down">ТВ Громк −</button>
+            <h3>Телевизор (HDMI)</h3>
+            <div class="icon-tiles">
+              <button class="icon-tile" data-cec="wakeup" title="Включить ТВ"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 8v5"/></svg><span>Вкл</span></button>
+              <button class="icon-tile" data-cec="standby" title="Выключить ТВ"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg><span>Выкл</span></button>
+              <button class="icon-tile" data-cec="volume_down" title="Громкость ТВ −"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 12h6"/></svg><span>Тише</span></button>
+              <button class="icon-tile" data-cec="volume_up" title="Громкость ТВ +"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M19 9v6"/><path d="M16 12h6"/></svg><span>Громче</span></button>
             </div>
           </div>
           <div class="stack">
-            <div class="card">
-              <h2>Ввод текста на ТВ</h2>
-              <p class="hint">Отправляет текст напрямую в активное поле поиска или ввода на экране телевизора.</p>
-              <div class="input-send-row">
-                <input type="text" id="remoteTextInput" placeholder="Введите текст (напр. Фильмы 4K)..." />
-                <button class="btn btn-accent" id="btnSendRemoteText">Отправить</button>
-              </div>
-            </div>
             <div class="card">
               <div class="row-between">
                 <h2>Приложения на станции</h2>
                 <button class="btn btn-sm" id="btnRefreshApps">Обновить</button>
               </div>
               <div class="apps-grid" id="appsGrid">Загрузка...</div>
-              <div class="apk-installer">
-                <input type="file" id="apkFileInput" accept=".apk,application/vnd.android.package-archive" hidden />
-                <div class="apk-dropzone" id="apkDropzone" tabindex="0" role="button" aria-label="Установить APK на станцию">
-                  <div class="apk-dropzone-meta">
-                    <div class="apk-dropzone-title">Установить приложение (.apk)</div>
-                    <div class="hint">Перетащите файл сюда или выберите APK (до 160 МБ)</div>
-                  </div>
-                  <button class="btn btn-sm btn-accent" id="btnChooseApk" type="button">Выбрать APK</button>
-                </div>
-                <div class="ota-progress-wrap" id="apkProgressWrap" style="display:none;">
-                  <div class="ota-progress-bar"><div class="ota-progress-fill" id="apkProgressFill" style="width:0%"></div></div>
-                  <div class="hint" id="apkProgressLabel">0%</div>
-                </div>
-                <div class="status-banner" id="apkInstallStatus" style="display:none;"></div>
+            </div>
+            <div class="card">
+              <h2>Ввод текста на ТВ</h2>
+              <p class="hint">Отправляет текст напрямую в активное поле поиска или ввода на экране телевизора.</p>
+              <div class="input-send-row">
+                <input type="text" id="remoteTextInput" placeholder="Введите текст (напр. Фильмы 4K)..." />
+                <button class="btn btn-accent" id="btnSendRemoteText">Отправить</button>
               </div>
             </div>
           </div>
@@ -757,11 +736,98 @@
           <p class="hint">Устройства берутся из Home Assistant. Можно сказать: «Алиса, выключи свет в гостиной».</p>
           <button class="btn btn-sm" id="btnHaReconfig">Изменить подключение</button>
         </div>
+        <div class="card" style="margin-top:14px;">
+          <details class="adv-details" id="haLinkDetails" open style="margin-top:0; border:none; background:transparent;">
+            <summary style="padding:0; font-size:1.05rem; color:#fff;">Станция в Home Assistant: голос (Wyoming) и MQTT</summary>
+            <div class="adv-details-body" style="padding:14px 0 0 0;">
+              <div class="status-banner" id="wyoStatusBanner">Ожидание подключения Home Assistant...</div>
+              <div class="form-row toggle-row">
+                <label>Включить голосовой сателлит (Wyoming)</label>
+                <input type="checkbox" id="wyoEn" checked />
+              </div>
+              <div class="grid-2-tight">
+                <div class="form-row">
+                  <label>Имя сателлита</label>
+                  <input type="text" id="wyoName" value="Station Max" />
+                </div>
+                <div class="form-row">
+                  <label>Порог речи</label>
+                  <input type="number" id="wyoVad" min="50" max="15000" value="450" />
+                </div>
+              </div>
+              <div class="form-row toggle-row">
+                <label>Непрерывный поток для Wake Word в HA</label>
+                <input type="checkbox" id="wyoAlways" />
+              </div>
+
+              <hr class="adv-divider" />
+
+              <div class="status-banner" id="mqttStatusBanner">MQTT отключён</div>
+              <div class="form-row toggle-row">
+                <label>Включить MQTT клиент</label>
+                <input type="checkbox" id="mqttEn" />
+              </div>
+              <div class="grid-2-tight">
+                <div class="form-row">
+                  <label>Брокер (IP / Host)</label>
+                  <input type="text" id="mqttHost" value="192.168.1.10" />
+                </div>
+                <div class="form-row">
+                  <label>Порт</label>
+                  <input type="number" id="mqttPort" value="1883" />
+                </div>
+                <div class="form-row">
+                  <label>Логин</label>
+                  <input type="text" id="mqttUser" />
+                </div>
+                <div class="form-row">
+                  <label>Пароль</label>
+                  <input type="password" id="mqttPass" />
+                </div>
+              </div>
+              <div class="form-row">
+                <label>Базовый топик</label>
+                <input type="text" id="mqttTopic" value="openstation/station_max" />
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-sm btn-accent" id="btnSaveSmartHome" type="button">Сохранить настройки Умного дома</button>
+              </div>
+            </div>
+          </details>
+        </div>
       </section>
 
       <section class="panel" id="tab-system">
         <div class="grid-2">
           <div class="stack">
+            <div class="card">
+              <h2>Штатный пульт и Bluetooth</h2>
+              <p class="hint">Сопряжение BLE-пульта Яндекса, поиск пульта зуммером, режим Bluetooth-колонки.</p>
+            <div class="btn-row">
+              <button class="btn btn-sm" id="btnPairBleRemote" type="button">Автопоиск пульта</button>
+              <button class="btn btn-sm btn-accent" id="btnFindBleRemote" type="button">Найти пульт (зуммер)</button>
+              <button class="btn btn-sm" id="btnRemoteBtToggle" type="button">BT-колонка</button>
+            </div>
+
+            </div>
+            <div class="card">
+              <h2>Установка приложений</h2>
+              <div class="apk-installer">
+                <input type="file" id="apkFileInput" accept=".apk,application/vnd.android.package-archive" hidden />
+                <div class="apk-dropzone" id="apkDropzone" tabindex="0" role="button" aria-label="Установить APK на станцию">
+                  <div class="apk-dropzone-meta">
+                    <div class="apk-dropzone-title">Установить приложение (.apk)</div>
+                    <div class="hint">Перетащите файл сюда или выберите APK (до 160 МБ)</div>
+                  </div>
+                  <button class="btn btn-sm btn-accent" id="btnChooseApk" type="button">Выбрать APK</button>
+                </div>
+                <div class="ota-progress-wrap" id="apkProgressWrap" style="display:none;">
+                  <div class="ota-progress-bar"><div class="ota-progress-fill" id="apkProgressFill" style="width:0%"></div></div>
+                  <div class="hint" id="apkProgressLabel">0%</div>
+                </div>
+                <div class="status-banner" id="apkInstallStatus" style="display:none;"></div>
+              </div>
+            </div>
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
@@ -899,66 +965,6 @@
                   <div class="btn-row">
                     <button class="btn btn-sm" id="btnRestartWifiAdb" type="button">Перезапустить ADB</button>
                     <button class="btn btn-sm" id="btnRestartDaemon" type="button">Перезапустить сервис</button>
-                  </div>
-                </div>
-              </details>
-            </div>
-
-            <div class="card">
-              <details class="adv-details" style="margin-top:0; border:none; background:transparent;">
-                <summary style="padding:0; font-size:1.05rem; color:#fff;">Умный дом: Home Assistant (Wyoming и MQTT)</summary>
-                <div class="adv-details-body" style="padding:14px 0 0 0;">
-                  <div class="status-banner" id="wyoStatusBanner">Ожидание подключения Home Assistant...</div>
-                  <div class="form-row toggle-row">
-                    <label>Включить голосовой сателлит (Wyoming)</label>
-                    <input type="checkbox" id="wyoEn" checked />
-                  </div>
-                  <div class="grid-2-tight">
-                    <div class="form-row">
-                      <label>Имя сателлита</label>
-                      <input type="text" id="wyoName" value="Station Max" />
-                    </div>
-                    <div class="form-row">
-                      <label>Порог речи</label>
-                      <input type="number" id="wyoVad" min="50" max="15000" value="450" />
-                    </div>
-                  </div>
-                  <div class="form-row toggle-row">
-                    <label>Непрерывный поток для Wake Word в HA</label>
-                    <input type="checkbox" id="wyoAlways" />
-                  </div>
-
-                  <hr class="adv-divider" />
-
-                  <div class="status-banner" id="mqttStatusBanner">MQTT отключён</div>
-                  <div class="form-row toggle-row">
-                    <label>Включить MQTT клиент</label>
-                    <input type="checkbox" id="mqttEn" />
-                  </div>
-                  <div class="grid-2-tight">
-                    <div class="form-row">
-                      <label>Брокер (IP / Host)</label>
-                      <input type="text" id="mqttHost" value="192.168.1.10" />
-                    </div>
-                    <div class="form-row">
-                      <label>Порт</label>
-                      <input type="number" id="mqttPort" value="1883" />
-                    </div>
-                    <div class="form-row">
-                      <label>Логин</label>
-                      <input type="text" id="mqttUser" />
-                    </div>
-                    <div class="form-row">
-                      <label>Пароль</label>
-                      <input type="password" id="mqttPass" />
-                    </div>
-                  </div>
-                  <div class="form-row">
-                    <label>Базовый топик</label>
-                    <input type="text" id="mqttTopic" value="openstation/station_max" />
-                  </div>
-                  <div class="btn-row">
-                    <button class="btn btn-sm btn-accent" id="btnSaveSmartHome" type="button">Сохранить настройки Умного дома</button>
                   </div>
                 </div>
               </details>

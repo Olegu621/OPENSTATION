@@ -2732,5 +2732,12 @@
     connectWs();
   }
 
+  // Inside the OpenStation phone app: station switcher chip (the app owns discovery).
+  if (window.OpenStationApp && $("btnPickStation")) {
+    const b = $("btnPickStation");
+    b.textContent = OpenStationApp.currentName() || "Станция";
+    b.hidden = false;
+    b.addEventListener("click", () => OpenStationApp.pickStation());
+  }
   init();
 })();
