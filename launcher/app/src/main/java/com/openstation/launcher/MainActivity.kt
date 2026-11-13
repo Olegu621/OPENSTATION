@@ -70,6 +70,7 @@ class MainActivity : Activity() {
         private const val PKG_OPENSTATION_APPS = "__openstation_apps__"
         private const val PKG_YANDEX_MUSIC = "__ym__"
         private const val APPS_PREFS = "openstation_apps_prefs"
+        private const val MAX_FAV_TILES = 6
         private const val GRID_COLUMNS = 5
         private val ACTIVE_ASSISTANT_STATES = setOf("connecting", "listening", "thinking", "speaking", "error")
 
@@ -815,6 +816,21 @@ class MainActivity : Activity() {
         val focusedIdx = (0 until tilesRow.childCount).indexOfFirst { tilesRow.getChildAt(it).isFocused }
         tilesRow.removeAllViews()
         val tiles = ArrayList<LinearLayout>()
+        val favs = getFavoritePackages().mapNotNull { pkg ->
+            if (pkg == PKG_YANDEX_MUSIC) pkg to null else appEntries.firstOrNull { it.pkg == pkg }?.let { pkg to it }
+        }.take(MAX_FAV_TILES)
+        if (favs.isNotEmpty()) {
+            favs.forEach { (pkg, app) ->
+                tiles.add(if (app == null) makeTile(R.drawable.ic_wave, "Яндекс Музыка") { launchYandexMusic() }
+                          else makeTile(0, app.label, app.icon) { launchApp(app) })
+            }
+        } else autoTiles(tiles)
+        tiles.add(makeTile(R.drawable.ic_yaos_apps, "Все приложения") { openAppsPanel() })
+        layoutDashboardTiles(tiles, focusedIdx)
+    }
+
+    /** No favourites yet: Yandex Music + YouTube + Media Center when installed. */
+    private fun autoTiles(tiles: ArrayList<LinearLayout>) {
         tiles.add(makeTile(R.drawable.ic_wave, "Яндекс Музыка") { launchYandexMusic() })
         val ytPkgs = listOf(
             "com.google.android.youtube.tv", "com.liskovsoft.smarttubetv.beta", "com.liskovsoft.smarttubetv",
@@ -828,16 +844,19 @@ class MainActivity : Activity() {
             it.pkg == "org.xbmc.kodi" || it.label.contains("Media Center", true) || it.label.contains("Kodi", true)
         }
         if (mc != null) tiles.add(makeTile(R.drawable.ic_hw_display, mc.label) { launchApp(mc) })
-        tiles.add(makeTile(R.drawable.ic_yaos_apps, "Все приложения") { openAppsPanel() })
+    }
 
+    private fun layoutDashboardTiles(tiles: List<LinearLayout>, focusedIdx: Int) {
+        // Up to 4 + "Все приложения" + "Станция" keep the mockup's 200dp tiles; more share the row.
+        val fixed = tiles.size <= 5
         tiles.forEach { t ->
             t.id = View.generateViewId()
-            tilesRow.addView(t, llp(dp(200), -1) { marginEnd = dp(16) })
+            tilesRow.addView(t, if (fixed) llp(dp(200), -1) { marginEnd = dp(16) } else llp(0, -1, 1f) { marginEnd = dp(12) })
         }
         tiles.first().nextFocusLeftId = tiles.first().id
-        tilesRow.addView(View(this), llp(0, 1, 1f))
+        if (fixed) tilesRow.addView(View(this), llp(0, 1, 1f))
         (tileStation.parent as? ViewGroup)?.removeView(tileStation)
-        tilesRow.addView(tileStation, llp(dp(200), -1))
+        tilesRow.addView(tileStation, if (fixed) llp(dp(200), -1) else llp(0, -1, 1f))
         tileStation.nextFocusUpId = orbButton.id
         tileStation.nextFocusRightId = tileStation.id
         tileStation.nextFocusDownId = tileStation.id
@@ -977,6 +996,19 @@ class MainActivity : Activity() {
         getSharedPreferences(APPS_PREFS, MODE_PRIVATE).edit()
             .putStringSet("hidden_apps", HashSet(set).apply { remove(PKG_OPENSTATION_APPS) })
             .apply()
+    }
+
+    /** Favourites (insertion order) are shown as tiles on the dashboard instead of the auto picks. */
+    private fun getFavoritePackages(): List<String> = try {
+        val arr = JSONArray(getSharedPreferences(APPS_PREFS, MODE_PRIVATE).getString("favorites", "[]"))
+        (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+    } catch (_: Throwable) { emptyList() }
+
+    private fun toggleFavorite(app: AppEntry) {
+        val favs = getFavoritePackages().toMutableList()
+        if (!favs.remove(app.pkg)) favs.add(app.pkg)
+        getSharedPreferences(APPS_PREFS, MODE_PRIVATE).edit().putString("favorites", JSONArray(favs).toString()).apply()
+        renderDashboardTiles()
     }
 
     private fun getSavedAppOrder(): List<String> {
@@ -1171,6 +1203,8 @@ class MainActivity : Activity() {
         val items = ArrayList<Pair<String, () -> Unit>>()
         items.add("Открыть" to { launchApp(app) })
         if (!pinned) {
+            val fav = app.pkg in getFavoritePackages()
+            items.add((if (fav) "Убрать с главного экрана" else "На главный экран") to { toggleFavorite(app) })
             items.add("Переместить" to { startReorderMode(app) })
             items.add("Скрыть" to { hideAppPackage(app) })
         }
