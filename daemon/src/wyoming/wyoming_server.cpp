@@ -156,6 +156,8 @@ void WyomingServer::feed_audio_16k(const int16_t* samples, size_t count, float r
                 json::Value pipe = json::Value::make_obj();
                 if (c.always_stream || remote_run_pipeline_.load()) {
                     pipe["start_stage"] = json::Value::make_str("wake");
+                    // HA re-arms wake-word detection after each answer instead of going deaf.
+                    pipe["restart_on_end"] = json::Value::make_bool(true);
                 } else {
                     pipe["start_stage"] = json::Value::make_str("asr");
                 }
