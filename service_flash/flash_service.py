@@ -7,22 +7,24 @@ Supports:
   - Hardware & driver diagnostics (--check)
   - Silent WorldCup driver install (--install-driver)
   - Auto-download latest OpenStationMax-ROM-*.zip from GitHub Releases
-  - Reliable BootROM -> U-Boot handoff (pyamlboot_local + U-Boot stage detection + 40s re-enumeration wait)
+  - BootROM -> BL2 -> U-Boot handoff with USB re-enumeration and mmc dev 1
   - Live U-Boot env unlock (silent=0, lock=10000000, avb2=0, saveenv)
-  - Full service partition flashing (vbmeta, vendor, system, misc) + data/cache erase
+  - Service partition flashing through WorldCup (vbmeta, vendor, system, misc) + data/cache erase
 """
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import glob
 import hashlib
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
+import struct
 import sys
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -34,6 +36,7 @@ if SCRIPT_DIR not in sys.path:
 
 GITHUB_REPO = "Olegu621/OPENSTATION"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+REQUIRED_ROM_IMAGES = ("vbmeta.img", "vendor.img", "system.img")
 
 # Ensure bundled libusb0 DLL matches Python pointer width (never mix 32-bit SCRIPT_DIR ahead of 64-bit Python)
 _IS_PY_64 = sys.maxsize > 2**32
@@ -122,8 +125,7 @@ def check_usb_device() -> dict:
     if os.name == "nt":
         try:
             ps = (
-                "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.DeviceID -like '*VID_1B8E&PID_C003*' } | "
+                "Get-CimInstance Win32_PnPEntity -Filter \"Present = TRUE AND DeviceID LIKE '%VID_1B8E&PID_C003%'\" | "
                 "Select-Object -First 1 -Property Name,Status,Service | ConvertTo-Json -Compress"
             )
             p = subprocess.run(
@@ -191,34 +193,52 @@ def check_adb_device() -> dict:
     return {"adb_connected": False, "adb_serial": ""}
 
 
-def find_local_rom_dir() -> tuple:
-    candidates = [
+def local_rom_dirs(rom_root: str = REPO_ROOT) -> list:
+    return [
+        os.path.join(rom_root, "rom"),
         os.path.join(REPO_ROOT, "rom"),
         os.path.join(SCRIPT_DIR, "rom"),
+        os.path.join(rom_root, "boot_out"),
         os.path.join(REPO_ROOT, "boot_out"),
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "OpenStation", "rom_cache"),
     ]
-    required = ("vbmeta.img", "vendor.img", "system.img")
-    for d in candidates:
-        if d and os.path.isdir(d) and all(os.path.isfile(os.path.join(d, f)) for f in required):
-            ver = ""
-            mpath = os.path.join(d, "rom_manifest.json")
-            if os.path.isfile(mpath):
-                try:
-                    with open(mpath, "r", encoding="utf-8") as mf:
-                        ver = str(json.load(mf).get("version", ""))
-                except Exception:
-                    pass
-            return d, ver
+
+
+def read_rom_manifest(directory):
+    try:
+        with open(os.path.join(directory, "rom_manifest.json"), encoding="utf-8-sig") as stream:
+            return json.load(stream)
+    except FileNotFoundError:
+        return {}
+
+
+def find_local_rom(rom_root: str = REPO_ROOT) -> tuple:
+    for directory in dict.fromkeys(local_rom_dirs(rom_root)):
+        if all(os.path.isfile(os.path.join(directory, name)) for name in REQUIRED_ROM_IMAGES):
+            try:
+                version = str(read_rom_manifest(directory).get("version", ""))
+            except (OSError, ValueError):
+                version = ""
+            return directory, version
+        archives = glob.glob(os.path.join(directory, "OpenStationMax-ROM-*.zip"))
+        if archives:
+            manifest = read_rom_manifest(directory)
+            expected = os.path.join(directory, manifest.get("archive", {}).get("fileName", ""))
+            if expected in archives:
+                return expected, str(manifest.get("version", ""))
+            archive = max(archives, key=lambda path: (os.path.getmtime(path), path))
+            version = os.path.basename(archive)[len("OpenStationMax-ROM-"):-4]
+            return archive, version
     return "", ""
 
 
-def run_check() -> dict:
+def run_check(rom_root: str = REPO_ROOT) -> dict:
     usb_info = check_usb_device()
     adb_info = check_adb_device()
-    rom_dir, rom_ver = find_local_rom_dir()
-    tools_ok = os.path.isfile(os.path.join(SCRIPT_DIR, "update.exe")) and os.path.isfile(
-        os.path.join(SCRIPT_DIR, "aml_bundle.img")
+    rom_path, rom_ver = find_local_rom(rom_root)
+    tools_ok = os.path.isfile(os.path.join(SCRIPT_DIR, "update.exe")) and any(
+        os.path.isfile(os.path.join(SCRIPT_DIR, image))
+        for image in ("aml_bundle.img", "aml.img", "aml_00053.img", "bootloader.img")
     )
     res = {
         "admin": is_admin(),
@@ -228,7 +248,8 @@ def run_check() -> dict:
         "usb_desc": usb_info["usb_desc"],
         "adb_connected": adb_info["adb_connected"],
         "adb_serial": adb_info["adb_serial"],
-        "local_rom_dir": rom_dir,
+        "local_rom_dir": rom_path if os.path.isdir(rom_path) else "",
+        "local_rom_archive": rom_path if os.path.isfile(rom_path) else "",
         "local_rom_version": rom_ver,
         "tools_ready": tools_ok,
     }
@@ -269,22 +290,16 @@ def install_driver() -> bool:
 
 
 def aml_bulkcmd(cmd: str, timeout: int = 30, ignore_error: bool = False) -> str:
-    update = get_update_exe()
-    p = subprocess.run(
-        [update, "bulkcmd", cmd],
-        cwd=SCRIPT_DIR,
-        capture_output=True,
-        timeout=timeout,
-        **hidden_subprocess_kwargs(),
-    )
-    out = safe_decode((p.stdout or b"") + (p.stderr or b"")).strip()
-    for ln in out.splitlines():
-        s = ln.strip()
-        if s:
-            emit(f"  [USB] {s}")
-    if _update_output_failed(out, p.returncode) and not ignore_error:
-        raise RuntimeError(f"Ошибка U-Boot '{cmd}': {out[:240]}")
-    return out
+    try:
+        with open_worldcup() as soc:
+            reply = soc.bulkCmd(cmd, timeout * 1000)
+        if not reply.startswith(b"success"):
+            raise RuntimeError(safe_decode(reply) or "пустой ответ")
+        return safe_decode(reply)
+    except Exception as ex:
+        if not ignore_error:
+            raise RuntimeError(f"Ошибка U-Boot '{cmd}': {ex}") from ex
+        return ""
 
 
 def apply_unlock_minimum():
@@ -295,40 +310,6 @@ def apply_unlock_minimum():
         except Exception as ex:
             emit(f"  [!] Предупреждение setenv {key}: {ex}")
     aml_bulkcmd("saveenv", ignore_error=True)
-
-
-def _byte_at(buf, idx: int) -> int:
-    try:
-        v = buf[idx]
-    except Exception:
-        return 0
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return ord(v)
-
-
-def classify_usb_id(socid) -> dict:
-    """Classify an Amlogic identify reply.
-
-    A genuine G12 BootROM answers ``ROM 3.2 / Stage 0.0``. A station that is
-    already running the temporary U-Boot (WorldCup burn mode) answers with
-    different bytes (seen in the wild: ``ROM 0.7 / Stage 0.16``). Sending
-    BootROM-only requests (WR_LARGE_MEM) to a live U-Boot kills the session
-    with ``libusb0 ... Устройство не опознано``, so this distinction is exact.
-    """
-    info = {"rom": (0, 0), "stage": (0, 0), "mode": "unknown"}
-    if socid is None or len(socid) < 4:
-        return info
-    rom = (_byte_at(socid, 0), _byte_at(socid, 1))
-    stage = (_byte_at(socid, 2), _byte_at(socid, 3))
-    info["rom"] = rom
-    info["stage"] = stage
-    if rom[0] == 3 and stage[1] == 0:
-        info["mode"] = "bootrom"
-    else:
-        info["mode"] = "uboot"
-    return info
 
 
 def _update_output_failed(out: str, returncode: int) -> bool:
@@ -348,160 +329,22 @@ def _update_output_failed(out: str, returncode: int) -> bool:
     )
 
 
-def is_uboot_alive(timeout: int = 8) -> bool:
-    """Return True if U-Boot WorldCup burn mode accepts a bulkcmd."""
+def is_uboot_alive(timeout: int = 4) -> bool:
     try:
-        update = get_update_exe()
-        p = subprocess.run(
-            [update, "bulkcmd", "mmc dev 1"],
-            cwd=SCRIPT_DIR,
-            capture_output=True,
-            timeout=timeout,
-            **hidden_subprocess_kwargs(),
-        )
-        out = safe_decode((p.stdout or b"") + (p.stderr or b""))
-        return not _update_output_failed(out, p.returncode)
+        with open_worldcup() as soc:
+            return usb_boot_stage(soc.identify()) == "uboot" and soc.bulkCmd(
+                "mmc dev 1", timeout * 1000
+            ).startswith(b"success")
     except Exception:
         return False
 
 
-def probe_usb_identify(preferred_service: str = "") -> dict:
-    """Read-only pyusb identify (never writes anything to the station)."""
-    res = {"present": False, "mode": "none", "rom": (0, 0), "stage": (0, 0), "backend": ""}
-    try:
-        from pyamlboot_local import proto
-    except Exception:
-        return res
-    for be_name, backend in get_pyusb_backends(preferred_service):
-        soc = None
-        try:
-            soc = proto.AmlogicSoC(backend=backend)
-            try:
-                soc.dev.set_configuration()
-            except Exception:
-                pass
-            info = classify_usb_id(soc.identify())
-            res.update(
-                present=True,
-                mode=info["mode"],
-                rom=info["rom"],
-                stage=info["stage"],
-                backend=be_name,
-            )
-            return res
-        except Exception:
-            continue
-        finally:
-            if soc is not None:
-                try:
-                    soc.close()
-                except Exception:
-                    pass
-    return res
-
-
-def reset_usb_device(preferred_service: str = "") -> bool:
-    """Force a USB port reset so Windows re-creates a clean device node."""
-    try:
-        from pyamlboot_local import proto
-    except Exception:
-        return False
-    for _be_name, backend in get_pyusb_backends(preferred_service):
-        soc = None
-        try:
-            soc = proto.AmlogicSoC(backend=backend)
-            soc.dev.reset()
-            return True
-        except Exception:
-            continue
-        finally:
-            if soc is not None:
-                try:
-                    soc.close()
-                except Exception:
-                    pass
-    return False
-
-
-def reenumerate_worldcup_device() -> bool:
-    """Soft USB replug: disable/enable the WorldCup PnP node to clear a stuck state."""
-    if os.name != "nt":
-        return False
-    ps = (
-        "$d = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.InstanceId -like '*VID_1B8E&PID_C003*' } | Select-Object -First 1; "
-        "if ($d) { "
-        "Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue; "
-        "Start-Sleep -Milliseconds 700; "
-        "Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction SilentlyContinue; "
-        "Write-Output 'OK' }"
-    )
-    try:
-        p = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps],
-            capture_output=True,
-            timeout=30,
-            **hidden_subprocess_kwargs(),
-        )
-        return b"OK" in (p.stdout or b"")
-    except Exception:
-        return False
-
-
-# After BL2 hands over to U-Boot the USB device re-enumerates and Windows
-# re-binds the libusb0 driver. On real machines this regularly takes 10-25 s;
-# the previous 7.5 s window is exactly why every user got "Порт не ответил"
-# at 28%. Keep a generous margin.
-UBOOT_HANDOFF_TIMEOUT = 40.0
-
-
-def wait_uboot_alive(wait_sec: float = UBOOT_HANDOFF_TIMEOUT) -> bool:
-    """Wait for the U-Boot WorldCup gadget to become usable."""
-    start = time.monotonic()
-    deadline = start + wait_sec
-    # Do not poke update.exe during the first seconds of USB re-enumeration:
-    # scanning a half-created device node leaves Windows in "device not
-    # recognized" state.
-    time.sleep(3.0)
-    next_report = start + 5.0
-    recovery = 0
+def wait_uboot_alive(wait_sec: float = 15.0) -> bool:
+    deadline = time.monotonic() + wait_sec
     while time.monotonic() < deadline:
-        if is_uboot_alive(timeout=8):
+        if is_uboot_alive(timeout=2):
             return True
-        now = time.monotonic()
-        if now >= next_report:
-            state = probe_usb_identify()
-            elapsed = int(now - start)
-            if state.get("mode") == "uboot":
-                if recovery == 0 and elapsed >= 16:
-                    # U-Boot is alive but update.exe still cannot scan it:
-                    # usually a stale "device not recognized" node left by a
-                    # previous failed attempt. A port reset re-creates it.
-                    emit(f"  ... U-Boot уже на USB, но update.exe его не видит — переинициализация USB ({elapsed} с)")
-                    reset_usb_device()
-                    recovery = 1
-                    time.sleep(2.0)
-                elif recovery == 1 and elapsed >= 28:
-                    emit(f"  ... повторное подключение устройства ({elapsed} с)")
-                    reenumerate_worldcup_device()
-                    recovery = 2
-                    time.sleep(3.0)
-                else:
-                    emit(f"  ... U-Boot уже на USB ({state['backend']}), ждём готовности update.exe ({elapsed} с)")
-            elif state.get("mode") == "bootrom":
-                emit(f"  ... станция всё ещё в BootROM, ждём U-Boot ({elapsed} с)")
-            else:
-                emit(f"  ... ожидание USB-стека U-Boot ({elapsed} с)")
-            next_report = now + 5.0
-        time.sleep(1.0)
-    if is_uboot_alive(timeout=8):
-        return True
-    state = probe_usb_identify()
-    if state.get("mode") == "uboot":
-        emit("  [!] U-Boot уже поднялся на USB, но update.exe его не видит.")
-        emit("  [!] Отключите Type-C и питание 19В на 5 секунд, затем подключите снова.")
-        emit("  [!] Если не помогает — переустановите драйвер WorldCup (libusb0).")
-        emit("  [!] Также попробуйте другой USB-порт (желательно USB 2.0 на задней панели ПК).")
+        time.sleep(0.5)
     return False
 
 
@@ -564,12 +407,52 @@ def get_pyusb_backends(preferred_service: str = "") -> list:
     return backends
 
 
+def usb_boot_stage(socid: str) -> str:
+    if len(socid) < 4:
+        raise ValueError("Неполный ответ WorldCup identify")
+    version = tuple(map(ord, socid[:4]))
+    if version == (0, 7, 0, 16):
+        # TPL on Station Max reports stage 0.16 despite sharing the BootROM VID/PID.
+        return "uboot"
+    if version[2:] == (1, 8):
+        return "bl2"
+    if version[2:] == (0, 0):
+        return "rom"
+    return "unknown"
+
+
+@contextmanager
+def open_worldcup():
+    from pyamlboot_local import proto
+    from usb.core import USBError
+
+    last_error = None
+    for _, backend in get_pyusb_backends():
+        soc = None
+        try:
+            soc = proto.AmlogicSoC(backend=backend)
+            soc.dev.set_configuration()
+        except (USBError, ValueError) as ex:
+            last_error = ex
+            if soc is not None:
+                soc.close()
+            continue
+        try:
+            yield soc
+        finally:
+            soc.close()
+        return
+    raise RuntimeError("Не удалось открыть устройство WorldCup через libusb") from last_error
+
+
 def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
     """Single isolated BootROM -> U-Boot transfer attempt (always releases handle on exit)."""
     from pyamlboot_local import proto
 
     with open(img_path, "rb") as f:
         data = f.read()
+    if len(data) < 0x10000:
+        raise ValueError(f"Слишком короткий образ U-Boot: {img_path}")
 
     backends = get_pyusb_backends(preferred_service)
     if not backends:
@@ -586,34 +469,35 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
                 pass
 
             socid = soc.identify()
-            info = classify_usb_id(socid)
-            rom_maj, rom_min = info["rom"]
-            stage_maj, stage_min = info["stage"]
-            emit(f"  [{be_name}] USB ID: ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}")
-            if info["mode"] == "uboot":
-                # BootROM commands (WR_LARGE_MEM) hit a live U-Boot and drop the
-                # USB link with "Устройство не опознано" - never do that.
-                emit("[OK] Станция уже в режиме U-Boot — повторная загрузка BL2 не нужна.")
-                return 2
-            if info["mode"] != "bootrom":
-                raise RuntimeError("устройство не ответило на identify (USB ещё инициализируется)")
+            stage = usb_boot_stage(socid)
+            emit(f"  [{be_name}] WorldCup ID: {'-'.join(str(ord(c)) for c in socid[:4])}")
+            if stage == "uboot":
+                return 0
+            if stage != "rom":
+                raise RuntimeError("Для запуска BL2 переподключите питание станции в режиме BootROM.")
 
-            soc.writeLargeMemory(0xFFFA0000, data[0:0x10000], 4096)
-            soc.run(0xFFFA0000)
-            time.sleep(2.0)
+            load_addr = 0xFFFA0000
+            if socid[:2] == "\x03\x02":
+                # G12 DDR initialization sequence used by USB Burning Tool.
+                for value in (0xB1, 0x5183, 0xB1, 0x5183):
+                    soc.writeSimpleMemory(load_addr, struct.pack("<I", value))
+                    time.sleep(0.5)
 
-            prev_len = -1
-            prev_off = -1
-            seq = 0
-            while True:
+            soc.writeLargeMemory(load_addr, data[:0x10000], 4096)
+            soc.run(load_addr)
+            time.sleep(0.2)
+
+            previous_request = None
+            for seq in range(256):
                 length, offset = soc.getBootAMLC()
-                if length == prev_len and offset == prev_off:
+                if previous_request is not None and ((length, offset) == previous_request or length == 0):
                     emit(f"[OK] Загружен {os.path.basename(img_path)} через {be_name} ({seq} блоков AMLC).")
                     return 0
-                prev_len = length
-                prev_off = offset
+                if length == 0 or offset + length > len(data):
+                    raise ValueError(f"Запрос AMLC вне образа: смещение {offset}, размер {length}")
                 soc.writeAMLCData(seq, offset, data[offset : offset + length])
-                seq += 1
+                previous_request = (length, offset)
+            raise RuntimeError("Превышено число блоков AMLC.")
         except Exception as ex:
             last_ex = ex
             emit(f"  [!] [{be_name}] {str(ex).strip()[:160]}")
@@ -631,8 +515,8 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
 
 
 def boot_uboot_via_yasta(revision: str = "auto") -> bool:
-    """Initialize U-Boot via isolated pyamlboot_local worker, native update.exe bl2_boot, and boot-g12.py."""
-    if is_uboot_alive(timeout=8):
+    """Load the temporary U-Boot and verify it after USB re-enumeration."""
+    if is_uboot_alive(timeout=4):
         emit("[OK] U-Boot уже активен на сервисном порту.")
         return True
 
@@ -640,24 +524,12 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
     usb_info = check_usb_device()
     pref_svc = usb_info.get("usb_service", "")
 
-    # If the station is already running U-Boot there is nothing to upload:
-    # BootROM commands sent to a live U-Boot drop the USB link
-    # ("...Устройство не опознано") and leave a broken device node behind.
-    pre = probe_usb_identify(pref_svc)
-    if pre.get("mode") == "uboot":
-        emit("[*] Станция уже в U-Boot — ожидаем готовности update.exe (загрузка BL2 не нужна)...")
-        if wait_uboot_alive():
-            emit("[OK] Временный U-Boot готов к приёму команд.")
-            return True
-        emit("  [!] U-Boot на USB, но update.exe его не видит — повторная загрузка BL2 отменена.")
-        return False
-
     if revision == "00053":
         cand_names = ("aml_00053.img", "bootloader.img", "aml_bundle.img")
     elif revision in ("0008", "00052"):
         cand_names = ("aml_bundle.img", "aml.img", "aml_00053.img")
     else:
-        cand_names = ("aml_bundle.img", "aml_00053.img", "aml.img")
+        cand_names = ("aml_00053.img", "aml_bundle.img", "aml.img", "bootloader.img")
 
     candidates = []
     seen = set()
@@ -671,7 +543,7 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
     if not candidates:
         raise FileNotFoundError(f"Не найден образ U-Boot (aml_bundle.img / aml_00053.img) в {SCRIPT_DIR}")
 
-    # Strategy 1: Isolated child subprocesses running pyamlboot_local (kernel reclaims USB interface on exit)
+    # An isolated process releases the USB handle before the next stage enumerates.
     for idx, img_path in enumerate(candidates):
         max_tries = 2 if idx == 0 else 1
         for attempt in range(1, max_tries + 1):
@@ -681,38 +553,19 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
                 cmd.extend(["--usb-service", pref_svc])
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
-            p = subprocess.Popen(
-                cmd,
-                cwd=SCRIPT_DIR,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=False,
-                env=env,
-                **hidden_subprocess_kwargs(),
-            )
-            for raw_ln in p.stdout:
-                txt = safe_decode(raw_ln).strip()
-                if txt:
-                    emit(f"  {txt}")
-            p.wait(timeout=45)
-            if p.returncode in (0, 2):
-                if p.returncode == 2:
-                    emit("  [OK] U-Boot уже запущен — пропускаем загрузку BL2.")
-                emit(f"Ожидание инициализации USB-стека U-Boot (до {int(UBOOT_HANDOFF_TIMEOUT)} с)...")
-                if wait_uboot_alive():
-                    emit("[OK] Временный U-Boot готов к приёму команд.")
-                    return True
-                emit(f"  [!] bulkcmd 'mmc dev 1' не ответил за {int(UBOOT_HANDOFF_TIMEOUT)} с.")
-                state = probe_usb_identify(pref_svc)
-                if state.get("mode") == "uboot":
-                    # U-Boot is alive - uploading another BL2 would kill it.
-                    emit("  [!] U-Boot уже на USB, но update.exe его не видит. Повторная загрузка BL2 отменена.")
-                    emit("  [!] Отключите Type-C и питание 19В на 5 секунд, затем подключите снова.")
-                    emit("  [!] Если не помогает — переустановите драйвер WorldCup (libusb0) и попробуйте другой USB-порт (USB 2.0).")
-                    return False
-                emit("  [!] Станция вернулась в BootROM — пробуем следующий образ...")
-            time.sleep(2.5)
+            try:
+                rc = subprocess.run(
+                    cmd, cwd=SCRIPT_DIR, stdin=subprocess.DEVNULL, env=env, timeout=45,
+                    **hidden_subprocess_kwargs(),
+                ).returncode
+            except subprocess.TimeoutExpired:
+                rc = 1
+                emit("  [!] Истекло время загрузки временного U-Boot.")
+            emit("Ожидание USB-интерфейса U-Boot после передачи загрузчика...")
+            # Windows may report a disconnect as the final AMLC block is acknowledged.
+            if wait_uboot_alive(15 if rc == 0 else 8):
+                emit("[OK] Временный U-Boot готов к приёму команд.")
+                return True
 
     # Strategy 2: Native Amlogic C bootloader (update.exe bl2_boot) using bundled x86 AmlLibusb.dll + libusb0.dll
     update = get_update_exe()
@@ -731,41 +584,15 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
             for ln in out.splitlines():
                 if ln.strip():
                     emit(f"  [BL2] {ln.strip()}")
-            if p.returncode == 0 and not _update_output_failed(out, p.returncode):
-                if wait_uboot_alive():
-                    emit("[OK] Нативный U-Boot запущен и готов к прошивке.")
-                    return True
+            if wait_uboot_alive(8 if _update_output_failed(out, p.returncode) else 15):
+                emit("[OK] Нативный U-Boot запущен и готов к прошивке.")
+                return True
         except Exception as ex:
             emit(f"  [!] update.exe bl2_boot: {str(ex)[:140]}")
         time.sleep(2.0)
 
-    # Strategy 3: Legacy revision-aware boot-g12.py fallback with live unbuffered logs
-    boot_g12 = os.path.join(SCRIPT_DIR, "boot-g12.py")
-    if os.path.isfile(boot_g12):
-        emit("Запуск резервного загрузчика boot-g12.py...")
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        p = subprocess.Popen(
-            [sys.executable, "-u", boot_g12, "--revision", revision, "--retries", "2"],
-            cwd=SCRIPT_DIR,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=False,
-            env=env,
-            **hidden_subprocess_kwargs(),
-        )
-        for raw_ln in p.stdout:
-            txt = safe_decode(raw_ln).strip()
-            if txt:
-                emit(f"  [g12] {txt}")
-        p.wait(timeout=90)
-        if p.returncode == 0 and wait_uboot_alive():
-            return True
-
     if os.name == "nt" and not is_admin():
         emit("[!] Подсказка: попробуйте запустить OpenStationFlasher.exe от имени Администратора и переподключить Type-C кабель.")
-    emit("[!] U-Boot не запустился: отключите Type-C и питание 19В, замкните 6-й контакт на GND и подключите кабель снова.")
     return False
 
 
@@ -871,57 +698,71 @@ def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) 
     return extract_dir
 
 
+def extract_local_rom(archive, destination):
+    manifest = read_rom_manifest(os.path.dirname(archive))
+    archive_info = manifest.get("archive", {})
+    if archive_info.get("fileName") == os.path.basename(archive):
+        expected_hash = archive_info.get("sha256")
+        if expected_hash:
+            with open(archive, "rb") as stream:
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected_hash.lower():
+                raise RuntimeError(f"Повреждён архив {archive}: несовпадение SHA-256")
+
+    with zipfile.ZipFile(archive) as rom:
+        members = set(rom.namelist())
+        for name in REQUIRED_ROM_IMAGES:
+            if name not in members or rom.getinfo(name).file_size == 0:
+                raise RuntimeError(f"В архиве {archive} отсутствует образ {name}")
+        for name in (*REQUIRED_ROM_IMAGES, "logo.img", "misc.img"):
+            if name in members:
+                rom.extract(name, destination)
+
+
+def download_image(target, name, img_path, image_format="normal", progress=None):
+    size = os.path.getsize(img_path)
+    if size == 0:
+        raise ValueError(f"Пустой образ: {img_path}")
+
+    with open(img_path, "rb") as image, open_worldcup() as soc:
+        reply = soc.start_download(target, name, image_format, size, timeout=30000)
+        if not reply.startswith(b"success"):
+            raise RuntimeError(f"WorldCup отклонил загрузку {name}: {reply!r}")
+
+        written = 0
+        for seq, data in enumerate(iter(lambda: image.read(65536), b"")):
+            soc.write_download_block(seq, data, timeout=50000)
+            written += len(data)
+            if progress:
+                progress(written * 100 // size)
+
+        if written != size:
+            raise RuntimeError(f"Размер образа изменился во время записи: {img_path}")
+        reply = soc.bulkCmd("download get_status", timeout=120000)
+        if not reply.startswith(b"success"):
+            raise RuntimeError(f"WorldCup не подтвердил запись {name}: {reply!r}")
+
+
 def flash_partition(name: str, img_path: str, pct_start: int, pct_end: int) -> None:
-    update = get_update_exe()
     size_mb = os.path.getsize(img_path) / (1024 * 1024)
     emit(f"Запись раздела {name} ({size_mb:.1f} МБ)...")
-    p = subprocess.Popen(
-        [update, "partition", name, img_path],
-        cwd=SCRIPT_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=False,
-        bufsize=0,
-        **hidden_subprocess_kwargs(),
-    )
-    buf = b""
     last_sub_pct = -1
-    while True:
-        chunk = p.stdout.read(256)
-        if chunk:
-            buf += chunk
-            while True:
-                idx_n = buf.find(b"\n")
-                idx_r = buf.find(b"\r")
-                if idx_n < 0 and idx_r < 0:
-                    break
-                if idx_n < 0 or (0 <= idx_r < idx_n):
-                    sep_idx, is_cr = idx_r, True
-                else:
-                    sep_idx, is_cr = idx_n, False
-                seg = buf[:sep_idx]
-                buf = buf[sep_idx + 1 :]
-                line = safe_decode(seg).strip()
-                if not line:
-                    continue
-                m = re.findall(r"(\d{1,3})%", line)
-                if m:
-                    sub = min(100, int(m[-1]))
-                    if sub != last_sub_pct:
-                        last_sub_pct = sub
-                        overall = pct_start + int((pct_end - pct_start) * (sub / 100.0))
-                        emit_progress(overall, f"Прошивка {name}.img — {sub}%")
-                if not is_cr:
-                    emit(f"  [USB] {line}")
-        if p.poll() is not None:
-            break
-    if p.returncode != 0:
-        raise RuntimeError(f"Ошибка записи раздела {name} (код {p.returncode})")
+
+    def report_progress(sub):
+        nonlocal last_sub_pct
+        if sub != last_sub_pct and sub < 100:
+            last_sub_pct = sub
+            overall = pct_start + (pct_end - pct_start) * sub // 100
+            emit_progress(overall, f"Прошивка {name}.img — {sub}%")
+
+    download_image("store", name, img_path, progress=report_progress)
     emit_progress(pct_end, f"Раздел {name} записан")
 
 
 def wait_for_usb_or_adb_reboot() -> None:
-    if is_uboot_alive(timeout=8):
+    if is_uboot_alive(timeout=4):
         emit("[OK] Станция уже в режиме U-Boot (WorldCup ready).")
         return
 
@@ -942,7 +783,7 @@ def wait_for_usb_or_adb_reboot() -> None:
         )
         for _ in range(28):
             time.sleep(1.0)
-            if is_uboot_alive(timeout=6):
+            if is_uboot_alive(timeout=3):
                 emit("[OK] Станция перешла в U-Boot Burn Mode.")
                 return
             usb_info = check_usb_device()
@@ -956,42 +797,57 @@ def wait_for_usb_or_adb_reboot() -> None:
     )
 
 
-def run_flash(args):
-    emit_progress(2, "Проверка подключения и драйвера...")
+def ensure_worldcup_driver():
     if not check_worldcup_driver():
         if not is_admin():
             raise RuntimeError("Требуются права администратора для установки драйвера WorldCup.")
         if not install_driver():
             raise RuntimeError("Не удалось установить драйвер WorldCup.")
 
-    emit_progress(6, "Подготовка актуальной прошивки...")
-    rom_dir = args.rom_dir or ""
-    if not rom_dir or not os.path.isdir(rom_dir):
-        local_dir, _ = find_local_rom_dir()
-        if local_dir and not args.download_latest:
-            rom_dir = local_dir
-        else:
-            cache_dir = os.path.join(
-                os.environ.get("LOCALAPPDATA", SCRIPT_DIR),
-                "OpenStation",
-                "rom_cache",
-            )
-            rom_dir = download_latest_rom(cache_dir, base_pct=6, span_pct=18)
 
-    for req in ("vbmeta.img", "vendor.img", "system.img"):
+def enter_update_mode(revision):
+    wait_for_usb_or_adb_reboot()
+    if boot_uboot_via_yasta(revision):
+        return
+    raise RuntimeError(
+        "Не удалось запустить U-Boot Update. Закройте USB Burning Tool, "
+        "переподключите питание станции в сервисном режиме и повторите."
+    )
+
+
+def run_flash(args):
+    emit_progress(2, "Проверка подключения и драйвера...")
+    ensure_worldcup_driver()
+
+    emit_progress(6, "Подготовка актуальной прошивки...")
+    rom_path = args.rom_dir
+    if not rom_path and not args.download_latest:
+        rom_path, _ = find_local_rom(args.rom_root)
+    if not rom_path:
+        cache_dir = os.path.join(
+            os.environ.get("LOCALAPPDATA", SCRIPT_DIR),
+            "OpenStation",
+            "rom_cache",
+        )
+        rom_path = download_latest_rom(cache_dir, base_pct=6, span_pct=18)
+
+    if os.path.isfile(rom_path):
+        emit_progress(8, f"Проверка и распаковка {os.path.basename(rom_path)}...")
+        with tempfile.TemporaryDirectory(prefix="openstation-rom-") as rom_dir:
+            extract_local_rom(rom_path, rom_dir)
+            flash_prepared_rom(rom_dir, args)
+    else:
+        flash_prepared_rom(rom_path, args)
+
+
+def flash_prepared_rom(rom_dir, args):
+    for req in REQUIRED_ROM_IMAGES:
         fp = os.path.join(rom_dir, req)
         if not os.path.isfile(fp):
             raise FileNotFoundError(f"В папке ROM отсутствует обязательный образ: {req}")
 
-    emit_progress(25, "Поиск станции...")
-    wait_for_usb_or_adb_reboot()
-
-    emit_progress(28, "Загрузка временного U-Boot...")
-    if not boot_uboot_via_yasta(revision=args.revision):
-        raise RuntimeError(
-            "Не удалось инициализировать U-Boot через USB Boot. "
-            "Отключите кабель, снимите питание 19В на 5 сек и повторите."
-        )
+    emit_progress(25, "Переход в режим U-Boot Update...")
+    enter_update_mode(args.revision)
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
@@ -1029,24 +885,41 @@ def main():
     parser = argparse.ArgumentParser(description="OpenStation Max USB Service Port Flasher")
     parser.add_argument("--check", action="store_true", help="Проверить драйвер, USB и локальный ROM (JSON)")
     parser.add_argument("--install-driver", action="store_true", help="Установить драйвер WorldCup")
+    parser.add_argument("--enter-update", action="store_true", help="Перевести станцию в U-Boot Update без прошивки")
     parser.add_argument("--flash", action="store_true", help="Прошить станцию полностью автоматически")
-    parser.add_argument("--rom-dir", default="", help="Путь к локальной папке с vbmeta.img/vendor.img/system.img")
+    parser.add_argument("--rom-dir", default="", help="Путь к локальной папке с образами или ZIP-архиву ROM")
+    parser.add_argument("--rom-root", default=REPO_ROOT, help=argparse.SUPPRESS)
     parser.add_argument("--download-latest", action="store_true", help="Принудительно скачать свежий ROM с GitHub")
     parser.add_argument("--keep-data", action="store_true", help="Не стирать пользовательские данные (data/cache)")
     parser.add_argument("--revision", default="auto", choices=["auto", "0008", "00052", "00053"])
+    parser.add_argument("--skip-driver-check", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--usb-boot-step", default="", help=argparse.SUPPRESS)
     parser.add_argument("--usb-service", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--bulkcmd", help=argparse.SUPPRESS)
+    parser.add_argument("--mwrite", nargs=4, metavar=("IMAGE", "TARGET", "NAME", "FORMAT"), help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     try:
         if args.usb_boot_step:
             return run_usb_boot_step_inproc(args.usb_boot_step, args.usb_service)
+        if args.bulkcmd:
+            emit(aml_bulkcmd(args.bulkcmd))
+            return 0
+        if args.mwrite:
+            image, target, name, image_format = args.mwrite
+            download_image(target, name, image, image_format)
+            return 0
         if args.check:
-            run_check()
+            run_check(args.rom_root)
             return 0
         if args.install_driver:
             ok = install_driver()
             return 0 if ok else 1
+        if args.enter_update:
+            if not args.skip_driver_check:
+                ensure_worldcup_driver()
+            enter_update_mode(args.revision)
+            return 0
         if args.flash:
             run_flash(args)
             return 0

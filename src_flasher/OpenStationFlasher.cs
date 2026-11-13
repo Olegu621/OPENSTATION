@@ -641,7 +641,7 @@ namespace OpenStationFlasher
             try
             {
                 using (var searcher = new ManagementObjectSearcher(
-                    "SELECT Name, Status, Service FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_1B8E&PID_C003%'"))
+                    "SELECT Name, Status, Service FROM Win32_PnPEntity WHERE Present = TRUE AND DeviceID LIKE '%VID_1B8E&PID_C003%'"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
                     {
@@ -724,6 +724,9 @@ namespace OpenStationFlasher
             {
                 Path.Combine(_repoRoot, "rom"),
                 Path.Combine(_toolsRoot, "rom"),
+                Path.Combine(_toolsRoot, "service_flash", "rom"),
+                Path.Combine(_repoRoot, "boot_out"),
+                Path.Combine(_toolsRoot, "boot_out"),
                 Path.Combine(_toolsRoot, "rom_cache")
             };
             foreach (string rd in romDirs)
@@ -734,6 +737,11 @@ namespace OpenStationFlasher
                     File.Exists(Path.Combine(rd, "system.img")))
                 {
                     snap.LocalRomVer = "Готов (" + FW_VERSION + ")";
+                    break;
+                }
+                if (Directory.Exists(rd) && Directory.GetFiles(rd, "OpenStationMax-ROM-*.zip").Length > 0)
+                {
+                    snap.LocalRomVer = "Найден ZIP-архив";
                     break;
                 }
             }
@@ -1008,7 +1016,7 @@ namespace OpenStationFlasher
             }
 
             AppendLog("Запуск полной установки через yasta_flasher движок...");
-            int rc = RunPythonStream(py, pyPrefix + "\"" + scriptPath + "\" --flash");
+            int rc = RunPythonStream(py, pyPrefix + "\"" + scriptPath + "\" --flash --rom-root \"" + _repoRoot + "\"");
             if (rc != 0)
                 throw new Exception("Процесс прошивки завершился с ошибкой (код " + rc + "). Подробности в логе ниже.");
 

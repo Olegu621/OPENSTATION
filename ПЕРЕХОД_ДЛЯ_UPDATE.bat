@@ -11,7 +11,7 @@ echo ========================================================================
 echo.
 echo   Выберите ревизию вашей Станции Макс:
 echo.
-echo     [1] Автоопределение (пробовать 0008/00052, затем 00053) — РЕКОМЕНДУЕТСЯ
+echo     [1] Автоматический подбор загрузчика — РЕКОМЕНДУЕТСЯ
 echo     [2] Станция Макс YNDX-0008 / YNDX-00052 (aml.img)
 echo     [3] Станция Макс YNDX-00053 с Zigbee 2023+ (aml_00053.img / bootloader.img)
 echo     [4] Установить драйвер WorldCup (если устройство не определяется)
@@ -30,20 +30,20 @@ goto RUN_AUTO
 
 :RUN_AUTO
 echo.
-echo [*] Запуск boot-g12 в режиме автоопределения...
-python "%~dp0service_flash\boot-g12.py" --revision auto
+echo [*] Автоматический подбор загрузчика...
+python "%~dp0service_flash\flash_service.py" --enter-update --revision auto
 goto AFTER_BOOT
 
 :RUN_0008
 echo.
 echo [*] Загрузка загрузчика для ревизий 0008 / 00052...
-python "%~dp0service_flash\boot-g12.py" --revision 0008
+python "%~dp0service_flash\flash_service.py" --enter-update --revision 0008
 goto AFTER_BOOT
 
 :RUN_00053
 echo.
 echo [*] Загрузка загрузчика для ревизии 00053 (Zigbee)...
-python "%~dp0service_flash\boot-g12.py" --revision 00053
+python "%~dp0service_flash\flash_service.py" --enter-update --revision 00053
 goto AFTER_BOOT
 
 :RUN_DRV
@@ -57,12 +57,12 @@ set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (
     echo ========================================================================
-    echo   [!] Ошибка входа в режим Update (код %RC%).
+    echo   [!] Ошибка входа в режим Update ^(код %RC%^).
     echo   Проверьте:
-    echo     1) Сервисный Type-C подключен к ПК
-    echo     2) Перемычка соединяет пин 6 (BOOT) и пин 3 (GND)
-    echo     3) Питание 19V подключено
-    echo     4) Установлен ли драйвер WorldCup (пункт 4 меню)
+    echo     1^) Сервисный Type-C подключен к ПК
+    echo     2^) Перемычка соединяет пин 6 ^(BOOT^) и пин 3 ^(GND^)
+    echo     3^) Питание 19V подключено
+    echo     4^) Установлен ли драйвер WorldCup ^(пункт 4 меню^)
     echo ========================================================================
     pause
     exit /b %RC%
