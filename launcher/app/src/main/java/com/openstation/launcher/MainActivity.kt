@@ -1402,7 +1402,7 @@ class MainActivity : Activity() {
             Triple(R.drawable.ic_hw_speaker, "Звук") {
                 openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
             },
-            Triple(R.drawable.ic_hw_apps, "Приложения") { openSettingsIntent(Settings.ACTION_APPLICATION_SETTINGS, "com.android.tv.settings") },
+            Triple(R.drawable.ic_hw_apps, "Приложения") { openSettingsIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS, "com.android.tv.settings") },
             Triple(R.drawable.ic_hw_info, "О системе") { openSettingsIntent(Settings.ACTION_DEVICE_INFO_SETTINGS, "com.android.tv.settings") },
             Triple(R.drawable.ic_settings, "Все настройки") { launchPackageName("com.android.tv.settings") }
         )
@@ -1957,7 +1957,7 @@ class MainActivity : Activity() {
 
     private fun launchPackageName(pkg: String) {
         try {
-            val i = packageManager.getLeanbackLaunchIntentForPackage(pkg) ?: packageManager.getLaunchIntentForPackage(pkg)
+            val i = packageManager.appLaunchIntent(pkg)
             if (i != null) {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(i)

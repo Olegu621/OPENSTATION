@@ -333,3 +333,12 @@ class SwitchPill(context: Context) : FrameLayout(context) {
         layoutParams = android.widget.LinearLayout.LayoutParams(context.dp(46), context.dp(28))
     }
 }
+
+/**
+ * Launch intent for [pkg]. Packages without a launcher entry (com.android.tv.settings on the
+ * station has none) fall back to their own ACTION_SETTINGS activity.
+ */
+fun android.content.pm.PackageManager.appLaunchIntent(pkg: String): android.content.Intent? =
+    getLeanbackLaunchIntentForPackage(pkg) ?: getLaunchIntentForPackage(pkg)
+        ?: android.content.Intent(android.provider.Settings.ACTION_SETTINGS).setPackage(pkg)
+            .takeIf { resolveActivity(it, 0) != null }

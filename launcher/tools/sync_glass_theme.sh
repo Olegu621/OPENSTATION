@@ -27,6 +27,8 @@ for f in $FILES; do
 done
 # The one non-verbatim change: a "back to Ambient" tile in the station settings dock.
 sed -i '/SysItem(R.drawable.ic_settings, false, "Настройки TV")/i\            SysItem(R.drawable.ic_hw_display, false, "Тема: Ambient") { Theme.switchTo(this, glass = false) },' "$DST/MainActivity.kt"
+# Station fixes: com.android.tv.settings has no launcher entry; APPLICATION_SETTINGS opens a chooser.
+sed -i -e 's/?: packageManager\.getLaunchIntentForPackage(pkg)/?: packageManager.appLaunchIntent(pkg)/'        -e 's/Settings\.ACTION_APPLICATION_SETTINGS/Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS/g' "$DST/MainActivity.kt"
 # Sprites the Ambient theme no longer ships (glass-only, same names).
 for s in bg_tv_stage.webp sprite_bork_dial_ring.png sprite_station_hero.png sprite_sys_bt.png \
          sprite_sys_display.png sprite_sys_eq.png sprite_sys_wifi.png; do

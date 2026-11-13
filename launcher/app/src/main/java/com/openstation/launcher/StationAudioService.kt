@@ -828,10 +828,7 @@ class StationAudioService : Service() {
 
     private fun launchPackage(pkg: String) {
         try {
-            var intent = packageManager.getLeanbackLaunchIntentForPackage(pkg)
-            if (intent == null) {
-                intent = packageManager.getLaunchIntentForPackage(pkg)
-            }
+            val intent = packageManager.appLaunchIntent(pkg)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)

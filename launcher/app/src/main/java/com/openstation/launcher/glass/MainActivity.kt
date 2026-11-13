@@ -2091,7 +2091,7 @@ class MainActivity : Activity() {
                 openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
             },
             SysItem(R.drawable.ic_hw_apps, false, "Приложения") {
-                openSettingsIntent(Settings.ACTION_APPLICATION_SETTINGS, "com.android.tv.settings")
+                openSettingsIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS, "com.android.tv.settings")
             },
             SysItem(R.drawable.ic_hw_display, false, "Тема: Ambient") { Theme.switchTo(this, glass = false) },
             SysItem(R.drawable.ic_settings, false, "Настройки TV") {
@@ -3037,7 +3037,7 @@ class MainActivity : Activity() {
         launchWithGlassTransition(null) {
             try {
                 val i = packageManager.getLeanbackLaunchIntentForPackage(pkg)
-                    ?: packageManager.getLaunchIntentForPackage(pkg)
+                    ?: packageManager.appLaunchIntent(pkg)
                 if (i != null) {
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(i)
