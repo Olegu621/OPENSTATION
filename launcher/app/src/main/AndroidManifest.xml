@@ -73,6 +73,31 @@
             android:exported="false"
             android:launchMode="singleTask" />
 
+        <!-- "Liquid Glass" theme (upstream UI). Reached only via Theme.forwardIfGlass. -->
+        <activity
+            android:name=".glass.MainActivity"
+            android:clearTaskOnLaunch="true"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true" />
+        <activity
+            android:name=".glass.YandexMusicActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode"
+            android:exported="false"
+            android:launchMode="singleTask" />
+        <activity
+            android:name=".glass.SetupWizardActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode"
+            android:exported="false"
+            android:launchMode="singleTask" />
+        <activity
+            android:name=".glass.MarketActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode"
+            android:exported="false"
+            android:launchMode="singleTask" />
+
         <receiver
             android:name=".market.MarketInstallReceiver"
             android:exported="false" />

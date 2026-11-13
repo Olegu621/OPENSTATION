@@ -134,6 +134,8 @@ class SetupWizardActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Theme.init(this)
+        if (Theme.forwardIfGlass(this, com.openstation.launcher.glass.SetupWizardActivity::class.java)) return
         window.setBackgroundDrawable(null)
         manualLaunch = intent?.getBooleanExtra(EXTRA_MANUAL, false) ?: false
         StationAudioService.ensureStarted(this)
@@ -189,7 +191,7 @@ class SetupWizardActivity : Activity() {
     private fun buildUi() {
         val rootFrame = FrameLayout(this)
         val ivBg = ImageView(this).apply {
-            setImageResource(R.drawable.bg_tv_stage)
+            setImageDrawable(Theme.ambientBackground())
             scaleType = ImageView.ScaleType.CENTER_CROP
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
@@ -226,14 +228,14 @@ class SetupWizardActivity : Activity() {
         }
         val tvTitle = TextView(this).apply {
             text = "OpenStation Max · Мастер настройки"
-            setTextColor(Color.parseColor("#E8C686"))
+            setTextColor(Theme.accent)
             textSize = 18f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             letterSpacing = 0.03f
         }
         val tvSub = TextView(this).apply {
             text = "Автономная работа прямо на колонке (без ПК)"
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 11f
         }
         titleCol.addView(tvTitle)
@@ -299,7 +301,7 @@ class SetupWizardActivity : Activity() {
                 )
             ).apply {
                 cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), Color.parseColor("#4400D4FF"))
+                setStroke(dp(1), Theme.alpha(Theme.accent, 0.27f))
             }
             elevation = dp(12).toFloat()
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.37f).apply {
@@ -324,7 +326,7 @@ class SetupWizardActivity : Activity() {
         }
         val tvOrbTitle = TextView(this).apply {
             text = "ЯНДЕКС СТАНЦИЯ МАКС"
-            setTextColor(Color.parseColor("#E8C686"))
+            setTextColor(Theme.accent)
             textSize = 11f
             letterSpacing = 0.08f
             typeface = Typeface.DEFAULT_BOLD
@@ -361,7 +363,7 @@ class SetupWizardActivity : Activity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#AA0D1628"))
-                setStroke(dp(1), Color.parseColor("#4438BDF8"))
+                setStroke(dp(1), Theme.alpha(Theme.accent, 0.27f))
                 cornerRadius = dp(14).toFloat()
             }
         }
@@ -392,14 +394,14 @@ class SetupWizardActivity : Activity() {
         }
         tvQrUrl = TextView(this).apply {
             text = "http://127.0.0.1:8080/#wizard"
-            setTextColor(Color.parseColor("#38BDF8"))
+            setTextColor(Theme.accent)
             textSize = 10.5f
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
         val tvQrNote = TextView(this).apply {
             text = "Сканируйте QR — удобно вставлять ключи со смартфона без ПК"
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 10f
             setPadding(0, dp(2), 0, 0)
         }
@@ -454,7 +456,7 @@ class SetupWizardActivity : Activity() {
         }
         tvStepCounter = TextView(this).apply {
             text = "Шаг 1 из 5"
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 12f
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -539,13 +541,13 @@ class SetupWizardActivity : Activity() {
 
         tvStep1RemoteStatus = TextView(this).apply {
             text = "🎮 BLE-пульт YNDX: ожидание автопоиска..."
-            setTextColor(Color.parseColor("#38BDF8"))
+            setTextColor(Theme.accent)
             textSize = 12f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#2A0C192E"))
-                setStroke(dp(1), Color.parseColor("#5500D4FF"))
+                setStroke(dp(1), Theme.alpha(Theme.accent, 0.33f))
                 cornerRadius = dp(12).toFloat()
             }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -584,7 +586,7 @@ class SetupWizardActivity : Activity() {
 
         val tip = TextView(this).apply {
             text = "Совет: наведите камеру телефона на QR-код слева — откроется точно такой же мастер настройки прямо в браузере."
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 11.5f
             setPadding(0, dp(4), 0, 0)
         }
@@ -601,7 +603,7 @@ class SetupWizardActivity : Activity() {
 
         tvStep2GeminiStatus = TextView(this).apply {
             text = "Проверка ключа Gemini Live..."
-            setTextColor(Color.parseColor("#FDE68A"))
+            setTextColor(Theme.accent)
             textSize = 12.5f
             setPadding(dp(12), dp(9), dp(12), dp(9))
             background = GradientDrawable().apply {
@@ -712,12 +714,12 @@ class SetupWizardActivity : Activity() {
 
         tvStep2KwsLive = TextView(this).apply {
             text = "Офлайн Wake Word: ожидание — попробуйте сказать вслух «Алиса»!"
-            setTextColor(Color.parseColor("#CBD5E1"))
+            setTextColor(Theme.TEXT)
             textSize = 11.5f
             setPadding(dp(10), dp(7), dp(10), dp(7))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#1838BDF8"))
-                setStroke(dp(1), Color.parseColor("#4438BDF8"))
+                setColor(Theme.alpha(Theme.accent, 0.09f))
+                setStroke(dp(1), Theme.alpha(Theme.accent, 0.27f))
                 cornerRadius = dp(9).toFloat()
             }
         }
@@ -728,7 +730,7 @@ class SetupWizardActivity : Activity() {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#180F172A"))
-                setStroke(dp(1), Color.parseColor("#3338BDF8"))
+                setStroke(dp(1), Theme.alpha(Theme.accent, 0.20f))
                 cornerRadius = dp(10).toFloat()
             }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -745,14 +747,14 @@ class SetupWizardActivity : Activity() {
         val tvVuLabel = TextView(this).apply {
             text = "МИКРОФОН И VQE УРОВЕНЬ:"
             textSize = 10f
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         tvStep2VuStats = TextView(this).apply {
             text = "0 RMS | Шум: 0 | vqe"
             textSize = 10f
-            setTextColor(Color.parseColor("#38BDF8"))
+            setTextColor(Theme.accent)
             typeface = Typeface.MONOSPACE
         }
         vuHeader.addView(tvVuLabel)
@@ -796,7 +798,7 @@ class SetupWizardActivity : Activity() {
 
         tvStep3MusicStatus = TextView(this).apply {
             text = "Яндекс Музыка: проверка статуса..."
-            setTextColor(Color.parseColor("#CBD5E1"))
+            setTextColor(Theme.TEXT)
             textSize = 12.5f
             setPadding(dp(12), dp(9), dp(12), dp(9))
             background = GradientDrawable().apply {
@@ -959,7 +961,7 @@ class SetupWizardActivity : Activity() {
 
         val cecHint = TextView(this).apply {
             text = "Примечание: в Станции Макс нет ИК-диода, поэтому управление телевизором работает по HDMI-CEC (включите Anynet+/Bravia Sync/Simplink в настройках ТВ)."
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 11f
             setPadding(0, dp(8), 0, 0)
         }
@@ -976,7 +978,7 @@ class SetupWizardActivity : Activity() {
 
         tvStep5Summary = TextView(this).apply {
             text = "Проверка конфигурации..."
-            setTextColor(Color.parseColor("#E2E8F0"))
+            setTextColor(Theme.TEXT)
             textSize = 12.5f
             setLineSpacing(dp(3).toFloat(), 1.0f)
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1020,13 +1022,13 @@ class SetupWizardActivity : Activity() {
                     }
                     addView(TextView(this@SetupWizardActivity).apply {
                         text = h
-                        setTextColor(Color.parseColor("#E8C686"))
+                        setTextColor(Theme.accent)
                         textSize = 12f
                         typeface = Typeface.DEFAULT_BOLD
                     })
                     addView(TextView(this@SetupWizardActivity).apply {
                         text = b
-                        setTextColor(Color.parseColor("#CBD5E1"))
+                        setTextColor(Theme.TEXT)
                         textSize = 11f
                         setPadding(0, dp(2), 0, 0)
                     })
@@ -1049,13 +1051,13 @@ class SetupWizardActivity : Activity() {
             tv.background = GradientDrawable().apply {
                 cornerRadius = dp(999).toFloat()
                 if (active) {
-                    setColor(Color.parseColor("#33E8C686"))
-                    setStroke(dp(1), Color.parseColor("#FFE8C686"))
+                    setColor(Theme.alpha(Theme.accent, 0.20f))
+                    setStroke(dp(1), Theme.alpha(Theme.accent, 1.00f))
                 } else {
                     setColor(Color.TRANSPARENT)
                 }
             }
-            tv.setTextColor(Color.parseColor(if (active) "#F8FAFC" else "#94A3B8"))
+            tv.setTextColor(if (active) Theme.TEXT else Theme.TEXT_MUTED)
         }
 
         stepContents.forEachIndexed { idx, sv ->
@@ -1078,7 +1080,7 @@ class SetupWizardActivity : Activity() {
             map.forEach { (k, tv) ->
                 val sel = (k == selectedKey)
                 tv.isSelected = sel
-                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+                tv.setTextColor(if (sel) Theme.accent else Theme.TEXT)
             }
         }
         styleMap(voicePills, curVoice)
@@ -1121,7 +1123,7 @@ class SetupWizardActivity : Activity() {
 
     private fun testGeminiLiveConnection(overrideKey: String? = null) {
         tvStep2GeminiStatus.text = "⏳ Подключение к Gemini Live (прямо и через SNI)..."
-        tvStep2GeminiStatus.setTextColor(Color.parseColor("#E8C686"))
+        tvStep2GeminiStatus.setTextColor(Theme.accent)
         thread(isDaemon = true) {
             try {
                 val body = JSONObject().put("geminiProxyHost", curProxyHost)
@@ -1153,7 +1155,7 @@ class SetupWizardActivity : Activity() {
                         }
                     } else {
                         tvStep2GeminiStatus.text = "✗ Ошибка${if (code != 0) " ($code)" else ""}: $err"
-                        tvStep2GeminiStatus.setTextColor(Color.parseColor("#FCA5A5"))
+                        tvStep2GeminiStatus.setTextColor(Theme.DANGER_FG)
                         tvStep2GeminiStatus.background = GradientDrawable().apply {
                             setColor(Color.parseColor("#24EF4444"))
                             setStroke(dp(1), Color.parseColor("#66EF4444"))
@@ -1164,7 +1166,7 @@ class SetupWizardActivity : Activity() {
             } catch (t: Throwable) {
                 handler.post {
                     tvStep2GeminiStatus.text = "✗ Ошибка теста: ${t.message}"
-                    tvStep2GeminiStatus.setTextColor(Color.parseColor("#FCA5A5"))
+                    tvStep2GeminiStatus.setTextColor(Theme.DANGER_FG)
                 }
             }
         }
@@ -1302,7 +1304,7 @@ class SetupWizardActivity : Activity() {
             tvChkDns.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
             tvChkDns.text = "• DNS: ${curDnsMode.ifBlank { "авто" }}"
-            tvChkDns.setTextColor(Color.parseColor("#E8C686"))
+            tvChkDns.setTextColor(Theme.accent)
         }
 
         if (curHasKey) {
@@ -1310,7 +1312,7 @@ class SetupWizardActivity : Activity() {
             tvChkGemini.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
             tvChkGemini.text = "• Нужен ключ Gemini (Шаг 2)"
-            tvChkGemini.setTextColor(Color.parseColor("#FDE68A"))
+            tvChkGemini.setTextColor(Theme.accent)
         }
 
         if (curKwsReady) {
@@ -1318,7 +1320,7 @@ class SetupWizardActivity : Activity() {
             tvChkKws.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
             tvChkKws.text = "• Wake Word «Алиса» выкл"
-            tvChkKws.setTextColor(Color.parseColor("#94A3B8"))
+            tvChkKws.setTextColor(Theme.TEXT_MUTED)
         }
 
         if (curMusicLoggedIn) {
@@ -1326,7 +1328,7 @@ class SetupWizardActivity : Activity() {
             tvChkMusic.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
             tvChkMusic.text = "• Яндекс Музыка (опц.)"
-            tvChkMusic.setTextColor(Color.parseColor("#94A3B8"))
+            tvChkMusic.setTextColor(Theme.TEXT_MUTED)
         }
 
         // Step 1 Cards
@@ -1351,7 +1353,7 @@ class SetupWizardActivity : Activity() {
                 }
             } else {
                 tvStep2GeminiStatus.text = "Ключ не задан. Отсканируйте QR телефоном и вставьте ключ с aistudio.google.com/apikey"
-                tvStep2GeminiStatus.setTextColor(Color.parseColor("#FDE68A"))
+                tvStep2GeminiStatus.setTextColor(Theme.accent)
                 tvStep2GeminiStatus.background = GradientDrawable().apply {
                     setColor(Color.parseColor("#24F59E0B"))
                     setStroke(dp(1), Color.parseColor("#55F59E0B"))
@@ -1395,7 +1397,7 @@ class SetupWizardActivity : Activity() {
             tvStep3MusicStatus.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
             tvStep3MusicStatus.text = "Вход не выполнен — нажмите «Войти с экрана (полный QR)» выше."
-            tvStep3MusicStatus.setTextColor(Color.parseColor("#E8C686"))
+            tvStep3MusicStatus.setTextColor(Theme.accent)
         }
         refreshBleRemoteStatusText()
 
@@ -1450,7 +1452,7 @@ class SetupWizardActivity : Activity() {
         })
         addView(TextView(this@SetupWizardActivity).apply {
             text = sub
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 11.5f
             setPadding(0, dp(2), 0, 0)
         })
@@ -1458,7 +1460,7 @@ class SetupWizardActivity : Activity() {
 
     private fun makeSubLabel(textStr: String): TextView = TextView(this).apply {
         text = textStr.uppercase(Locale.getDefault())
-        setTextColor(Color.parseColor("#E8C686"))
+        setTextColor(Theme.accent)
         textSize = 10.5f
         letterSpacing = 0.08f
         typeface = Typeface.DEFAULT_BOLD
@@ -1467,7 +1469,7 @@ class SetupWizardActivity : Activity() {
 
     private fun makeCheckRow(txt: String): TextView = TextView(this).apply {
         text = txt
-        setTextColor(Color.parseColor("#CBD5E1"))
+        setTextColor(Theme.TEXT)
         textSize = 12f
         setPadding(0, dp(3), 0, dp(3))
         maxLines = 1
@@ -1481,7 +1483,7 @@ class SetupWizardActivity : Activity() {
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(Color.parseColor("#B8111C33"), Color.parseColor("#C40B1323"))
         ).apply {
-            setStroke(dp(1), Color.parseColor("#3A38BDF8"))
+            setStroke(dp(1), Theme.alpha(Theme.accent, 0.23f))
             cornerRadius = dp(14).toFloat()
         }
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -1489,7 +1491,7 @@ class SetupWizardActivity : Activity() {
         }
         addView(TextView(this@SetupWizardActivity).apply {
             text = label
-            setTextColor(Color.parseColor("#94A3B8"))
+            setTextColor(Theme.TEXT_MUTED)
             textSize = 10.5f
         })
         valueTv.setTextColor(Color.WHITE)
@@ -1501,7 +1503,7 @@ class SetupWizardActivity : Activity() {
 
     private fun makeActionPill(label: String, goldHighlight: Boolean = false, onClick: () -> Unit): TextView = TextView(this).apply {
         text = label
-        setTextColor(Color.parseColor(if (goldHighlight) "#0B0F17" else "#F1F5F9"))
+        setTextColor(if (goldHighlight) Theme.ON_ACCENT else Theme.TEXT)
         textSize = 12f
         typeface = Typeface.DEFAULT_BOLD
         setPadding(dp(14), dp(7), dp(14), dp(7))
@@ -1517,7 +1519,7 @@ class SetupWizardActivity : Activity() {
 
     private fun makeChoicePill(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
         text = label
-        setTextColor(Color.parseColor("#E2E8F0"))
+        setTextColor(Theme.TEXT)
         textSize = 11.5f
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setPadding(dp(11), dp(6), dp(11), dp(6))
@@ -1543,12 +1545,12 @@ class SetupWizardActivity : Activity() {
             handler.post {
                 if (::tvStep1RemoteStatus.isInitialized) {
                     val col = when (st) {
-                        "connected" -> "#6EE7B7"
-                        "error", "not_found" -> "#FDE68A"
-                        else -> "#38BDF8"
+                        "connected" -> Color.parseColor("#6EE7B7")
+                        "error", "not_found" -> Theme.DANGER_FG
+                        else -> Theme.accent
                     }
                     tvStep1RemoteStatus.text = "🎮 $detail"
-                    tvStep1RemoteStatus.setTextColor(Color.parseColor(col))
+                    tvStep1RemoteStatus.setTextColor(col)
                 }
             }
         }

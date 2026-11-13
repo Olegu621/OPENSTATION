@@ -25,9 +25,9 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Interactive Liquid Glass Home Equalizer Widget.
+ * Interactive equalizer card (Ambient look) shown on the launcher's EQ panel.
  * Allows cycling presets and adjusting Bass Boost + 5 macro EQ frequency bands
- * directly from the Home screen via TV remote D-pad or touch, syncing both
+ * via TV remote D-pad or touch, syncing both
  * StationAudioService DSP and openstationd /api/audio/eq.
  */
 class HomeEqWidgetController(
@@ -70,17 +70,8 @@ class HomeEqWidgetController(
     fun buildView(): LinearLayout {
         rootCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 20f,
-                baseTint = Color.parseColor("#660B1324"),
-                focusTint = Color.parseColor("#8813223B"),
-                normalStroke = Color.parseColor("#4438BDF8"),
-                focusStroke = Color.parseColor("#FFE8C686"),
-                refractStrength = 1.05f
-            )
-            elevation = dp(10).toFloat()
+            setPadding(dp(24), dp(20), dp(24), dp(20))
+            background = Theme.rounded(Theme.SURFACE, dp(28).toFloat())
         }
 
         val headerRow = LinearLayout(context).apply {
@@ -90,37 +81,21 @@ class HomeEqWidgetController(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(8)
+                bottomMargin = dp(16)
             }
         }
 
-        val tvTitle = TextView(context).apply {
-            text = "ЭКВАЛАЙЗЕР"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 10.5f
-            letterSpacing = 0.08f
-            typeface = Typeface.DEFAULT_BOLD
+        val tvTitle = context.eyebrow("Пресет", Theme.accent, 13f).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        btnPresetPill = TextView(context).apply {
-            text = "Баланс"
-            setTextColor(Color.parseColor("#F8FAFC"))
-            textSize = 10.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(10), dp(3), dp(10), dp(3))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#59182844"),
-                focusTint = Color.parseColor("#99263F66"),
-                normalStroke = Color.parseColor("#4DE8C686"),
-                focusStroke = Color.parseColor("#FFE8C686")
-            )
+        btnPresetPill = context.label("Баланс", 17f, Theme.TEXT, 600).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(20), dp(10), dp(20), dp(10))
+            background = Theme.focusable(Theme.BUTTON, dp(22).toFloat(), dp(3))
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
+            setOnFocusChangeListener { _, hasFocus ->
                 if (!hasFocus && adjustingChannel >= 0) setAdjustingChannel(-1)
             }
             setOnClickListener { onCyclePreset() }
@@ -134,7 +109,7 @@ class HomeEqWidgetController(
             weightSum = 6f
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(108)
+                dp(220)
             )
         }
 
@@ -142,15 +117,14 @@ class HomeEqWidgetController(
             val col = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(dp(3), dp(4), dp(3), dp(4))
+                setPadding(dp(4), dp(10), dp(4), dp(10))
                 isFocusable = true
                 isClickable = true
                 background = makeChannelBg(adjusting = false, focused = false)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (ch < 5) marginEnd = dp(4)
+                    if (ch < 5) marginEnd = dp(10)
                 }
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(85).start()
                     if (!hasFocus && adjustingChannel == ch) {
                         adjustingChannel = -1
                     }
@@ -166,30 +140,17 @@ class HomeEqWidgetController(
                 }
             }
 
-            val tvVal = TextView(context).apply {
-                text = "+0"
-                setTextColor(Color.parseColor("#E2E8F0"))
-                textSize = 9.5f
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                maxLines = 1
-            }
+            val tvVal = context.label("+0", 15f, Theme.TEXT, 700).apply { gravity = Gravity.CENTER }
 
             val meter = EqBarMeterView(context, isBass = (ch == 0)).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(22), 0, 1f).apply {
-                    topMargin = dp(3)
-                    bottomMargin = dp(3)
+                layoutParams = LinearLayout.LayoutParams(dp(28), 0, 1f).apply {
+                    topMargin = dp(8)
+                    bottomMargin = dp(8)
                 }
             }
 
-            val tvLbl = TextView(context).apply {
-                text = channelTitles[ch]
-                setTextColor(Color.parseColor(if (ch == 0) "#E8C686" else "#94A3B8"))
-                textSize = 9.5f
-                typeface = if (ch == 0) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                gravity = Gravity.CENTER
-                maxLines = 1
-            }
+            val tvLbl = context.label(channelTitles[ch], 14f, if (ch == 0) Theme.accent else Theme.TEXT_MUTED,
+                if (ch == 0) 700 else 400).apply { gravity = Gravity.CENTER }
 
             col.addView(tvVal)
             col.addView(meter)
@@ -201,12 +162,8 @@ class HomeEqWidgetController(
         }
         rootCard.addView(barsRow)
 
-        tvHint = TextView(context).apply {
-            text = "OK — настроить полосу · Выберите пресет выше"
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 9.5f
-            maxLines = 1
-            setPadding(0, dp(6), 0, 0)
+        tvHint = context.label("OK — настроить полосу · Выберите пресет выше", 15f, Theme.TEXT_MUTED).apply {
+            setPadding(0, dp(14), 0, 0)
         }
         rootCard.addView(tvHint)
 
@@ -359,10 +316,10 @@ class HomeEqWidgetController(
         if (!::tvHint.isInitialized) return
         if (adjustingChannel >= 0) {
             tvHint.text = "▲▼ Изменить ${channelTitles[adjustingChannel]} · ◄► Полоса · OK готово"
-            tvHint.setTextColor(Color.parseColor("#E8C686"))
+            tvHint.setTextColor(Theme.accent)
         } else {
             tvHint.text = "OK на полосе — настройка уровня · Пресет: ${presetLabels[preset] ?: preset}"
-            tvHint.setTextColor(Color.parseColor("#94A3B8"))
+            tvHint.setTextColor(Theme.TEXT_MUTED)
         }
     }
 
@@ -405,22 +362,10 @@ class HomeEqWidgetController(
     }
 
     private fun makeChannelBg(adjusting: Boolean, focused: Boolean): GradientDrawable =
-        GradientDrawable().apply {
-            cornerRadius = dp(10).toFloat()
-            when {
-                adjusting -> {
-                    setColor(Color.parseColor("#5400D4FF"))
-                    setStroke(dp(2), Color.parseColor("#FF00D4FF"))
-                }
-                focused -> {
-                    setColor(Color.parseColor("#4D182946"))
-                    setStroke(dp(2), Color.parseColor("#FFE8C686"))
-                }
-                else -> {
-                    setColor(Color.parseColor("#2E08101E"))
-                    setStroke(dp(1), Color.parseColor("#26FFFFFF"))
-                }
-            }
+        when {
+            adjusting -> Theme.rounded(Theme.alpha(Theme.accent, 0.28f), dp(16).toFloat(), dp(3), Color.WHITE)
+            focused -> Theme.rounded(Theme.FOCUS_FILL, dp(16).toFloat(), dp(3), Theme.accent)
+            else -> Theme.rounded(Theme.ROW, dp(16).toFloat())
         }
 
     private fun dp(v: Int): Int =
@@ -430,11 +375,11 @@ class HomeEqWidgetController(
         private var norm = 0.5f
         private var specEnergy = 0f
         private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#331E293B")
+            color = Theme.TRACK
         }
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val specPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#5538BDF8")
+            color = Theme.alpha(Theme.accent, 0.33f)
         }
         private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
@@ -464,8 +409,8 @@ class HomeEqWidgetController(
                 lastH = h
                 fillPaint.shader = LinearGradient(
                     0f, h, 0f, 0f,
-                    if (isBass) Color.parseColor("#F59E0B") else Color.parseColor("#0EA5E9"),
-                    if (isBass) Color.parseColor("#FDE68A") else Color.parseColor("#2DD4BF"),
+                    Theme.accent,
+                    if (isBass) Color.WHITE else Theme.alpha(Theme.accent, 0.7f),
                     Shader.TileMode.CLAMP
                 )
             }

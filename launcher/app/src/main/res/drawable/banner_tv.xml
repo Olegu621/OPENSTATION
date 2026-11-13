@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
@@ -17,7 +17,7 @@
         <shape android:shape="oval">
             <stroke
                 android:width="4dp"
-                android:color="#E8C686" />
+                android:color="@color/accent" />
             <solid android:color="#3338BDF8" />
         </shape>
     </item>

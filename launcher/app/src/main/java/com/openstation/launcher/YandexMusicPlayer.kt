@@ -1062,6 +1062,21 @@ class YandexMusicPlayer(private val context: Context) {
     }
 
     private fun handleAuthFailure(msg: String, openUiOnAuthNeeded: Boolean) {
+        // A 401/403 on one track/stream/radio session doesn't mean the token is dead: only
+        // /account/about rejecting it does. Otherwise keep the account and just report the error.
+        // (Callers run on netPool/worker threads, so the blocking check is fine here.)
+        val tokenRejected = !api.hasToken() || try {
+            api.refreshAccount(); false
+        } catch (_: YandexMusicApi.AuthException) { true } catch (_: Throwable) { false }
+        if (!tokenRejected) {
+            Log.w(TAG, "Auth error with a valid token, staying logged in: $msg")
+            synchronized(lock) {
+                isBuffering = false
+                lastError = msg
+            }
+            emitSnapshot(forceDaemon = true)
+            return
+        }
         synchronized(lock) {
             isBuffering = false
             isPlaying = false

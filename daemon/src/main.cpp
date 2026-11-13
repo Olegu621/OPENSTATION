@@ -1784,6 +1784,152 @@ int main(int argc, char** argv) {
         }
     });
 
+    // --- Wall-clock alarms (config "alarms"); ticked from the main loop below ---
+    struct RingingAlarm {
+        int id = 0;
+        std::string label, time, sound;
+        std::chrono::steady_clock::time_point started{}, next_beep{};
+    };
+    struct SnoozedAlarm {
+        AlarmEntry alarm;
+        time_t fire_epoch = 0;
+    };
+    std::mutex alarm_mu;
+    bool alarm_ringing = false;
+    RingingAlarm ringing_alarm;
+    std::vector<SnoozedAlarm> snoozed_alarms; // in-memory only
+    int64_t last_alarm_minute = -1;
+
+    auto ringing_alarm_json = [&]() -> json::Value {
+        std::lock_guard<std::mutex> lk(alarm_mu);
+        if (!alarm_ringing) return json::Value::make_null();
+        json::Value o = json::Value::make_obj();
+        o["id"] = json::Value::make_int(ringing_alarm.id);
+        o["label"] = json::Value::make_str(ringing_alarm.label);
+        o["time"] = json::Value::make_str(ringing_alarm.time);
+        o["sound"] = json::Value::make_str(ringing_alarm.sound);
+        o["ringingSec"] = json::Value::make_int(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - ringing_alarm.started).count());
+        return o;
+    };
+
+    auto fire_alarm = [&](const AlarmEntry& a) {
+        auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            alarm_ringing = true;
+            ringing_alarm = RingingAlarm{a.id, a.label, a.time, a.sound, now, now + std::chrono::seconds(4)};
+        }
+        LOGI("Alarm", "Alarm %d (%s) fired: %s", a.id, a.time.c_str(), a.label.c_str());
+        leds.trigger_flash(255, 140, 0, 2200);
+        leds.trigger_screen_text("БУДИЛЬНИК " + a.time + (a.label.empty() ? "" : " " + a.label), 255, 165, 0, 8000);
+        audio.play_timer_alarm();
+        if (a.sound == "wave" || a.sound == "calm") {
+            // ponytail: may block the main loop up to ~2.4 s while StationAudioService starts (once per alarm)
+            if (ensure_launcher_service_udp(8086)) {
+                json::Value p = json::Value::make_obj();
+                p["cmd"] = json::Value::make_str("play_my_wave");
+                p["mood"] = json::Value::make_str(a.sound == "calm" ? "calm" : "any");
+                p["openUi"] = json::Value::make_bool(false);
+                send_udp_json(8086, p.dump(-1));
+            }
+        }
+        if (http.ws_client_count() > 0) {
+            json::Value evt = json::Value::make_obj();
+            evt["type"] = json::Value::make_str("alarm_fired");
+            evt["id"] = json::Value::make_int(a.id);
+            evt["label"] = json::Value::make_str(a.label);
+            evt["time"] = json::Value::make_str(a.time);
+            http.broadcast_ws_text(evt.dump(-1));
+        }
+    };
+
+    // Stops the ringing alarm; returns it via out param (false if nothing was ringing).
+    auto stop_ringing_alarm = [&](RingingAlarm& out) -> bool {
+        {
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            if (!alarm_ringing) return false;
+            alarm_ringing = false;
+            out = ringing_alarm;
+        }
+        audio.clear_playback_queue();
+        if (out.sound == "wave" || out.sound == "calm") {
+            json::Value p = json::Value::make_obj();
+            p["cmd"] = json::Value::make_str("music_action");
+            p["action"] = json::Value::make_str("PAUSE");
+            send_udp_json(8086, p.dump(-1));
+        }
+        return true;
+    };
+
+    auto alarm_tick = [&]() {
+        auto steady_now = std::chrono::steady_clock::now();
+        {
+            // Chime repeats every 4 s while ringing; auto-stop after 10 min.
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            if (alarm_ringing) {
+                if (steady_now - ringing_alarm.started >= std::chrono::minutes(10)) {
+                    alarm_ringing = false;
+                } else if (ringing_alarm.sound == "chime" && steady_now >= ringing_alarm.next_beep) {
+                    ringing_alarm.next_beep = steady_now + std::chrono::seconds(4);
+                    audio.play_timer_alarm();
+                }
+                return;
+            }
+        }
+        time_t now = std::time(nullptr);
+        {
+            AlarmEntry due;
+            bool has_due = false;
+            {
+                std::lock_guard<std::mutex> lk(alarm_mu);
+                for (auto it = snoozed_alarms.begin(); it != snoozed_alarms.end(); ++it) {
+                    if (now >= it->fire_epoch) {
+                        due = it->alarm;
+                        has_due = true;
+                        snoozed_alarms.erase(it);
+                        break;
+                    }
+                }
+            }
+            if (has_due) {
+                fire_alarm(due);
+                return;
+            }
+        }
+        int64_t minute = static_cast<int64_t>(now) / 60;
+        if (minute == last_alarm_minute) return;
+        last_alarm_minute = minute;
+        struct tm lt {};
+        localtime_r(&now, &lt);
+        char hhmm[8];
+        snprintf(hhmm, sizeof(hhmm), "%02d:%02d", lt.tm_hour, lt.tm_min);
+        int dow = (lt.tm_wday + 6) % 7; // Mon=0..Sun=6
+        AlarmEntry due;
+        bool has_due = false;
+        bool disabled_one_shot = false;
+        DaemonConfig c;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            for (auto& a : cfg.alarms) {
+                if (!a.enabled || a.time != hhmm) continue;
+                bool one_shot = std::none_of(a.days.begin(), a.days.end(), [](bool b) { return b; });
+                if (!one_shot && !a.days[dow]) continue;
+                due = a;
+                has_due = true;
+                if (one_shot) {
+                    a.enabled = false;
+                    disabled_one_shot = true;
+                    c = cfg;
+                }
+                break;
+            }
+        }
+        if (!has_due) return;
+        if (disabled_one_shot) save_cfg(c);
+        fire_alarm(due);
+    };
+
     auto list_apps_json_arr = [&]() -> json::Value {
         using json::Value;
         Value arr = Value::make_arr();
@@ -3575,12 +3721,20 @@ int main(int argc, char** argv) {
                 root["lastWeather"] = last_weather_json;
             }
         }
-        Value public_config = c.to_json();
-        public_config["assistant"]["geminiApiKey"] = Value::make_str("");
-        public_config["assistant"]["geminiApiKeySet"] = Value::make_bool(!c.assistant.gemini_api_key.empty());
-        public_config["mqtt"]["password"] = Value::make_str("");
-        public_config["mqtt"]["passwordConfigured"] = Value::make_bool(!c.mqtt.password.empty());
-        root["config"] = std::move(public_config);
+        // Secrets never leave the station: status carries only "is set" flags.
+        Value cj = c.to_json();
+        cj["assistant"]["geminiApiKey"] = Value::make_str("");
+        cj["assistant"]["geminiApiKeySet"] = Value::make_bool(!c.assistant.gemini_api_key.empty());
+        cj["mqtt"]["password"] = Value::make_str("");
+        cj["mqtt"]["passwordConfigured"] = Value::make_bool(!c.mqtt.password.empty());
+        cj["mqtt"]["passwordSet"] = Value::make_bool(!c.mqtt.password.empty());
+        if (Value* ha = &cj["homeAssistant"]; ha->is_obj()) {
+            ha->obj_val.erase("token");
+            (*ha)["tokenSet"] = Value::make_bool(!c.home_assistant.token.empty());
+        }
+        root["alarms"] = cj["alarms"];
+        root["ringingAlarm"] = ringing_alarm_json();
+        root["config"] = std::move(cj);
         return root;
     };
 
@@ -4636,6 +4790,238 @@ int main(int argc, char** argv) {
                 ShellResult sr = run_argv_with_timeout({"/system/bin/pm", "uninstall", pkg}, 45);
                 return finalize_pm_mutation(sr);
             }
+            if (req.path == "/api/timers" || req.path == "/api/timers/cancel") {
+                json::Value out = json::Value::make_obj();
+                if (req.method == "POST") {
+                    json::Value v;
+                    if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                        return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                    }
+                    if (req.path == "/api/timers") {
+                        const auto* s = v.get("seconds");
+                        int sec = (s && s->is_num()) ? s->as_int(0) : 0;
+                        if (sec < 1 || sec > 86400) {
+                            return HttpResponse::json("{\"error\":\"seconds must be 1..86400\"}", 400);
+                        }
+                        std::string label = (v.get("label") && v.get("label")->is_str()) ? v.get("label")->as_str() : "";
+                        utf8_truncate(label, 64);
+                        int id = timers.set_timer(sec, label);
+                        leds.trigger_flash(255, 165, 0, 500);
+                        out["id"] = json::Value::make_int(id);
+                    } else {
+                        const auto* t = v.get("id");
+                        std::string target;
+                        if (t && t->is_num()) target = std::to_string(t->as_int(0));
+                        else if (t && t->is_str()) target = trim_ws_copy(t->as_str());
+                        if (target.empty()) {
+                            return HttpResponse::json("{\"error\":\"missing id\"}", 400);
+                        }
+                        out["removed"] = json::Value::make_int(timers.cancel_timer(target));
+                    }
+                    out["ok"] = json::Value::make_bool(true);
+                } else if (req.method != "GET" || req.path != "/api/timers") {
+                    return HttpResponse::json("{\"error\":\"method not allowed\"}", 405);
+                }
+                out["timers"] = timers.list_timers_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/alarms") {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+                json::Value out = json::Value::make_obj();
+                out["alarms"] = c.to_json()["alarms"];
+                out["ringingAlarm"] = ringing_alarm_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/alarms") {
+                json::Value v;
+                const json::Value* arr = nullptr;
+                if (!json::Parser::parse(req.body, v) || !(arr = v.get("alarms")) || !arr->is_arr()) {
+                    return HttpResponse::json("{\"error\":\"missing alarms array\"}", 400);
+                }
+                // Parse + sanitize on a scratch config; any dropped entry means invalid input.
+                DaemonConfig parsed;
+                json::Value patch = json::Value::make_obj();
+                patch["alarms"] = *arr;
+                parsed.from_json(patch);
+                if (parsed.alarms.size() != std::min<size_t>(arr->arr_val.size(), 20)) {
+                    return HttpResponse::json("{\"error\":\"invalid alarm (time must be HH:MM)\"}", 400);
+                }
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.alarms = parsed.alarms;
+                    c = cfg;
+                }
+                save_cfg(c);
+                {
+                    // Edited list invalidates pending snoozes.
+                    std::lock_guard<std::mutex> lk(alarm_mu);
+                    snoozed_alarms.clear();
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["alarms"] = c.to_json()["alarms"];
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && (req.path == "/api/alarms/stop" || req.path == "/api/alarms/snooze")) {
+                RingingAlarm stopped;
+                if (!stop_ringing_alarm(stopped)) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"not_ringing\"}");
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                if (req.path == "/api/alarms/snooze") {
+                    int minutes = 5;
+                    json::Value v;
+                    if (json::Parser::parse(req.body, v) && v.get("minutes") && v.get("minutes")->is_num()) {
+                        minutes = std::clamp(v.get("minutes")->as_int(5), 1, 60);
+                    }
+                    SnoozedAlarm s;
+                    s.alarm.id = stopped.id;
+                    s.alarm.label = stopped.label;
+                    s.alarm.time = stopped.time;
+                    s.alarm.sound = stopped.sound;
+                    s.fire_epoch = std::time(nullptr) + minutes * 60;
+                    {
+                        std::lock_guard<std::mutex> lk(alarm_mu);
+                        snoozed_alarms.push_back(s);
+                    }
+                    out["snoozeMinutes"] = json::Value::make_int(minutes);
+                    out["fireEpoch"] = json::Value::make_int(static_cast<int64_t>(s.fire_epoch));
+                }
+                out["id"] = json::Value::make_int(stopped.id);
+                out["ringingAlarm"] = json::Value::make_null();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if ((req.method == "GET" && req.path == "/api/ha/states") ||
+                (req.method == "POST" && req.path == "/api/ha/service")) {
+                static const char* kHaDomains[] = {"light", "switch", "fan", "cover", "climate", "vacuum",
+                                                   "media_player", "scene", "script", "sensor", "binary_sensor"};
+                auto ha_domain_ok = [](const std::string& d) {
+                    for (const char* x : kHaDomains) if (d == x) return true;
+                    return false;
+                };
+                auto err_json = [](const std::string& code, const std::string& detail, int http_code) {
+                    json::Value e = json::Value::make_obj();
+                    e["ok"] = json::Value::make_bool(false);
+                    e["error"] = json::Value::make_str(code);
+                    if (!detail.empty()) e["detail"] = json::Value::make_str(detail);
+                    return HttpResponse::json(e.dump(-1), http_code);
+                };
+                HomeAssistantConfig ha;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    ha = cfg.home_assistant;
+                }
+                if (ha.url.empty() || ha.token.empty()) return err_json("not_configured", "", 200);
+                if (ha.url.rfind("http://", 0) != 0 && ha.url.rfind("https://", 0) != 0) {
+                    return err_json("bad_url", "homeAssistant.url must start with http:// or https://", 200);
+                }
+
+                HttpClientRequest hreq;
+                hreq.timeout_ms = 5000;
+                hreq.max_redirects = 0; // never forward the bearer token elsewhere
+                hreq.max_body_bytes = 4 * 1024 * 1024;
+                hreq.headers["Authorization"] = "Bearer " + ha.token;
+                hreq.headers["Accept"] = "application/json";
+
+                if (req.path == "/api/ha/service") {
+                    json::Value v;
+                    if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                        return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                    }
+                    auto str_of = [&](const char* k) {
+                        const auto* x = v.get(k);
+                        return (x && x->is_str()) ? x->as_str() : std::string();
+                    };
+                    auto charset_ok = [](const std::string& s, bool allow_dot_digits) {
+                        if (s.empty() || s.size() > 128) return false;
+                        for (char ch : s) {
+                            bool ok = (ch >= 'a' && ch <= 'z') || ch == '_' ||
+                                      (allow_dot_digits && ((ch >= '0' && ch <= '9') || ch == '.'));
+                            if (!ok) return false;
+                        }
+                        return true;
+                    };
+                    std::string domain = str_of("domain"), service = str_of("service"), entity = str_of("entity_id");
+                    if (!(ha_domain_ok(domain) || domain == "homeassistant")) {
+                        return HttpResponse::json("{\"error\":\"domain not allowed\"}", 400);
+                    }
+                    if (!charset_ok(service, false)) {
+                        return HttpResponse::json("{\"error\":\"invalid service\"}", 400);
+                    }
+                    if (!charset_ok(entity, true) || entity.find('.') == std::string::npos) {
+                        return HttpResponse::json("{\"error\":\"invalid entity_id\"}", 400);
+                    }
+                    json::Value body = json::Value::make_obj();
+                    if (const auto* d = v.get("data"); d && d->is_obj()) body = *d;
+                    body["entity_id"] = json::Value::make_str(entity);
+                    hreq.method = "POST";
+                    hreq.url = ha.url + "/api/services/" + domain + "/" + service;
+                    hreq.body = body.dump(-1);
+                } else {
+                    hreq.method = "GET";
+                    hreq.url = ha.url + "/api/states";
+                }
+
+                HttpClientResponse hres = http_perform(hreq);
+                if (!hres.ok) return err_json("network", hres.error, 502);
+                if (hres.status_code == 401 || hres.status_code == 403) return err_json("unauthorized", "", 502);
+                if (hres.status_code < 200 || hres.status_code >= 300) {
+                    return err_json("http_" + std::to_string(hres.status_code), hres.body.substr(0, 200), 502);
+                }
+
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                if (req.path == "/api/ha/service") {
+                    out["status"] = json::Value::make_int(hres.status_code);
+                    return HttpResponse::json(out.dump(-1));
+                }
+
+                json::Value states;
+                if (!json::Parser::parse(hres.body, states) || !states.is_arr()) {
+                    return err_json("bad_response", hres.truncated ? "response too large" : "", 502);
+                }
+                json::Value ents = json::Value::make_arr();
+                for (const auto& st : states.arr_val) {
+                    const auto* eid = st.get("entity_id");
+                    if (!eid || !eid->is_str()) continue;
+                    std::string id = eid->as_str();
+                    std::string domain = id.substr(0, id.find('.'));
+                    if (!ha_domain_ok(domain)) continue;
+                    static const json::Value kEmptyObj = json::Value::make_obj();
+                    const json::Value* attrs = st.get("attributes");
+                    if (!attrs || !attrs->is_obj()) attrs = &kEmptyObj;
+                    auto attr_str = [&](const char* k) {
+                        const auto* x = attrs->get(k);
+                        return (x && x->is_str()) ? x->as_str() : std::string();
+                    };
+                    std::string dc = attr_str("device_class");
+                    if (domain == "sensor" && dc != "temperature" && dc != "humidity") continue;
+                    if (domain == "binary_sensor" && dc != "door" && dc != "window" && dc != "motion") continue;
+                    json::Value e = json::Value::make_obj();
+                    e["entity_id"] = json::Value::make_str(id);
+                    e["domain"] = json::Value::make_str(domain);
+                    std::string name = attr_str("friendly_name");
+                    e["name"] = json::Value::make_str(name.empty() ? id : name);
+                    e["state"] = json::Value::make_str(st.get("state") ? st.get("state")->as_str() : "");
+                    std::string area = attr_str("area");
+                    e["area"] = json::Value::make_str(area.empty() ? attr_str("area_id") : area);
+                    if (const auto* b = attrs->get("brightness"); domain == "light" && b && b->is_num()) {
+                        e["brightness_pct"] = json::Value::make_int(std::lround(b->as_double(0.0) / 255.0 * 100.0));
+                    }
+                    std::string unit = attr_str("unit_of_measurement");
+                    if (!unit.empty()) e["unit"] = json::Value::make_str(unit);
+                    e["device_class"] = json::Value::make_str(dc);
+                    ents.push(std::move(e));
+                }
+                out["entities"] = std::move(ents);
+                return HttpResponse::json(out.dump(-1));
+            }
             if (req.method == "POST" && req.path == "/api/apps/cache") {
                 json::Value v;
                 if (json::Parser::parse(req.body, v) && v.is_arr()) {
@@ -4914,6 +5300,8 @@ int main(int argc, char** argv) {
                     inputs.headphone_plugged());
             }
         }
+
+        alarm_tick();
 
         int sleep_ms = v_act ? 50 : (ws_cnt > 0 ? 100 : 250);
         if (spec_udp_fd >= 0) {

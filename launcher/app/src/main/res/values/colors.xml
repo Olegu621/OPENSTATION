@@ -1,0 +1,5 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Ambient accent: the single source of the accent colour (Theme.accent reads it at startup). -->
+    <color name="accent">#8B7CFF</color>
+</resources>

@@ -9,6 +9,14 @@
 
 namespace openstation {
 
+// Cut to at most max_bytes without splitting a UTF-8 sequence (labels are mostly Cyrillic, 2 bytes/char).
+inline void utf8_truncate(std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) return;
+    size_t n = max_bytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+    s.resize(n);
+}
+
 // 10 ISO EQ center frequencies: 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz
 void apply_eq_preset_defaults(const std::string& preset,
                               std::array<float, 10>& out_bands,
@@ -146,6 +154,20 @@ struct NetworkConfig {
     bool wifi_power_save_off = true;
 };
 
+struct AlarmEntry {
+    int id = 0;
+    std::string time = "07:00";       // HH:MM local time (normalized, zero-padded)
+    std::array<bool, 7> days{};        // Mon..Sun; all false = one-shot
+    std::string label;
+    bool enabled = true;
+    std::string sound = "chime";       // wave, calm, chime
+};
+
+struct HomeAssistantConfig {
+    std::string url;   // e.g. http://192.168.1.10:8123 (no trailing slash)
+    std::string token; // long-lived access token; never exposed via status JSON
+};
+
 struct DaemonConfig {
     std::string path = "/data/local/openstation/config.json";
     int web_port = 8080;
@@ -161,6 +183,8 @@ struct DaemonConfig {
     MqttConfig mqtt;
     OtaConfig ota;
     NetworkConfig network;
+    std::vector<AlarmEntry> alarms;
+    HomeAssistantConfig home_assistant;
 
     json::Value to_json() const;
     void from_json(const json::Value& v);
