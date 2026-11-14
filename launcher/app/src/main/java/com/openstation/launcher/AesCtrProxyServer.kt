@@ -41,6 +41,7 @@ class AesCtrProxyServer {
     private val acceptExec: ExecutorService = Executors.newSingleThreadExecutor()
     private val clientExec: ExecutorService = Executors.newCachedThreadPool()
 
+    @Synchronized
     fun start(): Int {
         if (running && port > 0) return port
         val ss = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
@@ -61,6 +62,7 @@ class AesCtrProxyServer {
         return port
     }
 
+    @Synchronized
     fun stop() {
         running = false
         try { serverSocket?.close() } catch (_: Throwable) {}
