@@ -10,4 +10,9 @@ int main() {
     assert(!is_assistant_stop_request("телевизор выключись"));
     assert(!is_assistant_stop_request("не выключись"));
     assert(!is_assistant_stop_request("выключи музыку"));
+    assert(openstation::block_power_tool_for_stop(true, "tv_hdmi_cec"));
+    assert(openstation::block_power_tool_for_stop(true, "device_power"));
+    assert(openstation::block_power_tool_for_stop(true, "remote_control"));
+    assert(!openstation::block_power_tool_for_stop(false, "tv_hdmi_cec"));
+    assert(!openstation::block_power_tool_for_stop(true, "stop_assistant"));
 }

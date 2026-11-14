@@ -1491,7 +1491,7 @@ void AssistantManager::session_worker(uint64_t sid,
                         emit_event("tool_call", "tool", name);
 
                         json::Value res;
-                        if (self_stop_requested && (name == "tv_hdmi_cec" || name == "remote_control" || name == "device_power")) {
+                        if (block_power_tool_for_stop(self_stop_requested, name)) {
                             res = json::Value::make_obj();
                             res["ok"] = json::Value::make_bool(false);
                             res["error"] = json::Value::make_str("Пользователь просит завершить диалог, а не выключать устройство.");

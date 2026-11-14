@@ -21,4 +21,8 @@ inline bool is_assistant_stop_request(const std::string& text) {
            normalized == "пожалуйста выключись" || normalized == "алиса пожалуйста выключись";
 }
 
+inline bool block_power_tool_for_stop(bool stop_requested, const std::string& tool) {
+    return stop_requested && (tool == "tv_hdmi_cec" || tool == "remote_control" || tool == "device_power");
+}
+
 } // namespace openstation
