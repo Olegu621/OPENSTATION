@@ -54,6 +54,31 @@ class BleRemoteManager(private val context: Context) {
     private var scanTimeoutRunnable: Runnable? = null
     private var bondReceiver: BroadcastReceiver? = null
     private var reconnectActive = false
+    @Volatile private var hidConnectedAddress: String? = null
+    private var hidReceiverRegistered = false
+    private val hidReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                "android.bluetooth.input.profile.action.CONNECTION_STATE_CHANGED" -> {
+                    val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    val saved = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
+                    if (!isYandexRemoteName(device.name) && (saved.isEmpty() || device.address != saved)) return
+                    when (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)) {
+                        BluetoothProfile.STATE_CONNECTED -> hidConnectedAddress = device.address
+                        BluetoothProfile.STATE_DISCONNECTED -> {
+                            if (hidConnectedAddress == device.address) hidConnectedAddress = null
+                            scheduleReconnect(5000L)
+                        }
+                    }
+                }
+                BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                    if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) != BluetoothAdapter.STATE_ON) {
+                        hidConnectedAddress = null
+                    }
+                }
+            }
+        }
+    }
     private var reconnectDelay = 5000L
     private val hidConnecting = AtomicBoolean(false)
     private val reconnectTask = object : Runnable {
@@ -94,14 +119,33 @@ class BleRemoteManager(private val context: Context) {
     fun startReconnect() {
         handler.post {
             reconnectActive = true
+            if (!hidReceiverRegistered) {
+                try {
+                    val filter = IntentFilter().apply {
+                        addAction("android.bluetooth.input.profile.action.CONNECTION_STATE_CHANGED")
+                        addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                    }
+                    context.registerReceiver(hidReceiver, filter)
+                    hidReceiverRegistered = true
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Unable to observe remote connection state", t)
+                }
+            }
             reconnectDelay = 5000L
             scheduleReconnect(5000L)
         }
     }
 
     fun stopReconnect() {
-        reconnectActive = false
-        handler.removeCallbacks(reconnectTask)
+        handler.post {
+            reconnectActive = false
+            handler.removeCallbacks(reconnectTask)
+            if (hidReceiverRegistered) {
+                try { context.unregisterReceiver(hidReceiver) } catch (_: Throwable) {}
+                hidReceiverRegistered = false
+            }
+            hidConnectedAddress = null
+        }
     }
 
     private fun scheduleReconnect(delayMs: Long) {
@@ -112,54 +156,17 @@ class BleRemoteManager(private val context: Context) {
 
     fun getRemoteStatus(): RemoteStatus {
         return try {
-            val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter()
-            if (adapter == null) {
-                return RemoteStatus(false, false, "", "", lastBatteryPct)
-            }
-            val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
-
-            val gattConnected = try {
-                bm?.getConnectedDevices(BluetoothProfile.GATT) ?: emptyList()
-            } catch (_: Throwable) {
-                emptyList()
-            }
-            val matchedConn = gattConnected.firstOrNull {
-                isYandexRemoteName(it.name) || (savedMac.isNotEmpty() && it.address == savedMac)
-            }
-            if (matchedConn != null) {
-                return RemoteStatus(
-                    bonded = matchedConn.bondState == BluetoothDevice.BOND_BONDED,
-                    connected = true,
-                    name = matchedConn.name ?: prefs.getString(KEY_REMOTE_NAME, "Yandex Remote") ?: "Yandex Remote",
-                    address = matchedConn.address,
-                    batteryPct = lastBatteryPct
-                )
-            }
-
-            val bonded = try {
-                adapter.bondedDevices?.firstOrNull {
-                    isYandexRemoteName(it.name) || (savedMac.isNotEmpty() && it.address == savedMac)
-                }
-            } catch (_: Throwable) {
-                null
-            }
-            if (bonded != null) {
-                val isConn = try {
-                    val m = BluetoothDevice::class.java.getMethod("isConnected")
-                    (m.invoke(bonded) as? Boolean) ?: false
-                } catch (_: Throwable) {
-                    false
-                }
+            val device = findTargetDevice()
+            if (device == null || device.bondState != BluetoothDevice.BOND_BONDED) {
+                RemoteStatus(false, false, "", "", -1)
+            } else {
                 RemoteStatus(
                     bonded = true,
-                    connected = isConn,
-                    name = bonded.name ?: "Yandex Remote",
-                    address = bonded.address,
+                    connected = hidConnectedAddress == device.address,
+                    name = device.name ?: prefs.getString(KEY_REMOTE_NAME, "Yandex Remote") ?: "Yandex Remote",
+                    address = device.address,
                     batteryPct = lastBatteryPct
                 )
-            } else {
-                RemoteStatus(false, false, "", "", -1)
             }
         } catch (t: Throwable) {
             Log.w(TAG, "getRemoteStatus failed: ${t.message}")
@@ -373,6 +380,8 @@ class BleRemoteManager(private val context: Context) {
         fun finish(state: String, detail: String) {
             if (!finished.compareAndSet(false, true)) return
             hidConnecting.set(false)
+            if (state == "connected") hidConnectedAddress = device.address
+            else if (hidConnectedAddress == device.address) hidConnectedAddress = null
             profile?.let { try { adapter.closeProfileProxy(profileId, it) } catch (_: Throwable) {} }
             onStatus(state, detail)
         }

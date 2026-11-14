@@ -1573,11 +1573,14 @@ class SetupWizardActivity : Activity() {
     private fun refreshBleRemoteStatusText() {
         val mgr = StationAudioService.instance?.bleRemoteManager ?: return
         val st = mgr.getRemoteStatus()
-        if (::tvStep1RemoteStatus.isInitialized && st.bonded) {
+        if (::tvStep1RemoteStatus.isInitialized) {
             val bat = if (st.batteryPct >= 0) " · Заряд ${st.batteryPct}%" else ""
-            val stateStr = if (st.connected) "Подключён" else "Сопряжён (спящий режим)"
-            tvStep1RemoteStatus.text = "✓ Пульт ${st.name}: $stateStr$bat"
-            tvStep1RemoteStatus.setTextColor(Color.parseColor("#6EE7B7"))
+            tvStep1RemoteStatus.text = when {
+                st.connected -> "✓ Пульт ${st.name}: подключён$bat"
+                st.bonded -> "Пульт ${st.name}: нет подключения$bat"
+                else -> "Пульт не подключён"
+            }
+            tvStep1RemoteStatus.setTextColor(Color.parseColor(if (st.connected) "#6EE7B7" else "#E8C686"))
         }
     }
 
