@@ -2,13 +2,14 @@
 setlocal
 cd /d "%~dp0"
 if not exist "update.exe" exit /b 2
-call :run "store init" || exit /b 1
-call :run "amlmmc enc" || exit /b 1
-call :run "setenv silent 0" || exit /b 1
-call :run "setenv lock 10000000" || exit /b 1
-call :run "setenv avb2 0" || exit /b 1
-call :run "saveenv" || exit /b 1
-exit /b 0
+set "any_error=0"
+call :run "store init" || set "any_error=1"
+call :run "amlmmc enc" || set "any_error=1"
+call :run "setenv silent 0" || set "any_error=1"
+call :run "setenv lock 10000000" || set "any_error=1"
+call :run "setenv avb2 0" || set "any_error=1"
+call :run "saveenv" || set "any_error=1"
+exit /b %any_error%
 :run
 set "logfile=%TEMP%\openstation-after-%RANDOM%-%RANDOM%.log"
 echo [after_ubt] %~1

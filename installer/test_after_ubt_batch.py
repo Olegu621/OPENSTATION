@@ -22,9 +22,8 @@ class AfterUbtBatchTests(unittest.TestCase):
                 if trace.exists(): trace.unlink()
                 env = dict(os.environ, TRACE_FILE=str(trace), FAIL_COMMAND=failed or "")
                 result = subprocess.run(["cmd.exe", "/d", "/c", "after_ubt.bat"], cwd=d, env=env, capture_output=True, timeout=20)
-                expected = commands if failed is None else commands[:commands.index(failed) + 1]
                 with self.subTest(failed=failed):
-                    self.assertEqual(trace.read_text().splitlines(), expected)
+                    self.assertEqual(trace.read_text().splitlines(), commands)
                     self.assertEqual(result.returncode == 0, failed is None)
 
 if __name__ == "__main__": unittest.main()
