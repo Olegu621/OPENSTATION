@@ -167,6 +167,11 @@ class AesCtrProxyServer {
                     hasRange = true
                 }
             }
+            if (hasRange && reqEnd != null && reqEnd < reqStart) {
+                out.write("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n".toByteArray())
+                out.flush()
+                return
+            }
 
             val skipWithinBlock = (reqStart % 16L).toInt()
             val alignedStart = reqStart - skipWithinBlock
@@ -199,7 +204,28 @@ class AesCtrProxyServer {
                 totalSize = upLen
             }
 
+            if (hasRange && code == 206) {
+                val actualStart = upRange?.substringAfter("bytes ", "")?.substringBefore('-')?.toLongOrNull()
+                if (actualStart != alignedStart) {
+                    out.write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".toByteArray())
+                    out.flush()
+                    return
+                }
+            }
+            if (hasRange && code == 200 && totalSize <= 0L) {
+                out.write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".toByteArray())
+                out.flush()
+                return
+            }
+            if (hasRange && totalSize > 0L && reqStart >= totalSize) {
+                out.write("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */$totalSize\r\nContent-Length: 0\r\n\r\n".toByteArray())
+                out.flush()
+                return
+            }
+
             val responseLen: Long = when {
+                hasRange && code == 200 && totalSize > 0L ->
+                    ((reqEnd ?: (totalSize - 1L)).coerceAtMost(totalSize - 1L) - reqStart + 1L).coerceAtLeast(0L)
                 upLen > 0L -> (upLen - skipWithinBlock).coerceAtLeast(0L)
                 totalSize > 0L && hasRange -> {
                     val endActual = reqEnd?.coerceAtMost(totalSize - 1L) ?: (totalSize - 1L)
@@ -213,6 +239,7 @@ class AesCtrProxyServer {
             if (hasRange && (code == 206 || totalSize > 0L)) {
                 hdr.append("HTTP/1.1 206 Partial Content\r\n")
                 val endByte = when {
+                    responseLen >= 0L -> reqStart + responseLen - 1L
                     reqEnd != null -> reqEnd
                     totalSize > 0L -> totalSize - 1L
                     upLen > 0L -> alignedStart + upLen - 1L
@@ -248,8 +275,17 @@ class AesCtrProxyServer {
 
             val upStream: InputStream = conn.inputStream
             val buf = ByteArray(16384)
+            // Some servers ignore Range and return the whole object. Discard
+            // the encrypted prefix before starting CTR at alignedStart.
+            var encryptedPrefix = if (hasRange && code == 200) alignedStart else 0L
+            while (encryptedPrefix > 0L) {
+                val n = upStream.read(buf, 0, minOf(buf.size.toLong(), encryptedPrefix).toInt())
+                if (n <= 0) return
+                encryptedPrefix -= n
+            }
             var toDiscard = skipWithinBlock
-            while (running) {
+            var remaining = if (responseLen >= 0L) responseLen else Long.MAX_VALUE
+            while (running && remaining > 0L) {
                 val n = upStream.read(buf)
                 if (n <= 0) break
                 val dec = if (cipher != null) cipher.update(buf, 0, n) else buf.copyOf(n)
@@ -257,18 +293,22 @@ class AesCtrProxyServer {
                     if (toDiscard >= dec.size) {
                         toDiscard -= dec.size
                     } else if (toDiscard > 0) {
-                        out.write(dec, toDiscard, dec.size - toDiscard)
+                        val written = minOf((dec.size - toDiscard).toLong(), remaining).toInt()
+                        out.write(dec, toDiscard, written)
+                        remaining -= written
                         toDiscard = 0
                     } else {
-                        out.write(dec, 0, dec.size)
+                        val written = minOf(dec.size.toLong(), remaining).toInt()
+                        out.write(dec, 0, written)
+                        remaining -= written
                     }
                 }
             }
             if (cipher != null) {
                 val fin = cipher.doFinal()
-                if (fin != null && fin.isNotEmpty()) {
+                if (fin != null && fin.isNotEmpty() && remaining > 0L) {
                     if (toDiscard < fin.size) {
-                        out.write(fin, toDiscard, fin.size - toDiscard)
+                        out.write(fin, toDiscard, minOf((fin.size - toDiscard).toLong(), remaining).toInt())
                     }
                 }
             }
