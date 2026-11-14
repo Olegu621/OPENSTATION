@@ -1,28 +1,22 @@
 @echo off
-chcp 65001 >nul
-title After UBT — OpenStation Max Fix
+setlocal
 cd /d "%~dp0"
-
-echo.
-echo ========================================================================
-echo   OpenStation Max — Снятие AVB2 / Финализация U-Boot после UBT
-echo ========================================================================
-echo.
-echo Если вы прошили прошивку через USB Burning Tool (UBT) - нажмите
-echo любую клавишу для снятия блокировок и предотвращения бутлупа.
-echo.
-pause
-
-update.exe bulkcmd "store init"
-update.exe bulkcmd "setenv silent 0"
-update.exe bulkcmd "setenv lock 10000000"
-update.exe bulkcmd "setenv avb2 0"
-update.exe bulkcmd "saveenv"
-
-echo.
-echo ========================================================================
-echo   Готово! Переменные U-Boot сохранены (avb2=0, lock=10000000).
-echo   Снимите перемычку и перезагрузите колонку.
-echo ========================================================================
-echo.
-pause
+if not exist "update.exe" exit /b 2
+call :run "store init" || exit /b 1
+call :run "amlmmc enc" || exit /b 1
+call :run "setenv silent 0" || exit /b 1
+call :run "setenv lock 10000000" || exit /b 1
+call :run "setenv avb2 0" || exit /b 1
+call :run "saveenv" || exit /b 1
+exit /b 0
+:run
+set "logfile=%TEMP%\openstation-after-%RANDOM%-%RANDOM%.log"
+echo [after_ubt] %~1
+"%~dp0update.exe" bulkcmd "%~1" > "%logfile%" 2>&1
+set "rc=%ERRORLEVEL%"
+type "%logfile%"
+findstr /i /c:"ERR:" /c:"ERR(L" /c:"failed" /c:"can not find device" /c:"no [worldcup device]" /c:"fail to open file" "%logfile%" >nul
+if not errorlevel 1 set "rc=1"
+del /q "%logfile%" >nul 2>&1
+if not "%rc%"=="0" exit /b 1
+exit /b 0

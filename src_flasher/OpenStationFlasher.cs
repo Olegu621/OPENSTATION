@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "v1.5.3";
+        private const string FW_VERSION = "ЭКСПЕРИМЕНТАЛЬНАЯ";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -124,6 +124,7 @@ namespace OpenStationFlasher
             if (!string.IsNullOrEmpty(_toolsRoot))
                 AppendLog("Рабочая директория инструментов: " + _toolsRoot);
 
+            Closing += (s, e) => { if (_isBusy) { e.Cancel = true; MessageBox.Show("Дождитесь завершения текущей операции."); } };
             Closed += (s, e) => { _closing = true; };
             StartBackgroundPolling();
         }
@@ -449,7 +450,7 @@ namespace OpenStationFlasher
 
             centerStack.Children.Add(new TextBlock
             {
-                Text = "Автоматически проверит драйвер, скачает свежую прошивку с GitHub и прошьёт через yasta_flasher.",
+                Text = "Пробная сборка: загрузка прошивки на станции пока не подтверждена.",
                 FontSize = 11.5,
                 Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -755,18 +756,18 @@ namespace OpenStationFlasher
             if (s.UsbConnected)
             {
                 _statusDot.Fill = new SolidColorBrush(Color.FromRgb(52, 211, 153));
-                _txtHeroStatus.Text = "Станция подключена (USB Boot)";
-                _txtHeroSub.Text = "Обнаружено устройство Amlogic 1B8E:C003. Нажмите кнопку ниже, чтобы начать установку.";
+                _txtHeroStatus.Text = "Обнаружено устройство Amlogic";
+                _txtHeroSub.Text = "Убедитесь, что подключена именно Станция Макс. Модель по USB определить невозможно.";
                 _pillConnVal.Text = "USB Boot OK";
                 _pillConnBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 16, 185, 129));
             }
             else if (s.AdbConnected)
             {
-                _statusDot.Fill = new SolidColorBrush(Color.FromRgb(56, 189, 248));
-                _txtHeroStatus.Text = "Станция подключена по ADB (" + s.AdbSerial + ")";
-                _txtHeroSub.Text = "Нажмите кнопку — установщик переведёт станцию в сервисный режим и обновит прошивку.";
-                _pillConnVal.Text = "ADB: " + s.AdbSerial;
-                _pillConnBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 56, 189, 248));
+                _statusDot.Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11));
+                _txtHeroStatus.Text = "Нужно подключение по сервисному USB";
+                _txtHeroSub.Text = "Подключение по ADB не используется для этой пробной установки.";
+                _pillConnVal.Text = "Нужен USB";
+                _pillConnBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 245, 158, 11));
             }
             else
             {
@@ -949,75 +950,37 @@ namespace OpenStationFlasher
 
         private void RunFullInstallWorkflow(DeviceSnapshot snap)
         {
-            SetProgress(2, "Проверка инструментов...");
-            EnsureFlashToolsPresent();
-
-            string py = FindPythonExe();
-            if (string.IsNullOrEmpty(py))
-                throw new Exception("На ПК не найден Python 3. Установите Python 3.10+ с python.org (Add to PATH) и повторите.");
-
-            string pyPrefix = (py == "py") ? "-3 " : "";
-            string scriptPath = Path.Combine(_toolsRoot, "service_flash", "flash_service.py");
-
-            if (!snap.DriverOk)
-            {
-                SetProgress(5, "Установка драйвера WorldCup...");
-                RunPythonStream(py, pyPrefix + "\"" + scriptPath + "\" --install-driver");
-            }
-
-            // Re-check connection after driver install
-            snap = ProbeDeviceSnapshot();
-            Dispatcher.Invoke(() => ApplySnapshotToUi(snap));
-
-            if (!snap.UsbConnected && !snap.AdbConnected)
-            {
-                SetProgress(0, "");
-                Dispatcher.Invoke(() =>
-                {
-                    _progressCard.Visibility = Visibility.Collapsed;
-                    _statusDot.Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11));
-                    _txtHeroStatus.Text = "Станция всё ещё не обнаружена";
-                    _txtHeroSub.Text = "Драйвер проверен. Убедитесь, что кабель вставлен в сервисный Type-C (6-й пин на GND) и подано питание 19В, затем нажмите кнопку снова.";
-                });
-                AppendLog("Проверка завершена: станция не обнаружена ни в USB Boot (1B8E:C003), ни по ADB.");
-                return;
-            }
-
+            if (!snap.UsbConnected)
+                throw new Exception("Подключите Станцию Макс по сервисному USB и повторите попытку.");
             bool proceed = false;
             Dispatcher.Invoke(() =>
             {
-                string modeLabel = snap.UsbConnected
-                    ? "USB Boot (1B8E:C003)"
-                    : "ADB (" + snap.AdbSerial + ") -> автоматический переход в USB Burn";
-                var ans = MessageBox.Show(
-                    "Станция готова к установке (" + modeLabel + ").\n\n" +
-                    "Будет установлена актуальная прошивка OpenStation Max с разблокировкой загрузчика (silent=0, lock, avb2=0).\n\n" +
-                    "НЕ отключайте питание и кабель во время процесса. Продолжить?",
-                    "Подтверждение установки",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question
-                );
-                proceed = (ans == MessageBoxResult.Yes);
+                proceed = MessageBox.Show(
+                    "Это экспериментальная сборка: загрузка прошивки на Станции Макс не подтверждена.\n\n" +
+                    "Будут перезаписаны системные разделы. Подключайте только Станцию Макс; " +
+                    "убедитесь, что доступен проверенный способ восстановления. Продолжить?",
+                    "Пробная установка OpenStation", MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning) == MessageBoxResult.Yes;
             });
-
-            if (!proceed)
+            if (!proceed) { AppendLog("Установка отменена."); return; }
+            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                         "OpenStation", "experimental");
+            Directory.CreateDirectory(folder);
+            string engine = Path.Combine(folder, "OpenStationEngine.exe");
+            using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("OpenStationEngine"))
             {
-                AppendLog("Установка отменена пользователем после проверки подключения.");
-                Dispatcher.Invoke(() => { _progressCard.Visibility = Visibility.Collapsed; });
-                return;
+                if (source == null) throw new Exception("Внутренний модуль прошивки отсутствует.");
+                using (var dest = new FileStream(engine, FileMode.Create, FileAccess.Write, FileShare.None))
+                    source.CopyTo(dest);
             }
-
-            AppendLog("Запуск полной установки через yasta_flasher движок...");
-            int rc = RunPythonStream(py, pyPrefix + "\"" + scriptPath + "\" --flash");
-            if (rc != 0)
-                throw new Exception("Процесс прошивки завершился с ошибкой (код " + rc + "). Подробности в логе ниже.");
-
-            SetProgress(100, "Прошивка успешно установлена!");
-            Dispatcher.Invoke(() =>
-            {
+            AppendLog("Запуск встроенного модуля прошивки. Не отключайте питание и кабель.");
+            int rc = RunPythonStream(engine, "--flash");
+            if (rc != 0) throw new Exception("Операция остановлена (код " + rc + "). Сохраните журнал.");
+            SetProgress(100, "Запись и завершающие команды выполнены");
+            Dispatcher.Invoke(() => {
                 _statusDot.Fill = new SolidColorBrush(Color.FromRgb(52, 211, 153));
-                _txtHeroStatus.Text = "OpenStation Max успешно установлена!";
-                _txtHeroSub.Text = "Отключите сервисный кабель и перемычку GND, затем перезапустите питание станции.";
+                _txtHeroStatus.Text = "Запись завершена";
+                _txtHeroSub.Text = "Загрузка станции не проверена. Снимите перемычку и перезапустите питание.";
             });
         }
 
@@ -1027,7 +990,7 @@ namespace OpenStationFlasher
             {
                 FileName = exe,
                 Arguments = args,
-                WorkingDirectory = Path.Combine(_toolsRoot, "service_flash"),
+                WorkingDirectory = Path.GetDirectoryName(exe),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

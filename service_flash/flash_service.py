@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 import urllib.request
 import zipfile
 
@@ -344,6 +345,8 @@ def _update_output_failed(out: str, returncode: int) -> bool:
             "no [worldcup device]",
             "scan usb devices failed",
             "fail to open file",
+            "err:",
+            "failed",
         )
     )
 
@@ -770,153 +773,101 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
 
 
 def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) -> str:
-    """Fetch latest OpenStationMax-ROM-*.zip from GitHub Releases and verify SHA-256."""
-    emit("Поиск актуальной прошивки на GitHub (Olegu621/OPENSTATION)...")
-
-    def _get_json(url: str):
-        req = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/1.5"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-    try:
-        rel = _get_json(GITHUB_LATEST_API)
-        releases = [rel]
-    except Exception:
-        releases = []
-
-    def _find_rom(assets):
-        for a in assets or []:
-            nm = str(a.get("name", ""))
-            if nm.startswith("OpenStationMax-ROM-") and nm.endswith(".zip"):
-                return a
-        return None
-
-    tag = releases[0].get("tag_name", "latest") if releases else "latest"
-    rom_asset = _find_rom(releases[0].get("assets", []) if releases else [])
-    if not rom_asset:
-        # A release may ship only the fixed flasher tools (e.g. v1.5.2 while
-        # the ROM itself is still v1.5.1). Look through older releases too.
-        try:
-            for rel_item in _get_json(f"https://api.github.com/repos/{GITHUB_REPO}/releases"):
-                found = _find_rom(rel_item.get("assets", []))
-                if found:
-                    tag = rel_item.get("tag_name", tag)
-                    rom_asset = found
-                    break
-        except Exception:
-            pass
-    if not rom_asset:
-        raise RuntimeError(f"В релизе {tag} не найден архив OpenStationMax-ROM-*.zip")
-
-    asset_name = rom_asset["name"]
-    asset_url = rom_asset["browser_download_url"]
-    asset_size = int(rom_asset.get("size", 0))
-
+    """Download the pinned v1.5.1 release and verify it before extraction."""
+    name = "OpenStationMax-ROM-v1.5.1.zip"
+    url = "https://github.com/Olegu621/OPENSTATION/releases/download/v1.5.1/" + name
+    expected = "57e8273af5d28e96ab79ca3a4d82eec0a730174ece23a2959427f5675d1a20b5"
+    expected_size = 760870540
     os.makedirs(dest_cache, exist_ok=True)
-    extract_dir = os.path.join(dest_cache, f"rom_{tag}")
-    manifest_path = os.path.join(extract_dir, "rom_manifest.json")
-    if (
-        os.path.isfile(manifest_path)
-        and all(os.path.isfile(os.path.join(extract_dir, x)) for x in ("vbmeta.img", "vendor.img", "system.img"))
-    ):
-        emit(f"[OK] Актуальная прошивка {tag} уже загружена локально.")
+    extract_dir = os.path.join(dest_cache, "rom_v1.5.1_verified")
+    try:
+        verify_rom(extract_dir)
         return extract_dir
-
-    zip_path = os.path.join(dest_cache, asset_name)
-    part_path = zip_path + ".part"
-    emit(f"Загрузка {asset_name} ({asset_size / (1024*1024):.1f} МБ)...")
-
-    dl_req = urllib.request.Request(asset_url, headers={"User-Agent": "OpenStationFlasher/1.5"})
-    with urllib.request.urlopen(dl_req, timeout=60) as r, open(part_path, "wb") as f:
-        downloaded = 0
-        last_pct = -1
+    except (OSError, RuntimeError):
+        pass
+    part = os.path.join(dest_cache, name + ".part")
+    digest = hashlib.sha256()
+    request = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/experimental"})
+    downloaded = 0
+    with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as output:
         while True:
-            chunk = r.read(262144)
-            if not chunk:
+            block = response.read(1024 * 1024)
+            if not block:
                 break
-            f.write(chunk)
-            downloaded += len(chunk)
-            if asset_size > 0:
-                p = int((downloaded * span_pct) / asset_size)
-                if p != last_pct:
-                    last_pct = p
-                    emit_progress(base_pct + p, f"Загрузка {asset_name} ({downloaded // (1024*1024)}/{asset_size // (1024*1024)} МБ)")
-    os.replace(part_path, zip_path)
-
-    emit("Распаковка и проверка контрольных сумм ROM...")
+            downloaded += len(block)
+            if downloaded > expected_size:
+                raise RuntimeError("Архив больше ожидаемого размера")
+            digest.update(block)
+            output.write(block)
+            emit_progress(base_pct + int(downloaded * span_pct / expected_size),
+                          f"Загрузка прошивки: {downloaded // (1024*1024)} из {expected_size // (1024*1024)} МБ")
+    if downloaded != expected_size or digest.hexdigest() != expected:
+        raise RuntimeError("Контрольная сумма архива прошивки не совпала")
     os.makedirs(extract_dir, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(extract_dir)
-
-    if os.path.isfile(manifest_path):
-        with open(manifest_path, "r", encoding="utf-8") as mf:
-            man = json.load(mf)
-        files_map = man.get("files") if isinstance(man.get("files"), dict) else (
-            man.get("partitions") if isinstance(man.get("partitions"), dict) else {}
-        )
-        for part_key, meta in files_map.items():
-            if not isinstance(meta, dict):
-                continue
-            img_name = str(meta.get("fileName") or part_key)
-            fp = os.path.join(extract_dir, img_name)
-            expected_sha = str(meta.get("sha256", "")).lower()
-            if os.path.isfile(fp) and expected_sha:
-                h = hashlib.sha256()
-                with open(fp, "rb") as hf:
-                    for b in iter(lambda: hf.read(1048576), b""):
-                        h.update(b)
-                if h.hexdigest().lower() != expected_sha:
-                    raise RuntimeError(f"Повреждён файл {img_name}: несовпадение SHA-256")
-    emit(f"[OK] Прошивка {tag} проверена и готова к установке.")
+    with zipfile.ZipFile(part) as archive:
+        for filename in ROM_FILES:
+            entry = archive.getinfo(filename)
+            if entry.file_size != ROM_FILES[filename][0]:
+                raise RuntimeError(f"Неверный размер {filename} в архиве")
+            with archive.open(entry) as source, open(os.path.join(extract_dir, filename), "wb") as output:
+                shutil.copyfileobj(source, output, 1024 * 1024)
+    verify_rom(extract_dir)
+    os.remove(part)
     return extract_dir
 
 
 def flash_partition(name: str, img_path: str, pct_start: int, pct_end: int) -> None:
     update = get_update_exe()
-    size_mb = os.path.getsize(img_path) / (1024 * 1024)
-    emit(f"Запись раздела {name} ({size_mb:.1f} МБ)...")
-    p = subprocess.Popen(
-        [update, "partition", name, img_path],
-        cwd=SCRIPT_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=False,
-        bufsize=0,
-        **hidden_subprocess_kwargs(),
-    )
-    buf = b""
-    last_sub_pct = -1
-    while True:
-        chunk = p.stdout.read(256)
-        if chunk:
-            buf += chunk
+    emit(f"Запись раздела {name} ({os.path.getsize(img_path) / (1024 * 1024):.1f} МБ)...")
+    process = subprocess.Popen([update, "partition", name, img_path], cwd=SCRIPT_DIR,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               bufsize=0, **hidden_subprocess_kwargs())
+    errors = []
+
+    def read_output():
+        pending = b""
+        last = -1
+        try:
             while True:
-                idx_n = buf.find(b"\n")
-                idx_r = buf.find(b"\r")
-                if idx_n < 0 and idx_r < 0:
+                chunk = process.stdout.read(256)
+                if not chunk:
                     break
-                if idx_n < 0 or (0 <= idx_r < idx_n):
-                    sep_idx, is_cr = idx_r, True
-                else:
-                    sep_idx, is_cr = idx_n, False
-                seg = buf[:sep_idx]
-                buf = buf[sep_idx + 1 :]
-                line = safe_decode(seg).strip()
-                if not line:
-                    continue
-                m = re.findall(r"(\d{1,3})%", line)
-                if m:
-                    sub = min(100, int(m[-1]))
-                    if sub != last_sub_pct:
-                        last_sub_pct = sub
-                        overall = pct_start + int((pct_end - pct_start) * (sub / 100.0))
-                        emit_progress(overall, f"Прошивка {name}.img — {sub}%")
-                if not is_cr:
-                    emit(f"  [USB] {line}")
-        if p.poll() is not None:
-            break
-    if p.returncode != 0:
-        raise RuntimeError(f"Ошибка записи раздела {name} (код {p.returncode})")
+                pending += chunk
+                while b"\n" in pending or b"\r" in pending:
+                    match = re.search(b"[\r\n]", pending)
+                    raw, pending = pending[:match.start()], pending[match.end():]
+                    line = safe_decode(raw).strip()
+                    if not line:
+                        continue
+                    if _update_output_failed(line, 0):
+                        errors.append(line)
+                    progress = re.findall(r"(\d{1,3})%", line)
+                    if progress and min(100, int(progress[-1])) != last:
+                        last = min(100, int(progress[-1]))
+                        emit_progress(pct_start + int((pct_end - pct_start) * last / 100),
+                                      f"Запись {name}: {last}%")
+                    else:
+                        emit("  [USB] " + line)
+            if pending and _update_output_failed(safe_decode(pending), 0):
+                errors.append(safe_decode(pending))
+        except Exception as exc:
+            errors.append(str(exc))
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    try:
+        code = process.wait(timeout=2700)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        reader.join(timeout=5)
+        process.stdout.close()
+        raise RuntimeError(f"Время записи {name} истекло; состояние станции неизвестно")
+    reader.join(timeout=10)
+    if not reader.is_alive():
+        process.stdout.close()
+    if reader.is_alive() or code != 0 or errors:
+        raise RuntimeError(f"Ошибка записи {name} (код {code}): {'; '.join(errors)[:300]}")
     emit_progress(pct_end, f"Раздел {name} записан")
 
 
@@ -956,6 +907,47 @@ def wait_for_usb_or_adb_reboot() -> None:
     )
 
 
+ROM_FILES = {
+    "vbmeta.img": (2097152, "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"),
+    "vendor.img": (536870912, "9ee367d61541e7dd237474d5a3d217496192014605e6f34ad08dd8592ac5d420"),
+    "system.img": (1551892480, "25e861a7eb86cfc269f9334b92f1373a030e9c08bd39e4ea1fe203a8cb0f33f9"),
+}
+
+
+def verify_rom(rom_dir):
+    for name, (size, expected) in ROM_FILES.items():
+        path = os.path.join(rom_dir, name)
+        if not os.path.isfile(path) or os.path.getsize(path) != size:
+            raise RuntimeError(f"Неверный размер или отсутствует {name}; запись не начата")
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != expected:
+            raise RuntimeError(f"Не совпадает SHA-256 {name}; запись не начата")
+
+
+def run_after_ubt():
+    batch = os.path.join(SCRIPT_DIR, "after_ubt.bat")
+    if not os.path.isfile(batch):
+        raise RuntimeError("Не найден обязательный after_ubt.bat")
+    process = subprocess.Popen(["cmd.exe", "/d", "/c", "after_ubt.bat"],
+                               cwd=SCRIPT_DIR, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, **hidden_subprocess_kwargs())
+    try:
+        output, _ = process.communicate(timeout=180)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       **hidden_subprocess_kwargs())
+        process.communicate()
+        raise RuntimeError("after_ubt.bat не завершился вовремя; состояние станции неизвестно")
+    if output:
+        emit(safe_decode(output))
+    if process.returncode != 0:
+        raise RuntimeError("Ошибка after_ubt.bat: код %s" % process.returncode)
+
+
 def run_flash(args):
     emit_progress(2, "Проверка подключения и драйвера...")
     if not check_worldcup_driver():
@@ -966,62 +958,39 @@ def run_flash(args):
 
     emit_progress(6, "Подготовка актуальной прошивки...")
     rom_dir = args.rom_dir or ""
-    if not rom_dir or not os.path.isdir(rom_dir):
-        local_dir, _ = find_local_rom_dir()
-        if local_dir and not args.download_latest:
-            rom_dir = local_dir
-        else:
-            cache_dir = os.path.join(
-                os.environ.get("LOCALAPPDATA", SCRIPT_DIR),
-                "OpenStation",
-                "rom_cache",
-            )
-            rom_dir = download_latest_rom(cache_dir, base_pct=6, span_pct=18)
+    if rom_dir and not os.path.isdir(rom_dir):
+        raise FileNotFoundError("Указанная папка прошивки не существует")
+    if not rom_dir:
+        cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", SCRIPT_DIR),
+                                 "OpenStation", "rom_cache")
+        rom_dir = download_latest_rom(cache_dir, base_pct=6, span_pct=18)
 
     for req in ("vbmeta.img", "vendor.img", "system.img"):
         fp = os.path.join(rom_dir, req)
         if not os.path.isfile(fp):
             raise FileNotFoundError(f"В папке ROM отсутствует обязательный образ: {req}")
 
-    emit_progress(25, "Поиск станции...")
-    wait_for_usb_or_adb_reboot()
+    emit_progress(24, "Проверка контрольных сумм прошивки...")
+    verify_rom(rom_dir)
 
-    emit_progress(28, "Загрузка временного U-Boot...")
-    if not boot_uboot_via_yasta(revision=args.revision):
-        raise RuntimeError(
-            "Не удалось инициализировать U-Boot через USB Boot. "
-            "Отключите кабель, снимите питание 19В на 5 сек и повторите."
-        )
+    emit_progress(25, "Поиск станции...")
+
+    emit_progress(28, "Проверка ответа станции...")
+    if not is_uboot_alive(timeout=8):
+        raise RuntimeError("Устройство не отвечает на команды update.exe. Запись не начата.")
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
-    apply_unlock_minimum()
-
-    logo_img = os.path.join(rom_dir, "logo.img")
-    if os.path.isfile(logo_img):
-        flash_partition("logo", logo_img, 36, 38)
 
     flash_partition("vbmeta", os.path.join(rom_dir, "vbmeta.img"), 38, 41)
     flash_partition("vendor", os.path.join(rom_dir, "vendor.img"), 41, 52)
     flash_partition("system", os.path.join(rom_dir, "system.img"), 52, 92)
 
-    misc_img = os.path.join(rom_dir, "misc.img")
-    if os.path.isfile(misc_img):
-        flash_partition("misc", misc_img, 92, 94)
+    emit_progress(95, "Обязательный завершающий этап after_ubt...")
+    run_after_ubt()
 
-    if not args.keep_data:
-        emit_progress(95, "Очистка пользовательских разделов data/cache/misc...")
-        for part in ("data", "cache", "misc"):
-            aml_bulkcmd(f"amlmmc erase {part}", ignore_error=True)
-
-    emit_progress(98, "Перезагрузка станции...")
-    try:
-        aml_bulkcmd("reset", timeout=4, ignore_error=True)
-    except Exception:
-        pass
-
-    emit_progress(100, "Готово! Отключите перемычку и кабель.")
-    emit("[DONE] Прошивка OpenStation Max успешно установлена!")
+    emit_progress(100, "Запись и завершающие команды выполнены")
+    emit("[DONE] Команды выполнены. Загрузка станции ещё не проверена.")
 
 
 def main():
