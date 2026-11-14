@@ -1,40 +1,40 @@
 {
-    "name":  "OpenStation Max",
-    "device":  "yandexstation_2",
-    "version":  "1.5.1",
-    "autonomous":  true,
-    "changelog":  "OpenStation Max v1.5.1: исправлен OTA-переход с v1.3.x при смене подписи APK (автовосстановление OpenStationLauncher/IME) и полностью переработан USB-загрузчик в установщике (изолированные процессы, нативный update.exe bl2_boot, поддержка libusb0/WinUSB и автообновление утилит).",
-    "buildTimeUtc":  "2026-11-13T12:14:12Z",
-    "files":  {
-                  "daemon":  {
-                                 "fileName":  "openstationd",
-                                 "size":  2489672,
-                                 "sha256":  "29506a2aca034ddcfbd47b742ca45ad4450c6e071959beeb66cc8f92edacc629"
-                             },
-                  "bootlogod":  {
-                                    "fileName":  "bootlogod",
-                                    "size":  657728,
-                                    "sha256":  "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
-                                },
-                  "launcher":  {
-                                   "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4619190,
-                                   "sha256":  "0c3bf5e76f54dbe63cb7e3f13d5a7f3253d00e51cae0c50df53eb5d103b9c4c1"
-                               },
-                  "ime":  {
-                              "fileName":  "OpenStationIME.apk",
-                              "size":  808866,
-                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
-                          },
-                  "bootanimation":  {
-                                        "fileName":  "bootanimation.zip",
-                                        "size":  6725707,
-                                        "sha256":  "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
-                                    },
-                  "bootlogo":  {
-                                   "fileName":  "logo.img",
-                                   "size":  2252608,
-                                   "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
-                               }
-              }
+  "name": "OpenStation Max",
+  "device": "yandexstation_2",
+  "version": "1.5.5",
+  "autonomous": true,
+  "changelog": "Исправления пульта, Алисы, Яндекс Музыки, обновления и стабильности.",
+  "buildTimeUtc": "2026-11-14T14:14:44Z",
+  "files": {
+    "daemon": {
+      "fileName": "openstationd",
+      "size": 2500280,
+      "sha256": "67018944a329784fa121b382ae7db85df1b8195ca6c268119ac2f7657b5ba7ab"
+    },
+    "bootlogod": {
+      "fileName": "bootlogod",
+      "size": 657728,
+      "sha256": "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
+    },
+    "launcher": {
+      "fileName": "OpenStationLauncher.apk",
+      "size": 4630862,
+      "sha256": "bff1b4d6b2c59f8e6d70646f57522d35d796c0a731c3856270fbe673117724e0"
+    },
+    "ime": {
+      "fileName": "OpenStationIME.apk",
+      "size": 808866,
+      "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
+    },
+    "bootanimation": {
+      "fileName": "bootanimation.zip",
+      "size": 6725707,
+      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
+    },
+    "bootlogo": {
+      "fileName": "logo.img",
+      "size": 2252608,
+      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
+    }
+  }
 }

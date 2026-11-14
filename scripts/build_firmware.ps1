@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.5.3",
-    [string]$Changelog = "OpenStation Max v1.5.1: исправлен OTA-переход с v1.3.x при смене подписи APK (автовосстановление OpenStationLauncher/IME) и полностью переработан USB-загрузчик в установщике (изолированные процессы, нативный update.exe bl2_boot, поддержка libusb0/WinUSB и автообновление утилит).",
+    [string]$Version = "1.5.5",
+    [string]$Changelog = "Исправления пульта, Алисы, Яндекс Музыки, обновления и стабильности.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
