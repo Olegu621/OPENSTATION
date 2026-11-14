@@ -236,13 +236,13 @@ object QrGenerator {
         val fmt = ((data shl 10) or d) xor 0b101010000010010
         for (i in 0..14) {
             val bit = (fmt ushr i) and 1
-            // Around top-left
+            // Bits 0..7 go down column 8; bits 8..14 go left along row 8.
             when {
-                i < 6 -> g[8][i] = bit
-                i == 6 -> g[8][7] = bit
+                i < 6 -> g[i][8] = bit
+                i == 6 -> g[7][8] = bit
                 i == 7 -> g[8][8] = bit
-                i == 8 -> g[7][8] = bit
-                else -> g[14 - i][8] = bit
+                i == 8 -> g[8][7] = bit
+                else -> g[8][14 - i] = bit
             }
             // Top-right & bottom-left
             if (i < 8) {
