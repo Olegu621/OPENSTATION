@@ -646,10 +646,16 @@ bool DaemonConfig::save() const {
     }
     std::string body = to_json().dump(2) + "\n";
     size_t written = fwrite(body.data(), 1, body.size(), fp);
-    fflush(fp);
+    // Buffered write errors (e.g. ENOSPC) only surface at fflush/fclose; never rename a truncated file over the good config.
+    bool ok = (written == body.size());
+    if (fflush(fp) != 0) ok = false;
     fsync(fileno(fp));
-    fclose(fp);
-    if (written != body.size()) return false;
+    if (fclose(fp) != 0) ok = false;
+    if (!ok) {
+        LOGE("Config", "Failed to write %s: %s", tmp.c_str(), strerror(errno));
+        unlink(tmp.c_str());
+        return false;
+    }
     if (rename(tmp.c_str(), path.c_str()) != 0) {
         LOGE("Config", "Failed to rename %s -> %s: %s", tmp.c_str(), path.c_str(), strerror(errno));
         return false;

@@ -88,6 +88,8 @@ function Test-HasBuildToolchain {
 }
 
 function Get-ConnectedAdbDevices {
+    # Local EAP: adb prints "* daemon started" to stderr; under "Stop" PS 5.1 would abort on it
+    $ErrorActionPreference = "Continue"
     $raw = (& $AdbPath devices 2>$null) -split "\r?\n"
     $list = New-Object System.Collections.Generic.List[object]
     foreach ($ln in $raw) {

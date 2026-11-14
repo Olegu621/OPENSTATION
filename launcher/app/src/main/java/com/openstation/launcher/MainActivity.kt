@@ -2243,6 +2243,8 @@ class MainActivity : Activity() {
         val prevPage = currentPage
         currentPage = clamped
 
+        // Drop the old end-listener first: cancel() would fire it and snap to the new page mid-slide
+        pageAnimator?.removeAllListeners()
         pageAnimator?.cancel()
         updateTabsAppearance()
 

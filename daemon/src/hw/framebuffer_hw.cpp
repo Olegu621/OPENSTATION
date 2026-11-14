@@ -728,7 +728,7 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
         bl = std::clamp(target_bl, min_bl, max_bl);
     }
     eff_brightness_.store(bl);
-    if (std::abs(bl - last_fb4_bl_) >= 2 && fb4_.fd >= 0) {
+    if ((last_fb4_bl_ < 0 || std::abs(bl - last_fb4_bl_) >= 2) && fb4_.fd >= 0) {
         write_backlight(fb4_.bl_path, bl, fb4_max_bl_);
         last_fb4_bl_ = bl;
     }
@@ -1039,7 +1039,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         bl < std::max(1, max_bl / 3)) {
         bl = std::max(1, max_bl / 3);
     }
-    if (std::abs(bl - last_fb5_bl_) >= 2) {
+    if (last_fb5_bl_ < 0 || std::abs(bl - last_fb5_bl_) >= 2) {
         write_backlight(fb5_.bl_path, bl, max_bl);
         last_fb5_bl_ = bl;
     }

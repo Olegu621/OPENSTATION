@@ -501,7 +501,8 @@ ShellResult run_argv_with_timeout(const std::vector<std::string>& args, int time
         return sr;
     }
     int pipefd[2] = {-1, -1};
-    if (pipe(pipefd) != 0) {
+    // O_CLOEXEC: children forked concurrently by other threads must not inherit the write end (would delay EOF).
+    if (pipe2(pipefd, O_CLOEXEC) != 0) {
         sr.output = std::string("pipe() failed: ") + strerror(errno);
         return sr;
     }
@@ -1733,10 +1734,15 @@ int main(int argc, char** argv) {
         }
     });
 
-    // Apply loaded hardware configuration right away
+    // Apply loaded hardware configuration right away (snapshot: input/geo threads may already mutate cfg)
     {
         std::lock_guard<std::mutex> apply_lk(config_apply_mu);
-        apply_hw_config(cfg, inputs.headphone_plugged());
+        DaemonConfig boot_cfg;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            boot_cfg = cfg;
+        }
+        apply_hw_config(boot_cfg, inputs.headphone_plugged());
     }
 
     std::thread geo_thread([&]() {
@@ -3423,10 +3429,15 @@ int main(int argc, char** argv) {
         res["error"] = Value::make_str("unknown tool");
         return res;
     };
-    assistant.start(cfg.assistant, std::move(acb));
+    DaemonConfig start_cfg;
+    {
+        std::lock_guard<std::mutex> lk(cfg_mu);
+        start_cfg = cfg;
+    }
+    assistant.start(start_cfg.assistant, std::move(acb));
 
     wyoming.start(
-        cfg.wyoming,
+        start_cfg.wyoming,
         [&](const int16_t* samples, size_t frames, int rate, int ch) {
             audio.play_pcm(samples, frames, rate, ch);
         },
@@ -3445,7 +3456,7 @@ int main(int argc, char** argv) {
     });
 
     audio.start(
-        cfg.audio,
+        start_cfg.audio,
         [&](const int16_t* pcm, size_t count, float rms) {
             DaemonConfig c_snap;
             {
@@ -3467,12 +3478,12 @@ int main(int argc, char** argv) {
         http.broadcast_ws_audio(pcm, samples);
     });
 
-    mdns.start(cfg.device_hostname, cfg.web_port, cfg.wyoming.port);
-    adb_mgr.start(cfg.network, cfg.device_hostname, [&](int adb_port) {
+    mdns.start(start_cfg.device_hostname, start_cfg.web_port, start_cfg.wyoming.port);
+    adb_mgr.start(start_cfg.network, start_cfg.device_hostname, [&](int adb_port) {
         mdns.update_adb_port(adb_port);
     });
 
-    mqtt.start(cfg.mqtt, [&](const std::string& topic_suffix, const std::string& payload) {
+    mqtt.start(start_cfg.mqtt, [&](const std::string& topic_suffix, const std::string& payload) {
         DaemonConfig next_c;
         bool dirty = false;
         {
@@ -3613,7 +3624,7 @@ int main(int argc, char** argv) {
     });
 
     http.start(
-        cfg.web_port,
+        start_cfg.web_port,
         [&](const HttpRequest& req) -> HttpResponse {
             if (req.method == "GET" && req.path == "/api/status") {
                 return HttpResponse::json(build_status_json().dump(-1));
@@ -4766,7 +4777,11 @@ int main(int argc, char** argv) {
             }
         });
 
-    ota.start(kFirmwareVersion, cfg.ota, [&](const json::Value& st) {
+    {
+        std::lock_guard<std::mutex> lk(cfg_mu);
+        start_cfg = cfg;
+    }
+    ota.start(kFirmwareVersion, start_cfg.ota, [&](const json::Value& st) {
         if (http.ws_client_count() > 0) {
             json::Value msg = json::Value::make_obj();
             msg["type"] = json::Value::make_str("ota");

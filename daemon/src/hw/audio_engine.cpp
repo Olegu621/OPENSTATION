@@ -231,7 +231,11 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
 }
 
 void AudioEngine::stop() {
-    running_.store(false);
+    {
+        // Under play_mu_ so playback_loop cannot miss the wakeup between its predicate check and wait.
+        std::lock_guard<std::mutex> lk(play_mu_);
+        running_.store(false);
+    }
     play_cv_.notify_all();
     if (cap_thread_.joinable()) cap_thread_.join();
     if (play_thread_.joinable()) play_thread_.join();
@@ -370,6 +374,8 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
                 mic_f = samp[0];
             } else if (cfg_copy.primary_mic_channel >= 0 && cfg_copy.primary_mic_channel < tracked_ch) {
                 mic_f = samp[cfg_copy.primary_mic_channel];
+            } else if (tracked_ch < 7) {
+                mic_f = samp[0]; // beamformer below reads channels 0..6
             } else {
                 // Adaptive Coherent Beamformer:
                 // 70% direct best-microphone (zero phase smear, preserving clear dental/fricative consonants)
