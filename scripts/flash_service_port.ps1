@@ -30,6 +30,11 @@ $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $PSScriptRoot
 $ServiceFlashDir = Join-Path $RootDir "service_flash"
 
+if ($AfterUbt) {
+    & (Join-Path $ServiceFlashDir "after_ubt.bat")
+    exit $LASTEXITCODE
+}
+
 $MaxPartitionBytes = @{
     "vbmeta.img" = [int64]2097152
     "vendor.img" = [int64]536870912
@@ -482,7 +487,6 @@ if (-not $ubootReady) {
     if (-not $ubootReady) {
         throw "Не удалось инициализировать Amlogic USB Boot (1B8E:C003).`n`nВозможные причины:`n1) Станция не переведена в BootROM (проверьте перемычку пина 6 на пин 3 GND);`n2) Нет питания 19V или кабель Type-C не передает данные (нужны D+, D-, GND);`n3) Драйвер WorldCup Device не установлен в Диспетчере устройств Windows.`n`nЛог boot-g12.py:`n$bootOut"
     }
-}
 
     Write-Host "  Ожидание переподключения USB-интерфейса WorldCup Update..." -ForegroundColor Gray
     Start-Sleep -Seconds 3
@@ -516,42 +520,6 @@ if ($KeepData -or $SkipWipe) {
     $DoWipeData = (-not $ansWipe) -or ($ansWipe -match '^[YyДд]')
 }
 
-if ($AfterUbt) {
-    Write-Host "[*] Режим 'After UBT': применение параметров U-Boot для предотвращения бутлупа..." -ForegroundColor Yellow
-
-    # Выбор подходящего misc.img для ревизии
-    $miscCands = if ($Revision -eq "00053") {
-        @(Join-Path $ServiceFlashDir "misc_00053.img", Join-Path $RepoRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc.img")
-    } else {
-        @(Join-Path $ServiceFlashDir "misc.img", Join-Path $RepoRomDir "misc.img", Join-Path $ServiceFlashDir "misc_00053.img")
-    }
-    $targetMisc = $miscCands | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if ($targetMisc) {
-        Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
-        Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов"
-        Invoke-UpdateExe @("mwrite", $targetMisc, "store", "misc", "normal") "Запись misc (uboot-command: отключение AVB / permissive bootargs)"
-    }
-
-    $afterUbtCmds = @(
-        "store init",
-        "setenv silent 0",
-        "setenv lock 10000000",
-        "setenv avb2 0",
-        "saveenv"
-    )
-    foreach ($cmd in $afterUbtCmds) {
-        Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
-    }
-    Write-Host ""
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "  НАСТРОЙКИ AFTER UBT ПРИМЕНЕНЫ УСПЕШНО!" -ForegroundColor Green
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "  1) Снимите перемычку с 6 пина." -ForegroundColor Yellow
-    Write-Host "  2) Переподключите питание 19V станции." -ForegroundColor Gray
-    exit 0
-}
-
 Write-Host "[3/4] Прошивка системных разделов OpenStation Max..." -ForegroundColor Yellow
 Write-Host "[!] Запись разделов не имеет автоматического rollback. Не отключайте питание." -ForegroundColor Red
 
@@ -583,17 +551,9 @@ if ($DoWipeData) {
     Write-Host "[4/4] Завершение (/data сохранён)..." -ForegroundColor Yellow
 }
 
-Write-Host "  -> Финализация U-Boot (After UBT: снятие lock=10000000, avb2=0, silent=0, saveenv)..." -ForegroundColor Yellow
-$afterUbtCmds = @(
-    "store init",
-    "setenv silent 0",
-    "setenv lock 10000000",
-    "setenv avb2 0",
-    "saveenv"
-)
-foreach ($cmd in $afterUbtCmds) {
-    Invoke-UpdateExe @("bulkcmd", $cmd) "U-Boot: $cmd"
-}
+Write-Host "  -> Завершающие команды after_ubt..." -ForegroundColor Yellow
+& (Join-Path $ServiceFlashDir "after_ubt.bat")
+if ($LASTEXITCODE -ne 0) { throw "Не все завершающие команды after_ubt выполнены (код $LASTEXITCODE)." }
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
