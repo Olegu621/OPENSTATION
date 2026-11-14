@@ -1697,7 +1697,7 @@ void OtaManager::run_install_sync(bool force) {
     std::string script;
     script += "#!/system/bin/sh\n";
     script += "exec >/data/local/openstation/ota.log 2>&1\n";
-    script += "echo \"=== OpenStation OTA Apply v" + target_ver + " ===\"\n";
+    script += "echo " + escape_sh_single("=== OpenStation OTA Apply v" + target_ver + " ===") + "\n";
     script += "sleep 1\n";
     script += "killall openstationd 2>/dev/null || true\n";
     script += "i=0\n";
