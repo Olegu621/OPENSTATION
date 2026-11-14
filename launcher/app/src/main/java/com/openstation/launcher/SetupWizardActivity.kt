@@ -1539,7 +1539,7 @@ class SetupWizardActivity : Activity() {
             handler.postDelayed({ StationAudioService.instance?.bleRemoteManager?.let { startRemoteAutoPair() } }, 1000L)
             return
         }
-        mgr.startAutoScanAndPair(20000L) { st, detail ->
+        mgr.startAutoScanAndPair(60000L) { st, detail ->
             handler.post {
                 if (::tvStep1RemoteStatus.isInitialized) {
                     val col = when (st) {

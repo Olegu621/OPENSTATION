@@ -36,7 +36,6 @@ class BleRemoteManager(private val context: Context) {
         private val UUID_IMMEDIATE_ALERT = UUID.fromString("00001802-0000-1000-8000-00805f9b34fb")
         private val UUID_ALERT_LEVEL = UUID.fromString("00002a06-0000-1000-8000-00805f9b34fb")
         private val UUID_LINK_LOSS = UUID.fromString("00001803-0000-1000-8000-00805f9b34fb")
-        private val UUID_HID_SERVICE = UUID.fromString("00001812-0000-1000-8000-00805f9b34fb")
         private val UUID_BATTERY_SERVICE = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
         private val UUID_BATTERY_LEVEL = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
     }
@@ -62,13 +61,7 @@ class BleRemoteManager(private val context: Context) {
     }
 
     fun isYandexRemoteName(name: String?): Boolean {
-        if (name.isNullOrBlank()) return false
-        val up = name.uppercase()
-        return up.contains("YNDX") ||
-            up.contains("YDX") ||
-            up.contains("YANDEX") ||
-            up.contains("0006") ||
-            (up.contains("REMOTE") && !up.contains("TV"))
+        return RemoteIdentity.isYandexRemoteName(name)
     }
 
     fun getRemoteStatus(): RemoteStatus {
@@ -155,8 +148,16 @@ class BleRemoteManager(private val context: Context) {
     }
 
     fun startAutoScanAndPair(
-        durationMs: Long = 20000L,
+        durationMs: Long = 60000L,
         onStatus: (state: String, detail: String) -> Unit
+    ) {
+        startAutoScanAndPairInternal(durationMs, onStatus, 0)
+    }
+
+    private fun startAutoScanAndPairInternal(
+        durationMs: Long,
+        onStatus: (state: String, detail: String) -> Unit,
+        enableAttempts: Int
     ) {
         handler.post {
             try {
@@ -173,10 +174,17 @@ class BleRemoteManager(private val context: Context) {
                     return@post
                 }
                 if (!adapter.isEnabled) {
-                    adapter.enable()
+                    if (enableAttempts >= 10) {
+                        onStatus("error", "Bluetooth не включился. Проверьте настройки и повторите поиск.")
+                        return@post
+                    }
+                    if (enableAttempts == 0 && adapter.state != BluetoothAdapter.STATE_TURNING_ON && !adapter.enable()) {
+                        onStatus("error", "Не удалось включить Bluetooth для поиска пульта.")
+                        return@post
+                    }
                     onStatus("searching", "Включаю Bluetooth для поиска пульта...")
                     handler.postDelayed({
-                        startAutoScanAndPair(durationMs, onStatus)
+                        startAutoScanAndPairInternal(durationMs, onStatus, enableAttempts + 1)
                     }, 1200L)
                     return@post
                 }
@@ -185,8 +193,8 @@ class BleRemoteManager(private val context: Context) {
                 findTargetDevice()?.let { dev ->
                     if (dev.bondState == BluetoothDevice.BOND_BONDED) {
                         onStatus("pairing", "Пробуждаю сопряжённый пульт ${dev.name ?: "Yandex"}...")
-                        connectAndProbeGatt(dev, buzz = false) { ok, msg ->
-                            if (ok) onStatus("connected", msg) else startLeScanInternal(adapter, durationMs, onStatus)
+                        connectAndProbeGatt(dev, buzz = false) { ok, _ ->
+                            if (ok) onStatus("paired", "Пульт сопряжён. Проверьте работу кнопок.") else startLeScanInternal(adapter, durationMs, onStatus)
                         }
                         return@post
                     }
@@ -213,20 +221,19 @@ class BleRemoteManager(private val context: Context) {
         }
 
         scanning.set(true)
-        onStatus("searching", "Ищу пульт YNDX рядом... (можно зажать OK + Домой на 3 сек)")
+        onStatus("searching", "Ищу пульт. Удерживайте «Домой» и «−» до включения подсветки.")
 
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult?) {
                 val dev = result?.device ?: return
                 val name = dev.name ?: result.scanRecord?.deviceName ?: ""
-                val hasHid = result.scanRecord?.serviceUuids?.any { it.uuid == UUID_HID_SERVICE } == true
-                if (!isYandexRemoteName(name) && !(hasHid && name.isNotBlank())) return
+                val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
+                if (!isYandexRemoteName(name) && (savedMac.isEmpty() || dev.address != savedMac)) return
 
                 if (!scanning.compareAndSet(true, false)) return
                 stopScan()
                 val label = name.ifBlank { "Yandex Remote" }
                 Log.i(TAG, "Discovered BLE remote: $label [${dev.address}]")
-                prefs.edit().putString(KEY_REMOTE_MAC, dev.address).putString(KEY_REMOTE_NAME, label).apply()
                 onStatus("found", "Найден пульт $label (${dev.address}), подключаю...")
                 bondAndConnect(dev, label, onStatus)
             }
@@ -255,11 +262,11 @@ class BleRemoteManager(private val context: Context) {
         val timeout = Runnable {
             if (scanning.compareAndSet(true, false)) {
                 stopScan()
-                onStatus("not_found", "Пульт не откликнулся. Зажмите на пульте «Назад» + «Домой» (или Поиск) для режима пары.")
+                onStatus("not_found", "Пульт не найден. Удерживайте «Домой» и «−» до включения подсветки и повторите поиск.")
             }
         }
         scanTimeoutRunnable = timeout
-        handler.postDelayed(timeout, durationMs.coerceIn(5000L, 45000L))
+        handler.postDelayed(timeout, durationMs.coerceIn(5000L, 60000L))
     }
 
     private fun bondAndConnect(
@@ -269,7 +276,7 @@ class BleRemoteManager(private val context: Context) {
     ) {
         if (device.bondState == BluetoothDevice.BOND_BONDED) {
             connectAndProbeGatt(device, buzz = false) { ok, msg ->
-                onStatus(if (ok) "connected" else "error", msg)
+                onStatus(if (ok) "paired" else "error", if (ok) "Пульт сопряжён. Проверьте работу кнопок." else msg)
             }
             return
         }
@@ -284,9 +291,10 @@ class BleRemoteManager(private val context: Context) {
                 when (state) {
                     BluetoothDevice.BOND_BONDED -> {
                         unregisterBondReceiver()
+                        prefs.edit().putString(KEY_REMOTE_MAC, dev.address).putString(KEY_REMOTE_NAME, label).apply()
                         onStatus("pairing", "Сопряжение с $label завершено, активирую HID...")
-                        connectAndProbeGatt(dev, buzz = false) { _, _ ->
-                            onStatus("connected", "Пульт $label подключён и готов!")
+                        connectAndProbeGatt(dev, buzz = false) { ok, msg ->
+                            onStatus(if (ok) "paired" else "error", if (ok) "Пульт сопряжён. Проверьте работу кнопок." else msg)
                         }
                     }
                     BluetoothDevice.BOND_NONE -> {
@@ -301,7 +309,10 @@ class BleRemoteManager(private val context: Context) {
 
         try {
             onStatus("pairing", "Сопрягаю пульт $label...")
-            device.createBond()
+            if (!device.createBond()) {
+                unregisterBondReceiver()
+                onStatus("error", "Не удалось начать сопряжение с $label")
+            }
         } catch (t: Throwable) {
             unregisterBondReceiver()
             onStatus("error", "Ошибка createBond: ${t.message}")

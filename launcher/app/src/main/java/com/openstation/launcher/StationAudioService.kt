@@ -510,7 +510,7 @@ class StationAudioService : Service() {
                     }
                 }
                 "pair_remote" -> {
-                    bleRemoteManager?.startAutoScanAndPair(20000L) { st, detail ->
+                    bleRemoteManager?.startAutoScanAndPair(60000L) { st, detail ->
                         val col = when (st) {
                             "connected" -> "#10D281"
                             "error", "not_found" -> "#F87171"
