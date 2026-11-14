@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Manages native Yandex Station BLE Remote (YNDX-0006 / HID 0x1812) discovery,
+ * Manages native Yandex Station BLE Remote (HID 0x1812) discovery,
  * automatic bonding, battery query, and physical buzzer ("Find Remote") alerts.
  */
 class BleRemoteManager(private val context: Context) {

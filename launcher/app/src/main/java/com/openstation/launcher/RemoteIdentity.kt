@@ -7,6 +7,6 @@ internal object RemoteIdentity {
         if (name.isNullOrBlank()) return false
         val normalized = name.uppercase(Locale.ROOT)
         val vendor = normalized.contains("YNDX") || normalized.contains("YDX") || normalized.contains("YANDEX")
-        return vendor && (normalized.contains("0006") || normalized.contains("REMOTE"))
+        return vendor && normalized.contains("REMOTE")
     }
 }
