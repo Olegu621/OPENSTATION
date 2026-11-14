@@ -518,6 +518,19 @@ bool FramebufferHw::open_fb_by_name(const char* preferred_name, const char* fall
 
     std::string dev_path = fb_idx_name.empty() ? std::string(fallback_dev)
                                                : std::string("/dev/graphics/") + fb_idx_name;
+    // Framebuffer indices vary between devices and boots. Never treat the
+    // ring or an HDMI framebuffer as the front matrix merely because it has
+    // the historical fallback index.
+    if (fb_idx_name.empty()) {
+        const auto slash = dev_path.find_last_of('/');
+        const std::string index = slash == std::string::npos ? dev_path : dev_path.substr(slash + 1);
+        std::string fallback_name;
+        if (!read_trimmed_file("/sys/class/graphics/" + index + "/name", fallback_name) ||
+            fallback_name.find(preferred_name) == std::string::npos) {
+            LOGW("Framebuffer", "Framebuffer %s is not %s; waiting for the correct device", dev_path.c_str(), preferred_name);
+            return false;
+        }
+    }
     struct stat st {};
     if (stat(dev_path.c_str(), &st) != 0) {
         return false;
