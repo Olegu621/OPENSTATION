@@ -467,6 +467,42 @@ class YandexMusicApi(private val context: Context) {
         return title to out
     }
 
+    data class LikedCollection(val tracks: List<YmTrack>, val total: Int?)
+
+    fun getLikedCollection(uid: String): LikedCollection {
+        if (uid.isBlank() || !hasToken()) return LikedCollection(emptyList(), null)
+        try {
+            val r = request("/users/$uid/likes/tracks", "GET")
+            if (r.code == 401 || r.code == 403) throw AuthException(r.code, "Требуется вход в Яндекс Музыку")
+            if (r.code in 200..299) {
+                val obj = unwrapObject(r.body)
+                val library = obj?.optJSONObject("library") ?: obj
+                val array = library?.optJSONArray("tracks")
+                if (array != null) {
+                    val ids = ArrayList<String>(array.length())
+                    for (i in 0 until array.length()) {
+                        val item = array.optJSONObject(i) ?: continue
+                        val id = item.optString("id", "").ifBlank {
+                            item.optLong("id", 0L).let { if (it > 0L) it.toString() else "" }
+                        }
+                        if (id.isNotEmpty()) ids.add(id)
+                    }
+                    val tracks = TrackBatchLoader.load(ids, 100,
+                        { batch -> getTracksMeta(batch, likedOverride = true) },
+                        { track -> track.id }).filter { it.available }
+                    return LikedCollection(tracks, array.length())
+                }
+            }
+        } catch (ae: AuthException) {
+            throw ae
+        } catch (t: Throwable) {
+            Log.w(TAG, "Unable to load full liked library: ${t.message}")
+        }
+        // If the full library endpoint is unavailable, preserve the existing
+        // first-page fallback without claiming that its size is the total.
+        return LikedCollection(getLikedTracks(uid, limit = 80), null)
+    }
+
     fun getLikedTracks(uid: String, limit: Int = 80): List<YmTrack> {
         if (uid.isBlank() || !hasToken()) return emptyList()
         val out = ArrayList<YmTrack>()

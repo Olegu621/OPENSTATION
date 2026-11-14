@@ -491,7 +491,7 @@ class YandexMusicPlayer(private val context: Context) {
                     acct = api.refreshAccount()
                     synchronized(lock) { currentAccount = acct }
                 }
-                val tracks = api.getLikedTracks(acct.uid, limit = 80)
+                val tracks = api.getLikedCollection(acct.uid).tracks
                 if (tracks.isEmpty()) throw Exception("Список «Мне нравится» пуст")
                 synchronized(lock) {
                     queue.clear()

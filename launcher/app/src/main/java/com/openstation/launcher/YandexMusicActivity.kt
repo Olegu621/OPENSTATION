@@ -35,9 +35,11 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
+import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -112,7 +114,8 @@ class YandexMusicActivity : Activity() {
     private lateinit var btnColLikes: LinearLayout
     private lateinit var btnColChart: LinearLayout
     private lateinit var btnColPlayAll: LinearLayout
-    private lateinit var collectionList: LinearLayout
+    private lateinit var collectionList: ListView
+    private var collectionRequestId = 0
     private lateinit var tvColStatus: TextView
 
     // Auth & settings tab views
@@ -803,16 +806,16 @@ class YandexMusicActivity : Activity() {
             setPadding(0, 0, 0, dp(8))
         }
 
-        val scroll = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false
+        collectionList = ListView(this).apply {
+            divider = null
+            dividerHeight = dp(6)
+            isVerticalScrollBarEnabled = true
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        collectionList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scroll.addView(collectionList)
 
         panel.addView(topRow)
         panel.addView(tvColStatus)
-        panel.addView(scroll)
+        panel.addView(collectionList)
         return panel
     }
 
@@ -1003,23 +1006,27 @@ class YandexMusicActivity : Activity() {
     }
 
     private fun loadCollection() {
+        val requestedMode = collectionMode
+        val requestId = ++collectionRequestId
         btnColLikes.isSelected = (collectionMode == "likes")
         btnColChart.isSelected = (collectionMode == "chart")
         tvColStatus.text = if (collectionMode == "chart") "Загружаем Чарт..." else "Загружаем «Мне нравится»..."
-        collectionList.removeAllViews()
+        collectionTracks = emptyList()
+        collectionList.adapter = null
 
         thread(isDaemon = true) {
             try {
                 val api = player()?.api ?: YandexMusicApi(this)
                 val tracks: List<YmTrack>
                 val title: String
-                if (collectionMode == "chart") {
+                if (requestedMode == "chart") {
                     val pair = api.getChartTracks()
                     title = "${pair.first} (${pair.second.size} треков)"
                     tracks = pair.second
                 } else {
                     if (!api.hasToken()) {
                         handler.post {
+                            if (requestId != collectionRequestId) return@post
                             collectionTracks = emptyList()
                             tvColStatus.text = "Войдите в аккаунт во вкладке «Вход», чтобы видеть «Мне нравится» (или откройте Топ Чарт)."
                         }
@@ -1027,19 +1034,56 @@ class YandexMusicActivity : Activity() {
                     }
                     var acct = api.getCachedAccount()
                     if (!acct.loggedIn) acct = api.refreshAccount()
-                    tracks = api.getLikedTracks(acct.uid, limit = 80)
-                    title = if (tracks.isEmpty()) "Список «Мне нравится» пуст" else "Мне нравится · ${tracks.size} треков"
+                    val collection = api.getLikedCollection(acct.uid)
+                    tracks = collection.tracks
+                    title = when {
+                        collection.total == 0 -> "Список «Мне нравится» пуст"
+                        collection.total == null -> "Загружено треков: ${tracks.size}"
+                        collection.total == tracks.size -> "Мне нравится · ${collection.total} треков"
+                        else -> "Всего: ${collection.total} · загружено: ${tracks.size}"
+                    }
                 }
                 handler.post {
+                    if (requestId != collectionRequestId) return@post
                     collectionTracks = tracks
                     tvColStatus.text = title
-                    val srcLbl = if (collectionMode == "chart") "Топ Чарт" else "Мне нравится"
-                    renderTrackList(collectionList, tracks, activeTrackId = lastSnapshot.currentTrack?.id) { idx ->
-                        player()?.playTrackList(tracks, idx, collectionMode, srcLbl)
+                    val srcLbl = if (requestedMode == "chart") "Топ Чарт" else "Мне нравится"
+                    collectionList.adapter = object : BaseAdapter() {
+                        override fun getCount() = tracks.size
+                        override fun getItem(position: Int) = tracks[position]
+                        override fun getItemId(position: Int) = position.toLong()
+                        override fun getView(position: Int, recycled: View?, parent: ViewGroup): View {
+                            val row = (recycled as? LinearLayout) ?: LinearLayout(this@YandexMusicActivity).apply {
+                                orientation = LinearLayout.VERTICAL
+                                setPadding(dp(14), dp(9), dp(14), dp(9))
+                                setBackgroundResource(R.drawable.bg_tile)
+                                addView(TextView(context).apply {
+                                    setTextColor(Color.parseColor("#F8FAFC"))
+                                    textSize = 14f
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                })
+                                addView(TextView(context).apply {
+                                    setTextColor(Color.parseColor("#94A3B8"))
+                                    textSize = 12f
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                })
+                            }
+                            val track = tracks[position]
+                            (row.getChildAt(0) as TextView).text = "${position + 1}. ${track.title}"
+                            (row.getChildAt(1) as TextView).text = if (track.album.isBlank()) track.artists else "${track.artists} · ${track.album}"
+                            row.isSelected = track.id == lastSnapshot.currentTrack?.id
+                            return row
+                        }
+                    }
+                    collectionList.setOnItemClickListener { _, _, idx, _ ->
+                        player()?.playTrackList(tracks, idx, requestedMode, srcLbl)
                     }
                 }
             } catch (t: Throwable) {
                 handler.post {
+                    if (requestId != collectionRequestId) return@post
                     tvColStatus.text = "Ошибка: ${t.message}"
                 }
             }
