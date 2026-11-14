@@ -53,6 +53,33 @@ class BleRemoteManager(private val context: Context) {
     private var activeScanCallback: ScanCallback? = null
     private var scanTimeoutRunnable: Runnable? = null
     private var bondReceiver: BroadcastReceiver? = null
+    private var reconnectActive = false
+    private var reconnectDelay = 5000L
+    private val hidConnecting = AtomicBoolean(false)
+    private val reconnectTask = object : Runnable {
+        override fun run() {
+            if (!reconnectActive) return
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            if (adapter == null || !adapter.isEnabled) {
+                scheduleReconnect(30000L)
+                return
+            }
+            val device = try { findTargetDevice() } catch (_: Throwable) { null }
+            if (device == null || device.bondState != BluetoothDevice.BOND_BONDED) {
+                scheduleReconnect(30000L)
+                return
+            }
+            if (scanning.get()) {
+                scheduleReconnect(30000L)
+                return
+            }
+            connectHid(adapter, device) { state, _ ->
+                if (state == "connected") reconnectDelay = 5000L
+                else reconnectDelay = (reconnectDelay * 2).coerceAtMost(300000L)
+                scheduleReconnect(if (state == "connected") 30000L else reconnectDelay)
+            }
+        }
+    }
     @Volatile
     private var lastBatteryPct: Int = -1
 
@@ -62,6 +89,25 @@ class BleRemoteManager(private val context: Context) {
 
     fun isYandexRemoteName(name: String?): Boolean {
         return RemoteIdentity.isYandexRemoteName(name)
+    }
+
+    fun startReconnect() {
+        handler.post {
+            reconnectActive = true
+            reconnectDelay = 5000L
+            scheduleReconnect(5000L)
+        }
+    }
+
+    fun stopReconnect() {
+        reconnectActive = false
+        handler.removeCallbacks(reconnectTask)
+    }
+
+    private fun scheduleReconnect(delayMs: Long) {
+        if (!reconnectActive) return
+        handler.removeCallbacks(reconnectTask)
+        handler.postDelayed(reconnectTask, delayMs)
     }
 
     fun getRemoteStatus(): RemoteStatus {
@@ -161,12 +207,6 @@ class BleRemoteManager(private val context: Context) {
     ) {
         handler.post {
             try {
-                val existing = getRemoteStatus()
-                if (existing.bonded && existing.connected) {
-                    onStatus("connected", "Пульт ${existing.name} уже подключён")
-                    return@post
-                }
-
                 val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
                 val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter()
                 if (adapter == null) {
@@ -323,11 +363,16 @@ class BleRemoteManager(private val context: Context) {
     // hidden from the public SDK. A bonded GATT connection alone is not HID.
     private fun connectHid(adapter: BluetoothAdapter, device: BluetoothDevice,
                            onStatus: (String, String) -> Unit) {
+        if (!hidConnecting.compareAndSet(false, true)) {
+            onStatus("pairing", "Подключение пульта уже выполняется.")
+            return
+        }
         val profileId = 4
         val finished = AtomicBoolean(false)
         var profile: BluetoothProfile? = null
         fun finish(state: String, detail: String) {
             if (!finished.compareAndSet(false, true)) return
+            hidConnecting.set(false)
             profile?.let { try { adapter.closeProfileProxy(profileId, it) } catch (_: Throwable) {} }
             onStatus(state, detail)
         }

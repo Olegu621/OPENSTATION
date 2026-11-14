@@ -197,6 +197,7 @@ class StationAudioService : Service() {
         }
         volumeOverlayManager = VolumeOverlayManager(this).apply { start() }
         bleRemoteManager = BleRemoteManager(this)
+        bleRemoteManager?.startReconnect()
         startForegroundNotification()
         running = true
         volPushThread = HandlerThread("StationVolPush").apply { start() }.also {
@@ -256,6 +257,7 @@ class StationAudioService : Service() {
 
     override fun onDestroy() {
         running = false
+        bleRemoteManager?.stopReconnect()
         if (instance === this) instance = null
         try { overlayManager?.stop() } catch (_: Throwable) {}
         overlayManager = null
