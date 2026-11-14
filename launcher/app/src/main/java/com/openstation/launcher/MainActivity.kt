@@ -2087,6 +2087,9 @@ class MainActivity : Activity() {
             SysItem(R.drawable.ic_hw_eq, false, "Звук и аудио") {
                 openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
             },
+            SysItem(R.drawable.ic_settings, false, "Дата и время") {
+                openSettingsIntent(Settings.ACTION_DATE_SETTINGS, "com.android.tv.settings")
+            },
             SysItem(R.drawable.ic_hw_apps, false, "Приложения") {
                 openSettingsIntent(Settings.ACTION_APPLICATION_SETTINGS, "com.android.tv.settings")
             },
