@@ -521,6 +521,15 @@ class StationAudioService : Service() {
                         volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, col, 3200L)
                     }
                 }
+                "setup_remote" -> {
+                    handler.post {
+                        try {
+                            startActivity(Intent(this, RemoteSetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Cannot open remote setup: ${t.message}")
+                        }
+                    }
+                }
                 "refresh_apps" -> {
                     handler.post { MainActivity.refreshAppsFromService() }
                 }

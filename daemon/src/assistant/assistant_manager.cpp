@@ -684,6 +684,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "ВСЕГДА сразу вызывай bluetooth_control(action=\"discoverable\"). Колонка станет видимой на телефоне как OpenStation Max, и пользователь сможет "
               "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
               "- Поиск пульта (find_remote): если пользователь просит найти пульт («где пульт», «найди пульт», «попищи пультом»), сразу вызывай find_remote().\n"
+              "- При просьбе «настрой пульт» или «подключи пульт» вызывай setup_remote, это открывает инструкцию и поиск пульта на телевизоре.\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
@@ -1046,6 +1047,9 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
             {},
             nb));
     }
+
+    decls.push(make_func_decl("setup_remote", "Open the remote pairing screen on the TV and start discovery.",
+                              Value::make_obj(), {}, nb));
 
     {
         Value p = Value::make_obj();

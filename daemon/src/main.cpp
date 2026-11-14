@@ -2974,6 +2974,16 @@ int main(int argc, char** argv) {
             return res;
         }
 
+        if (name == "setup_remote") {
+            json::Value payload = json::Value::make_obj();
+            payload["cmd"] = json::Value::make_str("setup_remote");
+            bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
+            res["ok"] = Value::make_bool(sent);
+            res["message"] = Value::make_str(sent ? "Открываю настройку пульта на телевизоре." : "Не удалось открыть настройку пульта.");
+            res["stopSession"] = Value::make_bool(true);
+            return res;
+        }
+
         if (name == "find_remote") {
             json::Value payload = Value::make_obj();
             payload["cmd"] = Value::make_str("find_remote");
