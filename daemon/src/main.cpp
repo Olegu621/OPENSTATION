@@ -4417,8 +4417,12 @@ int main(int argc, char** argv) {
                 bool sent = udp_ok && send_udp_json(8086, raw);
                 if (const auto* cmd = v.get("cmd"); cmd && cmd->is_str() && cmd->as_str() == "launch_music") {
                     if (!sent) {
-                        spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity"});
-                        sent = true;
+                        const auto* login = v.get("openLogin");
+                        if (login && login->is_bool() && login->as_bool()) {
+                            sent = spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity", "--es", "tab", "auth", "--ez", "open_login", "true"});
+                        } else {
+                            sent = spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity"});
+                        }
                     }
                 }
                 return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false}");

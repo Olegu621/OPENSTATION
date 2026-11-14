@@ -75,6 +75,7 @@ class YandexMusicActivity : Activity() {
     private lateinit var ivCover: ImageView
     private lateinit var viewCoverRim: View
     private var vinylAnimator: ObjectAnimator? = null
+    private var passportDialog: AlertDialog? = null
     private lateinit var tvSourceBadge: TextView
     private lateinit var tvCodecBadge: TextView
     private lateinit var tvTrackTitle: TextView
@@ -171,6 +172,7 @@ class YandexMusicActivity : Activity() {
 
     override fun onDestroy() {
         vinylAnimator?.cancel()
+        passportDialog?.dismiss()
         try { unregisterReceiver(stateReceiver) } catch (_: Throwable) {}
         super.onDestroy()
     }
@@ -183,6 +185,11 @@ class YandexMusicActivity : Activity() {
         val tab = intent?.getStringExtra("tab")
         if (!tab.isNullOrBlank() && tab in listOf("wave", "search", "collection", "auth")) {
             switchTab(tab)
+        }
+        if (intent?.getBooleanExtra("open_login", false) == true) {
+            intent.removeExtra("open_login")
+            switchTab("auth")
+            openPassportOAuthDialog()
         }
     }
 
@@ -1299,6 +1306,7 @@ class YandexMusicActivity : Activity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun openPassportOAuthDialog() {
+        if (passportDialog?.isShowing == true) return
         val dlgHolder = arrayOfNulls<AlertDialog>(1)
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#0B0F17"))
@@ -1343,7 +1351,7 @@ class YandexMusicActivity : Activity() {
                 val tok = YandexMusicApi.normalizeOAuthToken(urlStr)
                 if (tok.isNotEmpty()) {
                     try { CookieManager.getInstance().flush() } catch (_: Throwable) {}
-                    player()?.setOAuthToken(tok, autoResumeMyWave = true)
+                    player()?.setOAuthToken(tok, autoResumeMyWave = false)
                     handler.post {
                         Toast.makeText(this, "Авторизация Яндекс Музыки успешна!", Toast.LENGTH_SHORT).show()
                         dlgHolder[0]?.dismiss()
@@ -1458,6 +1466,7 @@ class YandexMusicActivity : Activity() {
         val dlg = AlertDialog.Builder(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
             .setView(root)
             .setOnDismissListener {
+                passportDialog = null
                 try {
                     wv.stopLoading()
                     wv.destroy()
@@ -1513,6 +1522,7 @@ class YandexMusicActivity : Activity() {
         }
 
         dlgHolder[0] = dlg
+        passportDialog = dlg
         dlg.show()
         wv.loadUrl(YandexMusicApi.OAUTH_AUTHORIZE_URL)
     }

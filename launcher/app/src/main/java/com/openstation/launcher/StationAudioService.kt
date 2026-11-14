@@ -531,7 +531,7 @@ class StationAudioService : Service() {
                     handleBluetoothCommand(act, duration)
                 }
                 "launch_music" -> {
-                    openYandexMusicActivity(obj.optString("tab", ""))
+                    openYandexMusicActivity(obj.optString("tab", ""), obj.optBoolean("openLogin", false))
                 }
                 "play_my_wave" -> {
                     val mood = obj.optString("mood", "any")
@@ -653,11 +653,12 @@ class StationAudioService : Service() {
         }
     }
 
-    private fun openYandexMusicActivity(tab: String = "") {
+    private fun openYandexMusicActivity(tab: String = "", openLogin: Boolean = false) {
         try {
             val i = Intent(this, YandexMusicActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 if (tab.isNotBlank()) putExtra("tab", tab)
+                if (openLogin) putExtra("open_login", true)
             }
             startActivity(i)
         } catch (t: Throwable) {

@@ -1315,7 +1315,8 @@
 
   async function sendMusicCmd(payload, toastOk) {
     try {
-      await api("/api/music/command", "POST", payload);
+      const result = await api("/api/music/command", "POST", payload);
+      if (result.ok === false) throw new Error("Не удалось передать команду приложению");
       if (toastOk) showToast(toastOk);
     } catch (e) {
       showToast("Ошибка Яндекс Музыки: " + e.message, true);
@@ -2220,7 +2221,7 @@
       if (inp) inp.value = "";
     });
   }
-  if ($("btnWizYmTv")) $("btnWizYmTv").addEventListener("click", () => sendMusicCmd({ cmd: "launch_music" }, "Открываем Яндекс Музыку на ТВ"));
+  if ($("btnWizYmTv")) $("btnWizYmTv").addEventListener("click", () => sendMusicCmd({ cmd: "launch_music", tab: "auth", openLogin: true }, "Запрос на открытие входа на ТВ отправлен"));
   if ($("btnWizYmWave")) $("btnWizYmWave").addEventListener("click", () => sendMusicCmd({ cmd: "play_my_wave", mood: "any", openUi: false }, "Запускаем Мою волну..."));
   if ($("wizAudioRoute")) {
     $("wizAudioRoute").addEventListener("change", () => pushPartialConfig({ audio: { outputRoute: $("wizAudioRoute").value } }, "Выход звука обновлён"));
