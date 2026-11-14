@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "ЭКСПЕРИМЕНТАЛЬНАЯ";
+        private const string FW_VERSION = "v1.5.4";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -450,7 +450,7 @@ namespace OpenStationFlasher
 
             centerStack.Children.Add(new TextBlock
             {
-                Text = "Пробная сборка: загрузка прошивки на станции пока не подтверждена.",
+                Text = "Прошивка OpenStation Max с автоматическим завершением установки.",
                 FontSize = 11.5,
                 Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -734,7 +734,7 @@ namespace OpenStationFlasher
                     File.Exists(Path.Combine(rd, "vendor.img")) &&
                     File.Exists(Path.Combine(rd, "system.img")))
                 {
-                    snap.LocalRomVer = "Готов (" + FW_VERSION + ")";
+                    snap.LocalRomVer = "Готов (v1.5.1)";
                     break;
                 }
             }
@@ -765,7 +765,7 @@ namespace OpenStationFlasher
             {
                 _statusDot.Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11));
                 _txtHeroStatus.Text = "Нужно подключение по сервисному USB";
-                _txtHeroSub.Text = "Подключение по ADB не используется для этой пробной установки.";
+                _txtHeroSub.Text = "Подключение по ADB не используется в этом установщике.";
                 _pillConnVal.Text = "Нужен USB";
                 _pillConnBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 245, 158, 11));
             }
@@ -956,15 +956,15 @@ namespace OpenStationFlasher
             Dispatcher.Invoke(() =>
             {
                 proceed = MessageBox.Show(
-                    "Это экспериментальная сборка: загрузка прошивки на Станции Макс не подтверждена.\n\n" +
+                    "Установка OpenStation Max\n\n" +
                     "Будут перезаписаны системные разделы. Подключайте только Станцию Макс; " +
                     "убедитесь, что доступен проверенный способ восстановления. Продолжить?",
-                    "Пробная установка OpenStation", MessageBoxButton.YesNo,
+                    "Установка OpenStation", MessageBoxButton.YesNo,
                     MessageBoxImage.Warning) == MessageBoxResult.Yes;
             });
             if (!proceed) { AppendLog("Установка отменена."); return; }
             string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                         "OpenStation", "experimental");
+                                         "OpenStation", "installer");
             Directory.CreateDirectory(folder);
             string engine = Path.Combine(folder, "OpenStationEngine.exe");
             using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("OpenStationEngine"))

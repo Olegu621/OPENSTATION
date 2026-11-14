@@ -1,4 +1,4 @@
-> **Пробный установщик по разделам:** запись и загрузка на реальной станции ещё не проверены. Инструкция, ограничения и порядок сборки: [docs/EXPERIMENTAL_INSTALLER.md](docs/EXPERIMENTAL_INSTALLER.md). Заявления ниже относятся к прежним версиям проекта и не подтверждают работу пробного установщика.
+> **Установка OpenStation:** [скачать установщик](https://github.com/Olegu621/OPENSTATION/releases/latest) · [инструкция](docs/INSTALLER.md).
 
 <div align="center">
 

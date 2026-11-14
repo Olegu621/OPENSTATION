@@ -787,7 +787,7 @@ def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) 
         pass
     part = os.path.join(dest_cache, name + ".part")
     digest = hashlib.sha256()
-    request = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/experimental"})
+    request = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/1.5.4"})
     downloaded = 0
     with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as output:
         while True:
