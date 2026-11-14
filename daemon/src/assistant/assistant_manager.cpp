@@ -1,4 +1,5 @@
 #include "assistant/assistant_manager.hpp"
+#include "assistant/assistant_intents.hpp"
 #include "assistant/tls_ws_client.hpp"
 #include "utils/base64.hpp"
 #include "utils/logger.hpp"
@@ -1246,6 +1247,7 @@ void AssistantManager::session_worker(uint64_t sid,
     bool model_turn_done = false;
     bool awaiting_playback_drain = false;
     bool stop_after_turn = false;
+    bool self_stop_requested = false;
     bool had_interaction = false;
     bool go_away_received = false;
 
@@ -1302,6 +1304,8 @@ void AssistantManager::session_worker(uint64_t sid,
 
             // Fast local Bluetooth intent trigger
             std::string ul = utf8_to_lower_ru(u);
+            self_stop_requested = is_assistant_stop_request(ul);
+            if (self_stop_requested) stop_after_turn = true;
             if (ul.find("включи блютуз") != std::string::npos ||
                 ul.find("включить блютуз") != std::string::npos ||
                 ul.find("подключи телефон") != std::string::npos ||
@@ -1486,9 +1490,15 @@ void AssistantManager::session_worker(uint64_t sid,
                         LOGI("Assistant", "ToolCall: %s(%s)", name.c_str(), args.dump(-1).c_str());
                         emit_event("tool_call", "tool", name);
 
-                        json::Value res = cb_.execute_tool
-                                              ? cb_.execute_tool(name, args)
-                                              : json::Value::make_obj();
+                        json::Value res;
+                        if (self_stop_requested && (name == "tv_hdmi_cec" || name == "remote_control" || name == "device_power")) {
+                            res = json::Value::make_obj();
+                            res["ok"] = json::Value::make_bool(false);
+                            res["error"] = json::Value::make_str("Пользователь просит завершить диалог, а не выключать устройство.");
+                            res["stopSession"] = json::Value::make_bool(true);
+                        } else {
+                            res = cb_.execute_tool ? cb_.execute_tool(name, args) : json::Value::make_obj();
+                        }
                         if (const auto* ss = res.get("stopSession"); ss && ss->as_bool(false)) {
                             stop_after_turn = true;
                             if (name == "set_mic_mute") {
@@ -1726,6 +1736,8 @@ void AssistantManager::session_worker(uint64_t sid,
                 }
                 model_turn_done = false;
                 awaiting_playback_drain = false;
+                self_stop_requested = is_assistant_stop_request(utf8_to_lower_ru(trim_str(t)));
+                if (self_stop_requested) stop_after_turn = true;
                 set_state(AssistantState::Thinking);
                 if (!send_client_text(t)) {
                     set_error("Ошибка отправки текста в Gemini Live", src != TriggerSource::Text);
