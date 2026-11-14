@@ -192,10 +192,8 @@ class BleRemoteManager(private val context: Context) {
                 // If already bonded, trigger immediate GATT connect wakeup
                 findTargetDevice()?.let { dev ->
                     if (dev.bondState == BluetoothDevice.BOND_BONDED) {
-                        onStatus("pairing", "Пробуждаю сопряжённый пульт ${dev.name ?: "Yandex"}...")
-                        connectAndProbeGatt(dev, buzz = false) { ok, _ ->
-                            if (ok) onStatus("paired", "Пульт сопряжён. Проверьте работу кнопок.") else startLeScanInternal(adapter, durationMs, onStatus)
-                        }
+                        onStatus("pairing", "Подключаю сопряжённый пульт ${dev.name ?: "Yandex"}...")
+                        connectHid(adapter, dev, onStatus)
                         return@post
                     }
                 }
@@ -275,9 +273,10 @@ class BleRemoteManager(private val context: Context) {
         onStatus: (state: String, detail: String) -> Unit
     ) {
         if (device.bondState == BluetoothDevice.BOND_BONDED) {
-            connectAndProbeGatt(device, buzz = false) { ok, msg ->
-                onStatus(if (ok) "paired" else "error", if (ok) "Пульт сопряжён. Проверьте работу кнопок." else msg)
-            }
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+                ?: BluetoothAdapter.getDefaultAdapter()
+            if (adapter == null) onStatus("error", "Bluetooth-адаптер недоступен")
+            else connectHid(adapter, device, onStatus)
             return
         }
 
@@ -292,10 +291,11 @@ class BleRemoteManager(private val context: Context) {
                     BluetoothDevice.BOND_BONDED -> {
                         unregisterBondReceiver()
                         prefs.edit().putString(KEY_REMOTE_MAC, dev.address).putString(KEY_REMOTE_NAME, label).apply()
-                        onStatus("pairing", "Сопряжение с $label завершено, активирую HID...")
-                        connectAndProbeGatt(dev, buzz = false) { ok, msg ->
-                            onStatus(if (ok) "paired" else "error", if (ok) "Пульт сопряжён. Проверьте работу кнопок." else msg)
-                        }
+                        onStatus("pairing", "Пульт сопряжён, подключаю кнопки...")
+                        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+                            ?: BluetoothAdapter.getDefaultAdapter()
+                        if (adapter == null) onStatus("error", "Bluetooth-адаптер недоступен")
+                        else connectHid(adapter, dev, onStatus)
                     }
                     BluetoothDevice.BOND_NONE -> {
                         unregisterBondReceiver()
@@ -316,6 +316,75 @@ class BleRemoteManager(private val context: Context) {
         } catch (t: Throwable) {
             unregisterBondReceiver()
             onStatus("error", "Ошибка createBond: ${t.message}")
+        }
+    }
+
+    // Android 9 exposes HID host as profile 4, but its connect method is
+    // hidden from the public SDK. A bonded GATT connection alone is not HID.
+    private fun connectHid(adapter: BluetoothAdapter, device: BluetoothDevice,
+                           onStatus: (String, String) -> Unit) {
+        val profileId = 4
+        val finished = AtomicBoolean(false)
+        var profile: BluetoothProfile? = null
+        fun finish(state: String, detail: String) {
+            if (!finished.compareAndSet(false, true)) return
+            profile?.let { try { adapter.closeProfileProxy(profileId, it) } catch (_: Throwable) {} }
+            onStatus(state, detail)
+        }
+        val timeout = Runnable { finish("error", "Пульт сопряжён, но подключение кнопок не подтвердилось. Нажмите кнопку пульта и повторите.") }
+        val listener = object : BluetoothProfile.ServiceListener {
+            override fun onServiceConnected(p: Int, proxy: BluetoothProfile) {
+                if (finished.get()) {
+                    try { adapter.closeProfileProxy(profileId, proxy) } catch (_: Throwable) {}
+                    return
+                }
+                profile = proxy
+                try {
+                    if (proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
+                        handler.removeCallbacks(timeout)
+                        finish("connected", "Пульт подключён. Проверьте кнопки.")
+                        return
+                    }
+                    val connect = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
+                    if (connect.invoke(proxy, device) != true) {
+                        handler.removeCallbacks(timeout)
+                        finish("error", "Android не смог начать подключение пульта.")
+                        return
+                    }
+                    val poll = object : Runnable {
+                        override fun run() {
+                            if (finished.get()) return
+                            try {
+                                if (proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
+                                    handler.removeCallbacks(timeout)
+                                    finish("connected", "Пульт подключён. Проверьте кнопки.")
+                                } else handler.postDelayed(this, 500L)
+                            } catch (t: Throwable) {
+                                handler.removeCallbacks(timeout)
+                                finish("error", "Не удалось проверить состояние пульта: ${t.message}")
+                            }
+                        }
+                    }
+                    handler.post(poll)
+                } catch (t: Throwable) {
+                    handler.removeCallbacks(timeout)
+                    finish("error", "Не удалось подключить профиль пульта: ${t.message}")
+                }
+            }
+            override fun onServiceDisconnected(p: Int) {
+                handler.removeCallbacks(timeout)
+                finish("error", "Служба пульта отключилась.")
+            }
+        }
+        handler.postDelayed(timeout, 15000L)
+        try {
+            if (!adapter.getProfileProxy(context, listener, profileId)) {
+                handler.removeCallbacks(timeout)
+                finish("error", "Служба подключения пульта недоступна.")
+            }
+        } catch (t: Throwable) {
+            handler.removeCallbacks(timeout)
+            finish("error", "Не удалось открыть службу пульта: ${t.message}")
         }
     }
 
