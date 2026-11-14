@@ -3,6 +3,7 @@
 #include "assistant/tls_ws_client.hpp"
 #include "config.hpp"
 #include "hw/alsa_mixer.hpp"
+#include "hw/sy6045s_eq.hpp"
 #include "hw/audio_engine.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
@@ -1497,6 +1498,7 @@ int main(int argc, char** argv) {
         }
     };
 
+    Sy6045sEq hardware_eq;
     std::mutex config_apply_mu;
     auto apply_hw_config = [&](const DaemonConfig& c, bool /*hp_plugged*/) {
         leds.update_config(c.led_ring, c.led_screen);
@@ -2429,6 +2431,7 @@ int main(int argc, char** argv) {
         }
 
         if (name == "set_eq_preset") {
+            std::lock_guard<std::mutex> apply_lock(config_apply_mu);
             DaemonConfig c;
             {
                 std::lock_guard<std::mutex> lk(cfg_mu);
@@ -3821,6 +3824,89 @@ int main(int argc, char** argv) {
                 out["location"] = c.to_json()["location"];
                 return HttpResponse::json(out.dump(-1));
             }
+            if (req.path == "/api/audio/hardware_eq" &&
+                (req.method == "GET" || req.method == "POST")) {
+                const bool write = req.method == "POST";
+                json::Value body;
+                if (write) {
+                    if (req.host.empty() || req.origin != "http://" + req.host ||
+                        req.content_type != "application/json") {
+                        return HttpResponse::json(R"({"error":"Same-origin JSON required"})", 403);
+                    }
+                    if (req.body.size() > 512 || !json::Parser::parse(req.body, body) || !body.is_obj()) {
+                        return HttpResponse::json(R"({"error":"Invalid DSP request"})", 400);
+                    }
+                }
+                std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
+                std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
+                std::string error;
+                if (write && !hardware_eq.apply(body, error)) {
+                    json::Value out = json::Value::make_obj();
+                    out["error"] = json::Value::make_str(error);
+                    return HttpResponse::json(out.dump(-1), 409);
+                }
+                return HttpResponse::json(hardware_eq.status().dump(-1));
+            }
+            if (req.path == "/api/audio/drc_bypass" &&
+                (req.method == "GET" || req.method == "POST")) {
+                if (!hardware_eq.supported()) {
+                    return HttpResponse::json(R"({"error":"SY6045S amplifier pair unavailable"})", 404);
+                }
+                const bool write = req.method == "POST";
+                bool enabled = true;
+                if (write) {
+                    if (req.host.empty() || req.origin != "http://" + req.host ||
+                        req.content_type != "application/json") {
+                        return HttpResponse::json(R"({"error":"Same-origin JSON required"})", 403);
+                    }
+                    json::Value body;
+                    if (req.body.size() > 128 || !json::Parser::parse(req.body, body) ||
+                        !body.is_obj() || body.obj_val.size() != 1 ||
+                        !body.get("bypass") || !body.get("bypass")->is_bool()) {
+                        return HttpResponse::json(R"({"error":"Expected a boolean bypass value"})", 400);
+                    }
+                    enabled = !body.get("bypass")->as_bool();
+                }
+                std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
+                std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
+                const char* woofer = "Woofer DRC Switch";
+                const char* tweeters = "Tweeters DRC Switch";
+                bool w, t;
+                if (!mixer.get_bool(woofer, w) || !mixer.get_bool(tweeters, t)) {
+                    return HttpResponse::json(R"({"error":"Не удалось прочитать состояние лимитеров"})", 409);
+                }
+                if (write) {
+                    auto set_and_verify = [&](bool want_w, bool want_t) {
+                        const bool wrote_w = mixer.set_bool(woofer, want_w);
+                        const bool wrote_t = mixer.set_bool(tweeters, want_t);
+                        bool actual_w, actual_t;
+                        return wrote_w && wrote_t && mixer.get_bool(woofer, actual_w) &&
+                               mixer.get_bool(tweeters, actual_t) && actual_w == want_w && actual_t == want_t;
+                    };
+                    if (!set_and_verify(enabled, enabled)) {
+                        return HttpResponse::json(set_and_verify(w, t)
+                            ? R"({"error":"Изменение DRC не подтверждено. Прежнее состояние восстановлено"})"
+                            : R"({"error":"Изменение DRC не подтверждено. Проверьте состояние лимитеров"})", 409);
+                    }
+                    {
+                        std::lock_guard<std::mutex> save_lock(save_mu);
+                        std::lock_guard<std::mutex> lock(cfg_mu);
+                        DaemonConfig next = cfg;
+                        next.audio.woofer_drc = next.audio.tweeters_drc = enabled;
+                        if (!next.save()) {
+                            return HttpResponse::json(set_and_verify(w, t)
+                                ? R"({"error":"Сохранение DRC не удалось. Прежнее состояние восстановлено"})"
+                                : R"({"error":"Сохранение DRC не удалось. Проверьте состояние лимитеров"})", 409);
+                        }
+                        cfg.audio.woofer_drc = cfg.audio.tweeters_drc = enabled;
+                    }
+                    w = t = enabled;
+                }
+                json::Value out = json::Value::make_obj();
+                out["wooferDrc"] = json::Value::make_bool(w);
+                out["tweetersDrc"] = json::Value::make_bool(t);
+                return HttpResponse::json(out.dump(-1));
+            }
             if (req.method == "POST" && req.path == "/api/audio/eq") {
                 json::Value v;
                 if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
@@ -3898,6 +3984,8 @@ int main(int argc, char** argv) {
                 return HttpResponse::json("{\"error\":\"missing route\"}", 400);
             }
             if (req.method == "POST" && req.path == "/api/audio/reload_eq") {
+                std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
+                std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
                 bool ok = mixer.reload_amp_defaults();
                 if (ok) {
                     DaemonConfig c;
@@ -3910,7 +3998,7 @@ int main(int argc, char** argv) {
                     mixer.set_bool("Tweeters EQ Switch", c.audio.tweeters_eq);
                     mixer.set_bool("Tweeters DRC Switch", c.audio.tweeters_drc);
                     mixer.set_enum("Loopback Enable", c.audio.loopback_enable ? "Enable" : "Disable");
-                    reapply_current_volume_and_route(true, true);
+                    apply_curve_unlocked(volume_osd_pct.load(), true, true, true);
                 }
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}");
             }

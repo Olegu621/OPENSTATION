@@ -2425,3 +2425,144 @@
 
   init();
 })();
+
+(() => {
+  const $ = id => document.getElementById(id);
+  const box = $("maxDsp");
+  if (!box) return;
+  const status = $("maxDspStatus");
+  const buttons = [...box.querySelectorAll("button[data-dsp]")];
+  const sliders = {bass_gain: $("maxDspBass"), subsonic_freq: $("maxDspSub"), treble_gain: $("maxDspTreble")};
+  const filters = ["subsonic", "notch120", "phase", "treble"];
+  const api = "/api/audio/hardware_eq";
+  const drc = $("maxDspDrc");
+  const drcStatus = $("maxDspDrcStatus");
+  let busy = false;
+  let canRestore = false;
+  let drcBusy = false;
+
+  function showDrc(data) {
+    const {wooferDrc, tweetersDrc} = data;
+    drc.checked = !wooferDrc && !tweetersDrc;
+    drc.indeterminate = wooferDrc !== tweetersDrc;
+    drcStatus.textContent = drc.indeterminate
+      ? (wooferDrc ? "Лимитер включён только на НЧ" : "Лимитер включён только на СЧ/ВЧ")
+      : (drc.checked ? "Лимитеры обоих усилителей отключены" : "Лимитеры обоих усилителей включены");
+  }
+
+  async function syncDrc(bypass) {
+    if (drcBusy) return;
+    drcBusy = true;
+    drc.disabled = true;
+    const path = "/api/audio/drc_bypass";
+    let available = false;
+    try {
+      const options = bypass === undefined ? {} : {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({bypass})
+      };
+      const response = await fetch(path, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Ошибка DRC");
+      showDrc(data);
+      available = true;
+    } catch (error) {
+      if (bypass !== undefined) {
+        try {
+          const response = await fetch(path);
+          if (response.ok) {
+            showDrc(await response.json());
+            available = true;
+          }
+        } catch {}
+      }
+      drcStatus.textContent = [error.message, available && drcStatus.textContent].filter(Boolean).join(" · ");
+    } finally {
+      drc.disabled = !available;
+      drcBusy = false;
+    }
+  }
+  function labels() {
+    for (const [name, field] of Object.entries(sliders)) {
+      $(field.id + "Value").textContent = field.value + (name === "subsonic_freq" ? " Гц" : " дБ");
+    }
+  }
+
+  function plot(curve) {
+    const svg = $("maxDspCurve");
+    svg.replaceChildren();
+    svg.hidden = !curve;
+    $("maxDspLegend").hidden = !curve;
+    if (!curve) return;
+    const ns = "http://www.w3.org/2000/svg";
+    for (const [key, color] of [["woofer_db", "#36cfe6"], ["tweeter_db", "#c980ff"], ["system_db", "#f89544"]]) {
+      const line = document.createElementNS(ns, "polyline");
+      line.setAttribute("points", curve[key].map((gain, index) =>
+        [12 + 336 * index / (curve[key].length - 1), 10 + (12 - gain) * 88 / 52].join(",")
+      ).join(" "));
+      line.setAttribute("stroke", color);
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke-width", key === "system_db" ? 3 : 1.5);
+      svg.append(line);
+    }
+  }
+
+  async function sync(profile) {
+    if (busy) return;
+    busy = true;
+    buttons.forEach(button => button.disabled = true);
+    status.textContent = profile ? "Проверяю запись в DSP…" : "Читаю состояние DSP…";
+    try {
+      const options = {};
+      if (profile) {
+        const body = {profile};
+        if (profile === "custom") {
+          body.params = Object.fromEntries(Object.entries(sliders).map(([key, field]) => [key, Number(field.value)]));
+          body.filters = Object.fromEntries(filters.map(key => [key, $("maxDsp-" + key).checked]));
+        }
+        Object.assign(options, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      }
+      const response = await fetch(api, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Ошибка DSP");
+      if (!data.supported) return;
+      box.hidden = false;
+      canRestore = data.canRestore;
+      if (profile || !box.dataset.loaded) {
+        for (const [key, field] of Object.entries(sliders)) {
+          if (key in data.params) field.value = data.params[key];
+        }
+        for (const key of filters) {
+          if (key in data.filters) $("maxDsp-" + key).checked = data.filters[key];
+        }
+        labels();
+        box.dataset.loaded = "true";
+      }
+      plot(data.curve);
+      buttons.forEach(button => button.classList.toggle("btn-accent", button.dataset.dsp === data.profile));
+      const active = buttons.find(button => button.dataset.dsp === data.profile);
+      status.textContent = data.profile === "original"
+        ? (data.verified ? "Исходные регистры восстановлены" : "Исходный режим")
+        : (active?.textContent || data.profile) + (data.verified ? " · запись подтверждена" : " · регистры изменились");
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      busy = false;
+      buttons.forEach(button => button.disabled = button.dataset.dsp === "original" && !canRestore);
+    }
+  }
+
+  Object.values(sliders).forEach(field => field.addEventListener("input", labels));
+  labels();
+  buttons.forEach(button => button.addEventListener("click", () => sync(button.dataset.dsp)));
+  document.querySelector('[data-tab="sound"]')?.addEventListener("click", () => {
+    if (box.hidden) sync();
+  });
+  drc.addEventListener("change", () => syncDrc(drc.checked));
+  box.addEventListener("toggle", () => {
+    if (box.open) {
+      sync();
+      syncDrc();
+    }
+  });
+})();

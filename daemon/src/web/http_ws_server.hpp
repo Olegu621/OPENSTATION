@@ -16,6 +16,9 @@ struct HttpRequest {
     std::string path;
     std::string query;
     std::string body;
+    std::string host;
+    std::string origin;
+    std::string content_type;
 };
 
 struct HttpResponse {
