@@ -1,4 +1,5 @@
 #include "hw/input_monitor.hpp"
+#include "hw/remote_keys.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
@@ -260,7 +261,10 @@ void InputMonitor::poll_loop() {
                     LOGI("InputMonitor", "3.5mm jack state -> %s", plugged ? "plugged" : "unplugged");
                     if (cb_) cb_(plugged ? HwEventType::JackPlugged : HwEventType::JackUnplugged);
                 } else if (fds_[i].role == DevRole::RemoteControl && ev.type == EV_KEY && ev.value == 1) {
-                    if (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377) {
+                    if (is_remote_assistant_key(fds_[i].name, ev.code)) {
+                        LOGI("InputMonitor", "Yandex remote assistant key: %d", ev.code);
+                        if (cb_) cb_(HwEventType::RemoteAssistant);
+                    } else if (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377) {
                         auto hnow = clock::now();
                         if (hnow - last_home_press_tp >= std::chrono::milliseconds(350)) {
                             last_home_press_tp = hnow;

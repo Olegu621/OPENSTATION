@@ -1716,6 +1716,14 @@ int main(int argc, char** argv) {
                 leds.trigger_flash(0, 212, 255, 220);
                 break;
             }
+            case HwEventType::RemoteAssistant: {
+                if (c.assistant.enabled && c.assistant.mode == "gemini") {
+                    assistant.trigger_session("remote_button");
+                } else if (c.wyoming.enabled) {
+                    wyoming.trigger_button_session(6000);
+                }
+                break;
+            }
             case HwEventType::JackPlugged:
             case HwEventType::JackUnplugged: {
                 reapply_current_volume_and_route(true, c.audio.output_route == "auto");

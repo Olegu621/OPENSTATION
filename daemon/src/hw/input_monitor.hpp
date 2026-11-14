@@ -17,7 +17,8 @@ enum class HwEventType {
     JackPlugged,
     JackUnplugged,
     BluetoothToggle,
-    HomePress
+    HomePress,
+    RemoteAssistant
 };
 
 class InputMonitor {
