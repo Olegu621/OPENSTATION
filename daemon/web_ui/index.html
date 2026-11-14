@@ -500,6 +500,43 @@
               </div>
             </details>
 
+<details class="adv-details" id="maxDsp" hidden>
+  <summary>Аппаратный DSP (Hi-Fi)</summary>
+  <div class="adv-details-body">
+    <div class="btn-row">
+      <button class="btn btn-sm" type="button" data-dsp="hifi">Hi-Fi Studio</button>
+      <button class="btn btn-sm" type="button" data-dsp="original">Вернуть исходный</button>
+      <button class="btn btn-sm" type="button" data-dsp="night">Ночной</button>
+      <button class="btn btn-sm" type="button" data-dsp="bass">Deep Punch</button>
+      <button class="btn btn-sm" type="button" data-dsp="club">Club Bass</button>
+    </div>
+    <svg id="maxDspCurve" viewBox="0 0 360 110" class="eq-svg" role="img" aria-label="Расчётная АЧХ"></svg>
+    <p class="hint" id="maxDspLegend">Расчётная АЧХ · НЧ / СЧ и ВЧ / Система</p>
+    <div class="form-row">
+      <label for="maxDspBass">Мощность баса <output id="maxDspBassValue"></output></label>
+      <input type="range" id="maxDspBass" min="-6" max="8" step="0.5" value="0">
+    </div>
+    <div class="form-row">
+      <label for="maxDspSub">Срез инфранизких <output id="maxDspSubValue"></output></label>
+      <input type="range" id="maxDspSub" min="35" max="80" step="1" value="48">
+    </div>
+    <div class="form-row">
+      <label for="maxDspTreble">Высокие частоты <output id="maxDspTrebleValue"></output></label>
+      <input type="range" id="maxDspTreble" min="-6" max="6" step="0.5" value="3">
+    </div>
+    <div class="form-row toggle-row"><label for="maxDsp-subsonic">Антивибрация</label><input type="checkbox" id="maxDsp-subsonic" checked></div>
+    <div class="form-row toggle-row"><label for="maxDsp-notch120">Режекторный фильтр 120 Гц</label><input type="checkbox" id="maxDsp-notch120" checked></div>
+    <div class="form-row toggle-row"><label for="maxDsp-phase">Фазовая компенсация APF-2 (260 Гц)</label><input type="checkbox" id="maxDsp-phase" checked></div>
+    <div class="form-row toggle-row"><label for="maxDsp-treble">Воздух ВЧ (13,5 кГц)</label><input type="checkbox" id="maxDsp-treble" checked></div>
+    <button class="btn btn-sm btn-accent" type="button" data-dsp="custom">Применить свои настройки</button>
+    <p class="hint" id="maxDspStatus" role="status"></p>
+    <div class="form-row toggle-row">
+      <label for="maxDspDrc">Обход лимитера (DRC Bypass)</label>
+      <input type="checkbox" id="maxDspDrc" aria-describedby="maxDspDrcStatus" disabled>
+    </div>
+    <p class="hint" id="maxDspDrcStatus" role="status"></p>
+  </div>
+</details>
             <details class="adv-details">
               <summary>Тонкий баланс громкости</summary>
               <div class="adv-details-body">

@@ -107,7 +107,9 @@ const char* status_text(int code) {
         case 204: return "No Content";
         case 401: return "Unauthorized";
         case 400: return "Bad Request";
+        case 403: return "Forbidden";
         case 404: return "Not Found";
+        case 409: return "Conflict";
         case 413: return "Payload Too Large";
         case 500: return "Internal Server Error";
         default: return "OK";
@@ -395,6 +397,12 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
             while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(v.begin());
             if (k == "content-length") {
                 content_length = static_cast<size_t>(std::strtoull(v.c_str(), nullptr, 10));
+            } else if (k == "host") {
+                req.host = v;
+            } else if (k == "origin") {
+                req.origin = v;
+            } else if (k == "content-type") {
+                req.content_type = v;
             } else if (k == "upgrade") {
                 for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 if (v.find("websocket") != std::string::npos) is_ws = true;

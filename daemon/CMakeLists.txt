@@ -34,6 +34,7 @@ add_executable(openstationd
     src/main.cpp
     src/config.cpp
     src/hw/alsa_mixer.cpp
+    src/hw/sy6045s_eq.cpp
     src/hw/framebuffer_hw.cpp
     src/hw/uinput_keys.cpp
     src/hw/input_monitor.cpp
