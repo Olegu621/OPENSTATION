@@ -1718,9 +1718,10 @@ int main(int argc, char** argv) {
             }
             case HwEventType::RemoteAssistant: {
                 if (c.assistant.enabled && c.assistant.mode == "gemini") {
-                    assistant.trigger_session("remote_button");
+                    assistant.toggle_session();
                 } else if (c.wyoming.enabled) {
-                    wyoming.trigger_button_session(6000);
+                    if (wyoming.is_streaming()) wyoming.stop_session();
+                    else wyoming.trigger_button_session(6000);
                 }
                 break;
             }
