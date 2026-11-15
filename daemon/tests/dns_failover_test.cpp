@@ -112,7 +112,9 @@ void test_candidate_ordering_and_failover() {
             r.latency_ms = r.ok ? 24 : -1;
             return r;
         },
-        [&](const std::string& mode, const std::string& host) {
+        [&](const std::string& mode, const std::string& host,
+            const std::string& expected_mode, const std::string& expected_host) {
+            if (applied_mode != expected_mode || applied_host != expected_host) return false;
             applied_mode = mode;
             applied_host = host;
             ++apply_count;
@@ -155,11 +157,46 @@ void test_candidate_ordering_and_failover() {
     assert(applied_host.empty());
 }
 
+void test_manual_change_during_probe_is_not_overwritten() {
+    DnsFailoverManager mgr;
+    std::string mode = "hostname";
+    std::string host = "dns.comss.one";
+    int writes = 0;
+    mgr.set_hooks(
+        [&](const std::string& candidate, int) {
+            DnsProbeResult r;
+            r.host = candidate;
+            if (candidate == "dns.comss.one") {
+                // The user changes Android DNS while the background probe runs.
+                mode = "off";
+                host.clear();
+                r.ok = false;
+            } else {
+                r.ok = true;
+            }
+            return r;
+        },
+        [&](const std::string& next_mode, const std::string& next_host,
+            const std::string& expected_mode, const std::string& expected_host) {
+            if (mode != expected_mode || host != expected_host) return false;
+            mode = next_mode;
+            host = next_host;
+            ++writes;
+            return true;
+        }
+    );
+    auto result = mgr.evaluate_and_switch("hostname", "dns.comss.one", {"router.comss.one"}, true, false, 0);
+    assert(!result.ok && !result.switched && result.reason == "apply_failed");
+    assert(result.active_mode == "hostname" && result.active_host == "dns.comss.one");
+    assert(mode == "off" && host.empty() && writes == 0);
+}
+
 } // namespace
 
 int main() {
     test_host_validation_and_normalization();
     test_dns_wire_packet_build_and_parse();
     test_candidate_ordering_and_failover();
+    test_manual_change_during_probe_is_not_overwritten();
     return 0;
 }

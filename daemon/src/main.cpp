@@ -1615,17 +1615,28 @@ int main(int argc, char** argv) {
 
     auto apply_private_dns = [&](const std::string& mode,
                                  const std::string& host,
-                                 std::string* output_out = nullptr) -> bool {
+                                 std::string* output_out = nullptr,
+                                 const std::string* expected_mode = nullptr,
+                                 const std::string* expected_host = nullptr) -> bool {
         if (mode != "hostname" && mode != "opportunistic" && mode != "off") return false;
         std::string clean_host = trim_ws_copy(host);
         if (mode == "hostname" && !openstation::net::is_valid_dns_host(clean_host)) return false;
-        std::string cmd = "/system/bin/settings put global private_dns_mode " + mode;
+        std::string cmd;
         if (mode == "hostname" && !clean_host.empty()) {
-            cmd += " && /system/bin/settings put global private_dns_specifier " + clean_host;
+            cmd = "/system/bin/settings put global private_dns_specifier " + clean_host + " && ";
         }
+        cmd += "/system/bin/settings put global private_dns_mode " + mode;
         ShellResult sr;
         {
             std::lock_guard<std::mutex> alk(dns_apply_mu);
+            if (expected_mode && expected_host) {
+                refresh_private_dns_cache();
+                std::lock_guard<std::mutex> lk(dns_mu);
+                if (private_dns_mode_cache != *expected_mode || private_dns_host_cache != *expected_host) {
+                    if (output_out) *output_out = "DNS settings changed during check";
+                    return false;
+                }
+            }
             sr = run_shell_with_timeout(cmd, 4, 256);
             refresh_private_dns_cache();
         }
@@ -1635,8 +1646,9 @@ int main(int argc, char** argv) {
 
     dns_failover.set_hooks(
         {},
-        [&](const std::string& mode, const std::string& host) -> bool {
-            return apply_private_dns(mode, host, nullptr);
+        [&](const std::string& mode, const std::string& host,
+            const std::string& expected_mode, const std::string& expected_host) -> bool {
+            return apply_private_dns(mode, host, nullptr, &expected_mode, &expected_host);
         });
 
     auto run_dns_failover_sync = [&](bool force, bool allow_when_disabled)

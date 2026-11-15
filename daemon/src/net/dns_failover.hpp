@@ -877,7 +877,8 @@ inline bool resolve_ipv4_with_fallback(const std::string& host,
 class DnsFailoverManager {
 public:
     using ProbeFn = std::function<DnsProbeResult(const std::string& host, int timeout_ms)>;
-    using ApplyDnsFn = std::function<bool(const std::string& mode, const std::string& host)>;
+    using ApplyDnsFn = std::function<bool(const std::string& mode, const std::string& host,
+                                          const std::string& expected_mode, const std::string& expected_host)>;
 
     struct FailoverOutcome {
         bool ok = false;
@@ -1067,7 +1068,7 @@ public:
         const int64_t now_epoch = static_cast<int64_t>(std::time(nullptr));
         if (found) {
             bool need_apply = (cur_mode != "hostname") || (chosen.host != cur_host);
-            bool applied = !need_apply || (afn ? afn("hostname", chosen.host) : false);
+            bool applied = !need_apply || (afn ? afn("hostname", chosen.host, cur_mode, cur_host) : false);
             if (applied) {
                 std::lock_guard<std::mutex> lk(mu_);
                 has_checked_before_ = true;
@@ -1084,17 +1085,18 @@ public:
                 }
             }
             out.ok = applied;
-            out.healthy = true;
+            out.healthy = applied;
             out.switched = need_apply && applied;
-            out.active_mode = "hostname";
-            out.active_host = chosen.host;
+            out.active_mode = applied ? "hostname" : cur_mode;
+            out.active_host = applied ? chosen.host : cur_host;
             out.latency_ms = chosen.latency_ms;
             out.reason = need_apply ? (applied ? "switched" : "apply_failed") : "active_healthy";
             return out;
         }
 
         // All DoT presets failed (e.g., port 853 blocked on network): fall back cleanly to opportunistic
-        bool fallback_opp = (cur_mode != "opportunistic") && afn && afn("opportunistic", "");
+        bool fallback_opp = (cur_mode != "opportunistic") && afn &&
+                            afn("opportunistic", "", cur_mode, cur_host);
         {
             std::lock_guard<std::mutex> lk(mu_);
             has_checked_before_ = true;
