@@ -52,6 +52,9 @@ object AnimatedSpriteHelper {
     fun attach(view: ImageView, resId: Int) {
         val prev = entries[view]
         if (prev != null && prev.resId == resId) {
+            // Album artwork may have replaced this ImageView's drawable directly.
+            // Restore the cached sprite before reusing it.
+            if (view.drawable !== prev.drawable) view.setImageDrawable(prev.drawable)
             syncView(view, prev.drawable)
             return
         }
@@ -108,7 +111,8 @@ object AnimatedSpriteHelper {
     }
 
     private fun syncView(view: ImageView, drawable: AnimatedImageDrawable) {
-        val shouldAnimate = globalWindowActive &&
+        val shouldAnimate = view.drawable === drawable &&
+            globalWindowActive &&
             view.isAttachedToWindow &&
             view.windowVisibility == View.VISIBLE &&
             isEffectivelyVisible(view)

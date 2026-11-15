@@ -477,11 +477,13 @@ object LiquidGlassKit {
             val tw = max(16, (src.width * scale).toInt())
             val th = max(16, (src.height * scale).toInt())
             val small = Bitmap.createScaledBitmap(src, tw, th, true)
-            val out = if (small.isMutable && small.config == Bitmap.Config.ARGB_8888) {
+            // createScaledBitmap can return src itself when no scaling is needed.
+            // Never mutate or recycle a bitmap owned by the caller.
+            val out = if (small !== src && small.isMutable && small.config == Bitmap.Config.ARGB_8888) {
                 small
             } else {
                 small.copy(Bitmap.Config.ARGB_8888, true).also {
-                    if (it !== small) small.recycle()
+                    if (small !== src && it !== small) small.recycle()
                 }
             }
             fastBoxBlurInPlace(out, radius = radius.coerceIn(2, 24), passes = 2)
