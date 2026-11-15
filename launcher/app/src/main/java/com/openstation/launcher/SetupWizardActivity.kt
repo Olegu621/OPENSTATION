@@ -23,6 +23,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -103,6 +104,7 @@ class SetupWizardActivity : Activity() {
     private lateinit var tvAliceHeading: TextView
     private lateinit var tvPersonalityLabel: TextView
     private lateinit var btnStep4WakeToggle: TextView
+    private lateinit var btnStep4VadSpeed: TextView
     private lateinit var btnStep4AgentToggle: TextView
     private val namePills = LinkedHashMap<String, TextView>()
     private val voicePills = LinkedHashMap<String, TextView>()
@@ -138,6 +140,8 @@ class SetupWizardActivity : Activity() {
     private var curAgentMode = true
     private var curDnsMode = ""
     private var curDnsHost = ""
+    private var curDnsFailoverEnabled = true
+    private var curVadSilenceMs = 400
     private var curOtaState = "idle"
     private var curOtaBusy = false
     private var curOtaLatest = ""
@@ -310,7 +314,6 @@ class SetupWizardActivity : Activity() {
             .scaleY(0.96f)
             .setDuration(MotionPrefs.dur(this, 360L))
             .setInterpolator(MotionPrefs.easeOutCurve)
-            .withLayer()
             .withEndAction { finish() }
             .start()
     }
@@ -327,7 +330,6 @@ class SetupWizardActivity : Activity() {
             .translationY(0f)
             .setDuration(MotionPrefs.dur(this, 480L))
             .setInterpolator(MotionPrefs.easeOutCurve)
-            .withLayer()
             .start()
         stepStage.animate()
             .alpha(1f)
@@ -336,7 +338,6 @@ class SetupWizardActivity : Activity() {
             .setStartDelay(MotionPrefs.dur(this, 70L))
             .setDuration(MotionPrefs.dur(this, 560L))
             .setInterpolator(MotionPrefs.easeOutCurve)
-            .withLayer()
             .start()
     }
 
@@ -356,12 +357,6 @@ class SetupWizardActivity : Activity() {
         }
         rootFrame.addView(spatialBackdrop)
         rootFrame.addView(auroraView)
-        rootFrame.viewTreeObserver.addOnPreDrawListener {
-            if (::spatialBackdrop.isInitialized) {
-                spatialBackdrop.syncLensesBeforeDraw(waitForFrame = true)
-            }
-            true
-        }
 
         shellContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -704,8 +699,7 @@ class SetupWizardActivity : Activity() {
         }.apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(10) })
 
         btnWifiDnsToggle = makeActionPill("🛡 DNS: Авто") {
-            val useComss = curDnsMode != "hostname" || curDnsHost != "dns.comss.one"
-            applyPrivateDns(if (useComss) "hostname" else "opportunistic", if (useComss) "dns.comss.one" else "")
+            openDnsFailoverDialog()
         }
         btnRow.addView(btnWifiDnsToggle)
         rightCol.addView(btnRow)
@@ -918,6 +912,27 @@ class SetupWizardActivity : Activity() {
         actRow.addView(btnStep4WakeToggle)
         actRow.addView(btnStep4AgentToggle)
         rightCol.addView(actRow)
+
+        val actRow2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
+            }
+        }
+        btnStep4VadSpeed = makeActionPill("⏱ Пауза речи: 400 мс") {
+            val steps = listOf(300, 400, 600, 900)
+            val idx = steps.indexOf(curVadSilenceMs)
+            val next = steps[(idx + 1) % steps.size]
+            curVadSilenceMs = next
+            pushConfigPatch(
+                JSONObject().put("assistant", JSONObject().put("vadSilenceMs", next)),
+                "Отклик речи: ${next} мс"
+            )
+            syncChoicesHighlight()
+        }
+        actRow2.addView(btnStep4VadSpeed)
+        rightCol.addView(actRow2)
 
         root.addView(heroCol)
         root.addView(rightCol)
@@ -1297,24 +1312,22 @@ class SetupWizardActivity : Activity() {
         btnNext.visibility = if (currentStep < TOTAL_STEPS) View.VISIBLE else View.GONE
         btnFinish.visibility = if (currentStep == TOTAL_STEPS) View.VISIBLE else View.GONE
 
-        val targetWidth = (dp(220) * currentStep) / TOTAL_STEPS
+        val fullW = dp(220)
+        if (footerProgressFill.layoutParams.width != fullW) {
+            footerProgressFill.layoutParams = footerProgressFill.layoutParams.apply { width = fullW }
+        }
+        footerProgressFill.pivotX = 0f
         progressAnim?.cancel()
-        val startW = footerProgressFill.layoutParams.width
-        if (animateTransition && startW != targetWidth) {
-            progressAnim = ValueAnimator.ofInt(startW, targetWidth).apply {
-                duration = MotionPrefs.dur(this@SetupWizardActivity, 480L)
-                interpolator = MotionPrefs.easeOutCurve
-                addUpdateListener { va ->
-                    footerProgressFill.layoutParams = footerProgressFill.layoutParams.apply {
-                        width = va.animatedValue as Int
-                    }
-                    footerProgressFill.requestLayout()
-                }
-                start()
-            }
+        footerProgressFill.animate().cancel()
+        val targetScale = (currentStep.toFloat() / TOTAL_STEPS.toFloat()).coerceIn(0f, 1f)
+        if (animateTransition) {
+            footerProgressFill.animate()
+                .scaleX(targetScale)
+                .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 480L))
+                .setInterpolator(MotionPrefs.easeOutCurve)
+                .start()
         } else {
-            footerProgressFill.layoutParams = footerProgressFill.layoutParams.apply { width = targetWidth }
-            footerProgressFill.requestLayout()
+            footerProgressFill.scaleX = targetScale
         }
 
         val forward = currentStep >= prevStep
@@ -1337,7 +1350,6 @@ class SetupWizardActivity : Activity() {
                         .scaleY(1f)
                         .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 480L))
                         .setInterpolator(MotionPrefs.easeOutCurve)
-                        .withLayer()
                         .start()
                 } else {
                     view.alpha = 1f
@@ -1352,7 +1364,6 @@ class SetupWizardActivity : Activity() {
                         .translationX(-slideOffset * 0.65f)
                         .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 360L))
                         .setInterpolator(MotionPrefs.easeOutCurve)
-                        .withLayer()
                         .withEndAction {
                             if (idx + 1 != currentStep) {
                                 view.visibility = View.GONE
@@ -1411,6 +1422,10 @@ class SetupWizardActivity : Activity() {
 
         btnStep4WakeToggle.text = if (curWakeEn) "🎙 Отклик: ВКЛ" else "🎙 Отклик: ВЫКЛ"
         btnStep4WakeToggle.setTextColor(Color.parseColor(if (curWakeEn) "#6EE7B7" else "#94A3B8"))
+        if (::btnStep4VadSpeed.isInitialized) {
+            btnStep4VadSpeed.text = "⏱ Пауза речи: ${curVadSilenceMs} мс"
+            btnStep4VadSpeed.setTextColor(Color.parseColor(if (curVadSilenceMs <= 450) "#7DD3FC" else "#FDE68A"))
+        }
 
         btnStep4AgentToggle.text = if (curAgentMode) "🤖 Агент ADB: ВКЛ" else "🤖 Агент ADB: ВЫКЛ"
         btnStep4AgentToggle.background = if (curAgentMode) {
@@ -1546,10 +1561,12 @@ class SetupWizardActivity : Activity() {
                 val j = JSONObject(txt)
                 val ok = j.optBoolean("ok", false)
                 val ms = j.optLong("latencyMs", 0L)
+                val via = j.optString("via", "")
                 val err = j.optString("error", "")
                 handler.post {
                     if (ok) {
-                        tvAliceStatus.text = "✓ Связь работает (${ms} мс)"
+                        val viaTxt = if (via.isNotBlank()) " · $via" else ""
+                        tvAliceStatus.text = "✓ Связь работает (${ms} мс$viaTxt)"
                         tvAliceStatus.setTextColor(Color.parseColor("#6EE7B7"))
                     } else {
                         tvAliceStatus.text = "✗ Ошибка: ${err.ifBlank { "нет ответа" }}"
@@ -1560,6 +1577,104 @@ class SetupWizardActivity : Activity() {
                 handler.post {
                     tvAliceStatus.text = "✗ Ошибка теста: ${t.message}"
                     tvAliceStatus.setTextColor(Color.parseColor("#FCA5A5"))
+                }
+            }
+        }
+    }
+
+    private fun openDnsFailoverDialog() {
+        val fallbackHosts = listOf(
+            "dns.comss.one" to "Comss Smart DNS",
+            "router.comss.one" to "Comss Router DNS",
+            "dns.malw.link" to "Malw Smart DNS",
+            "xbox-dns.ru" to "Xbox DNS",
+            "dns.adguard-dns.com" to "AdGuard DNS",
+            "freedns.controld.com" to "Control D Free",
+            "one.one.one.one" to "Cloudflare 1.1.1.1",
+            "dns.google" to "Google Public DNS"
+        )
+        val hosts = ArrayList<String>().apply {
+            add("")
+            fallbackHosts.forEach { add(it.first) }
+        }
+        val labels = ArrayList<String>().apply {
+            add(if (curDnsMode != "hostname") "✓ Авто (opportunistic)" else "Авто (opportunistic)")
+            fallbackHosts.forEach { (h, title) ->
+                val mark = if (curDnsMode == "hostname" && curDnsHost.equals(h, ignoreCase = true)) "✓ " else ""
+                add("$mark$title ($h)")
+            }
+        }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Private DNS и обход блокировок")
+            .setAdapter(adapter) { _, which ->
+                val chosen = hosts.getOrNull(which).orEmpty()
+                if (chosen.isEmpty()) {
+                    applyPrivateDns("opportunistic", "")
+                } else {
+                    applyPrivateDns("hostname", chosen)
+                }
+            }
+            .setPositiveButton("⚡ Подобрать рабочий") { _, _ ->
+                Toast.makeText(this, "Проверяем DoT DNS...", Toast.LENGTH_SHORT).show()
+                thread(isDaemon = true) {
+                    val res = DaemonApi.requestJson(
+                        "/api/system/dns/failover",
+                        "POST",
+                        JSONObject().put("force", true).toString(),
+                        timeoutMs = 8000
+                    )
+                    handler.post {
+                        val h = res?.optString("host", "").orEmpty()
+                        val m = res?.optString("mode", "").orEmpty()
+                        val lat = res?.optInt("latencyMs", -1) ?: -1
+                        val msg = if (res?.optBoolean("ok", false) == true) {
+                            val label = if (m == "hostname" && h.isNotBlank()) h else m
+                            "✓ Выбран DNS: $label" + if (lat >= 0) " (${lat} мс)" else ""
+                        } else {
+                            "⚠ Не удалось подобрать DNS"
+                        }
+                        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                        pollDaemonStatus()
+                    }
+                }
+            }
+            .setNeutralButton(
+                if (curDnsFailoverEnabled) "Автоперекл.: ВКЛ" else "Автоперекл.: ВЫКЛ"
+            ) { _, _ ->
+                curDnsFailoverEnabled = !curDnsFailoverEnabled
+                pushConfigPatch(
+                    JSONObject().put("assistant", JSONObject().put("dnsFailoverEnabled", curDnsFailoverEnabled)),
+                    if (curDnsFailoverEnabled) "Автопереключение DNS включено" else "Автопереключение DNS выключено"
+                )
+            }
+            .setNegativeButton("Закрыть", null)
+            .create()
+        dlg.show()
+
+        thread(isDaemon = true) {
+            val probeJson = DaemonApi.requestJson(
+                "/api/system/dns/probe",
+                "POST",
+                JSONObject().put("timeoutMs", 1300).toString(),
+                timeoutMs = 6000
+            )
+            val parsed = DaemonApi.parseDnsPresets(probeJson?.optJSONArray("presets"))
+            if (parsed.isNotEmpty() && dlg.isShowing) {
+                handler.post {
+                    if (!dlg.isShowing) return@post
+                    hosts.clear()
+                    labels.clear()
+                    hosts.add("")
+                    labels.add(if (curDnsMode != "hostname") "✓ Авто (opportunistic)" else "Авто (opportunistic)")
+                    parsed.forEach { item ->
+                        hosts.add(item.host)
+                        val mark = if (item.active) "✓ " else ""
+                        val lat = if (item.tested) (if (item.ok) " · ${item.latencyMs} мс" else " · ✗") else ""
+                        labels.add("$mark${item.name} (${item.host})$lat")
+                    }
+                    adapter.notifyDataSetChanged()
                 }
             }
         }
@@ -1681,6 +1796,8 @@ class SetupWizardActivity : Activity() {
                         curAgentMode = astCfg?.optBoolean("agentMode", ast?.optBoolean("agentMode", true) ?: true) ?: true
                         curProxyHost = astCfg?.optString("geminiProxyHost", "ai-pool.comss.one") ?: "ai-pool.comss.one"
                         curWakeEn = astCfg?.optBoolean("wakeWordEnabled", true) ?: true
+                        curDnsFailoverEnabled = astCfg?.optBoolean("dnsFailoverEnabled", true) ?: true
+                        curVadSilenceMs = astCfg?.optInt("vadSilenceMs", 400) ?: 400
                         curKwsReady = ww?.optBoolean("ready", false) ?: false
                         curKwsDetections = ww?.optInt("detections", 0) ?: 0
                         curVadSpeech = ww?.optBoolean("vadSpeech", false) ?: false
@@ -1738,9 +1855,9 @@ class SetupWizardActivity : Activity() {
             else -> "Нет подключения к Wi-Fi"
         }
         tvWifiStatus.setTextColor(Color.parseColor(if (netOk) "#6EE7B7" else "#FDE68A"))
-        val comssOn = curDnsMode == "hostname" && curDnsHost.equals("dns.comss.one", ignoreCase = true)
-        btnWifiDnsToggle.text = if (comssOn) "🛡 DNS: comss.one" else "🛡 DNS: Авто"
-        btnWifiDnsToggle.setTextColor(Color.parseColor(if (comssOn) "#6EE7B7" else "#E2E8F0"))
+        val hasCustomDns = curDnsMode == "hostname" && curDnsHost.isNotBlank()
+        btnWifiDnsToggle.text = if (hasCustomDns) "🛡 DNS: $curDnsHost" else "🛡 DNS: Авто"
+        btnWifiDnsToggle.setTextColor(Color.parseColor(if (hasCustomDns) "#6EE7B7" else "#E2E8F0"))
 
         // Screen 3 OTA
         otaHeroView.otaProgress = if (curOtaBusy) curOtaPct else 0

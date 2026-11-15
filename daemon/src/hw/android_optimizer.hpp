@@ -444,8 +444,8 @@ inline void apply_kernel_and_irq_tuning(const OptimizerPaths& paths,
         // at 100-1000 MHz (731 mV) instead of pinning 1800 MHz (981 mV), while cooler interactive values
         // remain as fallback if schedutil sysfs is absent.
         {paths.cpufreq_policy_dir + "/scaling_governor", "schedutil"},
-        {paths.cpufreq_policy_dir + "/schedutil/up_rate_limit_us", "8000"},
-        {paths.cpufreq_policy_dir + "/schedutil/down_rate_limit_us", "12000"},
+        {paths.cpufreq_policy_dir + "/schedutil/up_rate_limit_us", "1000"},
+        {paths.cpufreq_policy_dir + "/schedutil/down_rate_limit_us", "15000"},
         {paths.cpufreq_interactive_dir + "/go_hispeed_load", "88"},
         {paths.cpufreq_interactive_dir + "/hispeed_freq", "1000000"},
         {paths.cpufreq_interactive_dir + "/io_is_busy", "0"},
@@ -454,7 +454,7 @@ inline void apply_kernel_and_irq_tuning(const OptimizerPaths& paths,
         {paths.cpufreq_interactive_dir + "/above_hispeed_delay", "25000 1398000:50000"},
         {paths.cpufreq_interactive_dir + "/target_loads", "75 1000000:85 1398000:92"},
         // Mali-G31 Bifrost: halve DVFS window & autosuspend delay so GPU drops clocks rapidly at rest
-        {paths.gpu_bifrost_dir + "/dvfs_period", "50"},
+        {paths.gpu_bifrost_dir + "/dvfs_period", "20"},
         {paths.gpu_bifrost_dir + "/power/autosuspend_delay_ms", "50"},
         {paths.gpu_bifrost_dir + "/power/control", "auto"},
     };

@@ -38,6 +38,7 @@ struct AssistantCallbacks {
     std::function<void(const json::Value& evt)> broadcast_event;
     std::function<json::Value(const std::string& name, const json::Value& args)> execute_tool;
     std::function<std::string()> get_runtime_context;
+    std::function<void(const std::string& reason)> on_network_or_dns_error;
 };
 
 struct DialogEntry {
@@ -120,6 +121,7 @@ private:
     std::vector<int16_t> tx_pcm_;
     std::deque<std::string> tx_texts_;
     std::atomic<float> last_mic_rms_{0.0f};
+    std::atomic<float> ambient_rms_ema_{65.0f};
     std::atomic<int64_t> last_speech_ms_{0};
 
     // Session thread management
@@ -139,6 +141,8 @@ private:
     std::string last_trigger_reason_;
     std::atomic<uint64_t> sessions_count_{0};
     std::atomic<bool> use_proxy_host_{false};
+    std::mutex proxy_mu_;
+    std::string active_proxy_host_;
     std::atomic<bool> search_quota_unsupported_{false};
 
     // Guard to avoid self-retriggering right after a session ends

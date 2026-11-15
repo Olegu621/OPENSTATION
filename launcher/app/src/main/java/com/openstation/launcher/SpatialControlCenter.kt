@@ -87,6 +87,7 @@ class SpatialControlCenter(
         fun onOpenShellReset()
         fun onOpenAndroidSettingsMenu()
         fun onAnimationSpeedChanged(speed: MotionPrefs.Speed) {}
+        fun onUiStyleChanged(style: LiquidGlassKit.UiStyle) {}
         fun onClosed()
     }
 
@@ -155,6 +156,7 @@ class SpatialControlCenter(
     private val rowRemote: ActionRow
     private val rowWebQr: ActionRow
     private val rowCustom: ActionRow
+    private val rowUiStyle: ActionRow
     private lateinit var rowAnimSpeed: ActionRow
     private val rowOta: ActionRow
     private val rowWizard: ActionRow
@@ -370,6 +372,12 @@ class SpatialControlCenter(
 
         rowDsp = makeActionRow(R.drawable.ic_hw_eq, "Звук и DSP", "SY6045S") { callbacks.onOpenHardwareEq() }
         rowCustom = makeActionRow(R.drawable.ic_hw_display, "Обои и интерфейс", "") { callbacks.onOpenCustomization() }
+        rowUiStyle = makeActionRow(R.drawable.ic_hw_display, "Тема лаунчера", LiquidGlassKit.currentUiStyle.label) {
+            val next = if (LiquidGlassKit.isClassicUi()) LiquidGlassKit.UiStyle.FROSTED else LiquidGlassKit.UiStyle.CLASSIC
+            LiquidGlassKit.setUiStyle(context, next, persist = true)
+            updateUiStyleUi()
+            callbacks.onUiStyleChanged(next)
+        }
 
         val initSpeed = MotionPrefs.current(context)
         rowAnimSpeed = makeActionRow(R.drawable.ic_refresh, "Скорость анимаций", initSpeed.label) {
@@ -401,13 +409,13 @@ class SpatialControlCenter(
         actionRows.addAll(
             listOf(
                 rowPersona, rowTimers, rowRemote,
-                rowDsp, rowCustom,
+                rowDsp, rowUiStyle, rowCustom,
                 rowAnimSpeed, rowOta, rowWebQr, rowWizard, rowShellReset, rowSystemTv
             )
         )
 
         sectionRowsMap[1] = listOf(rowPersona, rowTimers, rowRemote)
-        sectionRowsMap[2] = listOf(rowDsp, rowCustom)
+        sectionRowsMap[2] = listOf(rowUiStyle, rowDsp, rowCustom)
         sectionRowsMap[3] = listOf(rowAnimSpeed, rowOta, rowWebQr, rowWizard, rowShellReset, rowSystemTv)
 
         val sec0 = buildAccordionSection(
@@ -607,13 +615,27 @@ class SpatialControlCenter(
         }
     }
 
+    private fun syncAccordionTranslations() {
+        var cumulativeDelta = 0f
+        for (i in 0 until contentCol.childCount) {
+            val child = contentCol.getChildAt(i)
+            child.translationY = cumulativeDelta
+            val sec = sections.firstOrNull { it.container === child } ?: continue
+            val layoutH = if (sec.body.visibility == View.GONE) 0 else (sec.body.layoutParams?.height ?: 0).coerceAtLeast(0)
+            val clipH = sec.body.clipBounds?.height() ?: layoutH
+            if (sec.animator != null) {
+                cumulativeDelta += (clipH - layoutH).toFloat()
+            }
+        }
+    }
+
     private fun animateAccordionSection(sec: AccordionSection, expand: Boolean) {
         if (sec.expanded == expand && sec.animator == null) return
         sec.expanded = expand
         sec.animator?.cancel()
         sec.animator = null
 
-        val animDur = MotionPrefs.dur(context, if (expand) 460L else 400L)
+        val animDur = MotionPrefs.dur(context, if (expand) 440L else 380L)
 
         sec.chevron.animate().cancel()
         sec.chevron.animate()
@@ -625,13 +647,14 @@ class SpatialControlCenter(
         sec.summary.animate().cancel()
         sec.summary.animate()
             .alpha(if (expand) 0f else 1f)
-            .setDuration(MotionPrefs.dur(context, 300L))
+            .setDuration(MotionPrefs.dur(context, 280L))
             .setInterpolator(easeOutCubic)
             .start()
 
         val inner = sec.body.getChildAt(0) ?: return
         val availW = (scrollView.width - contentCol.paddingLeft - contentCol.paddingRight).coerceAtLeast(dp(340))
-        val curH = if (sec.body.visibility == View.GONE) 0 else sec.body.height.coerceAtLeast(0)
+        val curH = sec.body.clipBounds?.height() ?: if (sec.body.visibility == View.GONE) 0 else sec.body.height.coerceAtLeast(0)
+        val clipRect = android.graphics.Rect()
 
         if (expand) {
             sec.body.measure(
@@ -639,11 +662,15 @@ class SpatialControlCenter(
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
             )
             val targetH = sec.body.measuredHeight.coerceAtLeast(dp(48))
-            val startAlpha = if (curH == 0) 0f else sec.body.alpha
-            sec.body.visibility = View.VISIBLE
+            val startAlpha = if (curH == 0) 0f else inner.alpha
+            // Set full targetH once upfront so scrolling/layout changes happen once, not per frame
             sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply {
-                height = curH
+                height = targetH
             }
+            sec.body.visibility = View.VISIBLE
+            sec.body.alpha = 1f
+            clipRect.set(0, 0, availW, curH)
+            sec.body.clipBounds = clipRect
             inner.alpha = startAlpha
             inner.translationY = if (curH == 0) -dp(12).toFloat() else 0f
 
@@ -652,19 +679,18 @@ class SpatialControlCenter(
                 interpolator = easeInOutCurve
                 addUpdateListener { va ->
                     val t = va.animatedValue as Float
-                    val h = (curH + (targetH - curH) * t).toInt()
-                    sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply {
-                        height = h
-                    }
-                    sec.body.alpha = 1f
+                    val h = (curH + (targetH - curH) * t).toInt().coerceIn(0, targetH)
+                    clipRect.set(0, 0, availW, h)
+                    sec.body.clipBounds = clipRect
                     inner.alpha = startAlpha + (1f - startAlpha) * t
                     inner.translationY = -dp(10) * (1f - t)
-                    sec.body.requestLayout()
+                    syncAccordionTranslations()
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
                         sec.animator = null
                         if (sec.expanded) {
+                            sec.body.clipBounds = null
                             sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply {
                                 height = ViewGroup.LayoutParams.WRAP_CONTENT
                             }
@@ -672,10 +698,12 @@ class SpatialControlCenter(
                             inner.alpha = 1f
                             inner.translationY = 0f
                         }
+                        syncAccordionTranslations()
                     }
                 })
             }
             sec.animator = anim
+            syncAccordionTranslations()
             anim.start()
         } else {
             val startH = if (curH > 0) curH else {
@@ -685,31 +713,41 @@ class SpatialControlCenter(
                 )
                 sec.body.measuredHeight
             }
+            val layoutH = (sec.body.layoutParams?.height ?: 0).let { lpH ->
+                if (lpH > 0) lpH else startH
+            }
             if (startH <= 0) {
+                sec.body.clipBounds = null
                 sec.body.visibility = View.GONE
                 sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply { height = 0 }
                 inner.alpha = 0f
                 inner.translationY = 0f
+                syncAccordionTranslations()
                 return
             }
+            if (sec.body.layoutParams?.height != layoutH) {
+                sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply { height = layoutH }
+            }
             val startAlpha = inner.alpha
+            clipRect.set(0, 0, availW, startH)
+            sec.body.clipBounds = clipRect
             val anim = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = animDur
                 interpolator = easeInOutCurve
                 addUpdateListener { va ->
                     val t = va.animatedValue as Float
-                    val h = (startH * (1f - t)).toInt().coerceAtLeast(0)
-                    sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply {
-                        height = h
-                    }
+                    val h = (startH * (1f - t)).toInt().coerceIn(0, layoutH)
+                    clipRect.set(0, 0, availW, h)
+                    sec.body.clipBounds = clipRect
                     inner.alpha = startAlpha * (1f - t)
                     inner.translationY = -dp(8) * t
-                    sec.body.requestLayout()
+                    syncAccordionTranslations()
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
                         sec.animator = null
                         if (!sec.expanded) {
+                            sec.body.clipBounds = null
                             sec.body.visibility = View.GONE
                             sec.body.layoutParams = (sec.body.layoutParams as LinearLayout.LayoutParams).apply {
                                 height = 0
@@ -717,10 +755,12 @@ class SpatialControlCenter(
                             inner.alpha = 0f
                             inner.translationY = 0f
                         }
+                        syncAccordionTranslations()
                     }
                 })
             }
             sec.animator = anim
+            syncAccordionTranslations()
             anim.start()
         }
     }
@@ -748,6 +788,16 @@ class SpatialControlCenter(
     private fun updateAnimSpeedUi(speed: MotionPrefs.Speed) {
         rowAnimSpeed.value.text = speed.label
         sections.getOrNull(3)?.summary?.text = speed.shortLabel
+    }
+
+    fun syncUiStyle(style: LiquidGlassKit.UiStyle = LiquidGlassKit.currentUiStyle) {
+        rowUiStyle.value.text = style.label
+        LiquidGlassKit.refreshGlassTree(rootOverlay)
+    }
+
+    private fun updateUiStyleUi() {
+        val style = LiquidGlassKit.currentUiStyle
+        rowUiStyle.value.text = style.label
     }
 
     private fun makeMonolithSurface(
@@ -1007,6 +1057,7 @@ class SpatialControlCenter(
         rootOverlay.animate().cancel()
         drawerCard.animate().cancel()
         updateAnimSpeedUi(MotionPrefs.current(context))
+        updateUiStyleUi()
 
         rootOverlay.visibility = View.VISIBLE
         rootOverlay.alpha = 0f
@@ -1019,13 +1070,11 @@ class SpatialControlCenter(
             .alpha(1f)
             .setDuration(openDur)
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .start()
         drawerCard.animate()
             .translationX(0f)
             .setDuration(openDur)
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .withEndAction {
                 if (isOpen) {
                     val focusTarget = when {
@@ -1056,13 +1105,11 @@ class SpatialControlCenter(
             .translationX(dp(460).toFloat())
             .setDuration(closeDur)
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .start()
         rootOverlay.animate()
             .alpha(0f)
             .setDuration(closeDur)
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .withEndAction {
                 if (!isOpen) {
                     rootOverlay.visibility = View.GONE
@@ -1147,13 +1194,15 @@ class SpatialControlCenter(
         rowWebQr.value.text = ipLine
 
         updateAnimSpeedUi(MotionPrefs.current(context))
+        updateUiStyleUi()
         sections.getOrNull(0)?.summary?.text = "$routeTxt · $ringTxt"
         sections.getOrNull(1)?.summary?.text = if (timersCountText != "Нет активных" && timersCountText.isNotBlank()) {
             "$assistantName · $timersCountText"
         } else {
             assistantName
         }
-        sections.getOrNull(2)?.summary?.text = if (hwEqSupported) hwEqProfile else "Обои и стиль"
+        val styleShort = if (LiquidGlassKit.isClassicUi()) "Классика" else "Матовое"
+        sections.getOrNull(2)?.summary?.text = if (hwEqSupported) "$styleShort · $hwEqProfile" else styleShort
 
         val avail = otaJson?.optBoolean("updateAvailable", false) ?: false
         val busy = otaJson?.optBoolean("busy", false) ?: false

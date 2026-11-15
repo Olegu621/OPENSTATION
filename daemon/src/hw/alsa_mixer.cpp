@@ -206,6 +206,7 @@ bool AlsaMixer::set_enum(const std::string& name, const std::string& choice) {
 }
 
 bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bool muted) {
+    const bool hdmi_on = route == "hdmi";
     bool spk_on = true;
     bool hp_on = false;
     if (route == "speakers") {
@@ -232,8 +233,17 @@ bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bo
     set_bool("Woofer Master Playback Switch", spk_on && !muted);
     set_bool("Tweeters Master Playback Switch", spk_on && !muted);
     set_bool("Headphone Headphone Switch", hp_on && !muted);
-    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d)",
-         route.c_str(), hp_plugged ? 1 : 0, muted ? 1 : 0, spk_on ? 1 : 0, hp_on ? 1 : 0);
+    // Some vendor builds expose this switch through ALSA; others route HDMI
+    // exclusively through AudioPolicy. Never address it by numeric index.
+    bool hdmi_mute = false;
+    if (get_bool("Audio hdmi-out mute", hdmi_mute)) {
+        set_bool("Audio hdmi-out mute", !hdmi_on || muted);
+    }
+    if (!set_enum("Loopback tmdin lb source", hdmi_on ? "TDMOUT_C" : "TDMOUT_A")) {
+        LOGW("AlsaMixer", "Unable to select %s audio reference", hdmi_on ? "HDMI" : "speaker");
+    }
+    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d hdmi=%d)",
+         route.c_str(), hp_plugged ? 1 : 0, muted ? 1 : 0, spk_on ? 1 : 0, hp_on ? 1 : 0, hdmi_on ? 1 : 0);
     return true;
 }
 

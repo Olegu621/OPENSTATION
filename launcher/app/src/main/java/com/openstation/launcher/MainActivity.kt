@@ -243,6 +243,11 @@ class MainActivity : Activity() {
     private var assistantNameState = "Алиса"
     private var assistantVoiceState = "Aoede"
     private var assistantPromptState = ""
+    private var assistantVadSilenceMsState = 400
+    private var dnsModeState = ""
+    private var dnsHostState = ""
+    private var dnsAutoFailoverState = true
+    private var dnsFailoverSummaryState = ""
     private var hwEqSupportedState = false
     private var hwEqProfileState = "original"
     private var hwEqDrcBypassedState = false
@@ -471,6 +476,7 @@ class MainActivity : Activity() {
             spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this)
             spatialBackdrop.onHostResume()
         }
+        AnimatedSpriteHelper.syncAll(windowActive = true)
         if (::screensaverOverlay.isInitialized) {
             screensaverOverlay.onHostResume()
         }
@@ -518,6 +524,7 @@ class MainActivity : Activity() {
         if (::spatialBackdrop.isInitialized) {
             spatialBackdrop.onHostPause()
         }
+        AnimatedSpriteHelper.syncAll(windowActive = false)
         super.onPause()
     }
 
@@ -554,6 +561,7 @@ class MainActivity : Activity() {
             spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this)
             spatialBackdrop.onHostResume()
         }
+        AnimatedSpriteHelper.syncAll(windowActive = true)
         if (::screensaverOverlay.isInitialized) {
             screensaverOverlay.onHostResume()
         }
@@ -964,6 +972,7 @@ class MainActivity : Activity() {
         val ccOpen = ::controlCenter.isInitialized && controlCenter.isOpen
         val musicSheetActive = ::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen
         val saverActive = ::screensaverOverlay.isInitialized && screensaverOverlay.isOpen
+        AnimatedSpriteHelper.syncAll(windowActive = !saverActive)
         val otherOverlayActive = appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen || musicSheetActive || saverActive
         val overlayActive = ccOpen || otherOverlayActive
         val topTargetAlpha = if (otherOverlayActive) 0f else 1f
@@ -1026,7 +1035,6 @@ class MainActivity : Activity() {
                         .scaleY(stageTargetScale)
                         .setDuration(MotionPrefs.dur(this, if (wantVisible) 420L else 360L))
                         .setInterpolator(easeOutCubic)
-                        .withLayer()
                         .withEndAction {
                             if (pagesStage.alpha < 0.02f) {
                                 pagesStage.visibility = View.INVISIBLE
@@ -1183,13 +1191,6 @@ class MainActivity : Activity() {
             }
         }
         rootFrame.addView(spatialBackdrop)
-
-        rootFrame.viewTreeObserver.addOnPreDrawListener {
-            if (::spatialBackdrop.isInitialized && !glBackdropFailed) {
-                spatialBackdrop.syncLensesBeforeDraw(waitForFrame = true)
-            }
-            true
-        }
 
         // Main vertical container: Minimal Header + Spatial Star Stage
         shellCol = LinearLayout(this).apply {
@@ -1453,6 +1454,9 @@ class MainActivity : Activity() {
                     if (::spatialBackdrop.isInitialized) {
                         spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this@MainActivity)
                     }
+                }
+                override fun onUiStyleChanged(style: LiquidGlassKit.UiStyle) {
+                    applyUiStyle(style)
                 }
                 override fun onClosed() {
                     syncLayerFocusability()
@@ -2031,24 +2035,23 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
+        val coverGlassBevelNormal = coverGlassBevel.background
+        val coverGlassBevelFocus = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                Color.parseColor("#42FFFFFF"),
+                Color.parseColor("#05FFFFFF"),
+                Color.parseColor("#00000000"),
+                Color.parseColor("#18000000")
+            )
+        ).apply {
+            cornerRadius = dp(28).toFloat()
+            setStroke(dp(2), Color.parseColor("#AAFFFFFF"))
+        }
         coverGlassFrame.setOnFocusChangeListener { v, hasFocus ->
             v.animate().scaleX(if (hasFocus) 1.045f else 1f).scaleY(if (hasFocus) 1.045f else 1f)
                 .setDuration(MotionPrefs.dur(this@MainActivity, 240L)).setInterpolator(focusSpring).start()
-            coverGlassBevel.background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                intArrayOf(
-                    Color.parseColor(if (hasFocus) "#42FFFFFF" else "#2AFFFFFF"),
-                    Color.parseColor("#05FFFFFF"),
-                    Color.parseColor("#00000000"),
-                    Color.parseColor("#18000000")
-                )
-            ).apply {
-                cornerRadius = dp(28).toFloat()
-                setStroke(
-                    if (hasFocus) dp(2) else dp(1),
-                    Color.parseColor(if (hasFocus) "#AAFFFFFF" else "#44FFFFFF")
-                )
-            }
+            coverGlassBevel.background = if (hasFocus) coverGlassBevelFocus else coverGlassBevelNormal
         }
         coverGlassFrame.addView(ivHomeCover)
         coverGlassFrame.addView(coverGlassBevel)
@@ -3269,6 +3272,22 @@ class MainActivity : Activity() {
                     assistantNameState = pName
                     assistantVoiceState = pVoice
                     assistantPromptState = pPrompt
+                    assistantVadSilenceMsState = astCfg?.optInt("vadSilenceMs", assistantVadSilenceMsState) ?: assistantVadSilenceMsState
+                    dnsAutoFailoverState = astCfg?.optBoolean("dnsFailoverEnabled", dnsAutoFailoverState) ?: dnsAutoFailoverState
+                    dnsModeState = root.optString("privateDnsMode", dnsModeState)
+                    dnsHostState = root.optString("privateDnsHost", dnsHostState)
+                    val dfObj = root.optJSONObject("dnsFailover")
+                    if (dfObj != null) {
+                        val healthy = dfObj.optBoolean("healthy", true)
+                        val lat = dfObj.optInt("latencyMs", -1)
+                        val swTo = dfObj.optString("lastSwitchTo", "")
+                        dnsFailoverSummaryState = when {
+                            !healthy -> "⚠ DNS недоступен: ${dfObj.optString("lastError", "сбой DoT")}"
+                            swTo.isNotBlank() && lat >= 0 -> "↻ Резерв: $swTo (${lat} мс)"
+                            lat >= 0 && dnsHostState.isNotBlank() -> "✓ $dnsHostState (${lat} мс)"
+                            else -> ""
+                        }
+                    }
                     LiveOrbState.updateAssistantPersona(pName, pVoice)
 
                     val hwEqObj = root.optJSONObject("hardwareEq")
@@ -3717,6 +3736,7 @@ class MainActivity : Activity() {
     private fun openScreensaver() {
         if (!::screensaverOverlay.isInitialized || screensaverOverlay.isOpen) return
         updateClock(force = true)
+        if (::spatialBackdrop.isInitialized) spatialBackdrop.onHostPause()
         screensaverOverlay.updateMusic(latestMusicSnap, latestCoverBmp)
         screensaverOverlay.open()
         syncLayerFocusability()
@@ -3727,6 +3747,7 @@ class MainActivity : Activity() {
         if (!::screensaverOverlay.isInitialized) return
         if (!screensaverOverlay.isOpen && screensaverOverlay.rootOverlay.visibility != View.VISIBLE) return
         screensaverOverlay.close(immediate = immediate)
+        if (::spatialBackdrop.isInitialized) spatialBackdrop.onHostResume()
         syncLayerFocusability()
         syncBackdropBlurForUiState(animate = !immediate)
         if (!isAnyOverlayActive()) {
@@ -4407,6 +4428,19 @@ class MainActivity : Activity() {
             .start()
     }
 
+    private fun applyUiStyle(style: LiquidGlassKit.UiStyle, persist: Boolean = true) {
+        LiquidGlassKit.setUiStyle(this, style, persist = persist)
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.refreshThemeMode()
+        }
+        if (::rootFrame.isInitialized) {
+            LiquidGlassKit.refreshGlassTree(rootFrame)
+        }
+        if (::controlCenter.isInitialized) {
+            controlCenter.syncUiStyle(style)
+        }
+    }
+
     private fun applyWallpaperTheme(themeId: String, persist: Boolean = true) {
         LiquidGlassKit.setWallpaper(this, themeId, persist)
         if (::ivBgFallback.isInitialized) {
@@ -4555,7 +4589,6 @@ class MainActivity : Activity() {
             .translationY(0f)
             .setDuration(MotionPrefs.dur(this, 480L))
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .start()
 
         drawerScrollView.scrollTo(0, 0)
@@ -4599,7 +4632,6 @@ class MainActivity : Activity() {
             .translationY(dp(48).toFloat())
             .setDuration(MotionPrefs.dur(this, 400L))
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .withEndAction {
                 if (!appsDrawerOpen) {
                     appsDrawerOverlay.visibility = View.GONE
@@ -4693,6 +4725,27 @@ class MainActivity : Activity() {
             clipToPadding = false
             setPadding(dp(4), dp(2), dp(4), dp(6))
         }
+
+        body.addView(makeSectionTitle("Тема интерфейса", R.drawable.ic_hw_display))
+        val themeModeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
+                bottomMargin = dp(10)
+            }
+        }
+        val isClassicNow = LiquidGlassKit.isClassicUi()
+        themeModeRow.addView(makeModalChoicePill("✦ Матовое стекло", !isClassicNow) {
+            applyUiStyle(LiquidGlassKit.UiStyle.FROSTED)
+            showHomeCustomizationMenu()
+        })
+        themeModeRow.addView(makeModalChoicePill("◈ Классическая", isClassicNow) {
+            applyUiStyle(LiquidGlassKit.UiStyle.CLASSIC)
+            showHomeCustomizationMenu()
+        })
+        body.addView(themeModeRow)
 
         body.addView(makeSectionTitle("Обои рабочего стола", R.drawable.ic_wave))
 
@@ -5325,16 +5378,249 @@ class MainActivity : Activity() {
         }
         panel.addView(sysGrid)
 
+        val curDnsLabel = if (dnsModeState == "hostname" && dnsHostState.isNotBlank()) dnsHostState else "Авто"
+        val autoDnsTxt = if (dnsAutoFailoverState) "Автоподбор ВКЛ" else "Автоподбор ВЫКЛ"
+        val btnDnsMgr = makeModalChoicePill("🛡 Private DNS и обход ($curDnsLabel · $autoDnsTxt)", false) {
+            showDnsFailoverModal()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(10)
+            }
+        }
+        panel.addView(btnDnsMgr)
+
         val btnClose = makeTextIconPill(R.drawable.ic_home, "Назад", accent = true, cleanupPool = customOverlayLensCleanups) {
             closeHomeCustomizationMenu()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                 gravity = Gravity.END
-                topMargin = dp(14)
+                topMargin = dp(12)
             }
         }
         panel.addView(btnClose)
         presentOverlayModal(panel, firstTile ?: btnClose)
+    }
+
+    private fun updateModalChoicePillVisual(tv: TextView, sel: Boolean) {
+        tv.isSelected = sel
+        tv.setTextColor(Color.parseColor(if (sel) "#FDE68A" else "#E2E8F0"))
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.updateLensSpec(tv) {
+                it.copy(
+                    baseTint = if (sel) Color.parseColor("#442B2210") else Color.parseColor("#2A0C1220"),
+                    focusTint = if (sel) Color.parseColor("#6A403014") else Color.parseColor("#541A2C4A"),
+                    accentTint = if (sel) Color.parseColor("#FBBF24") else 0,
+                    rimAlpha = if (sel) 0.48f else 0.25f
+                )
+            }
+        }
+    }
+
+    private fun showDnsFailoverModal() {
+        timersScreenRef = null
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
+        val panel = makeModalGlassPanel(720)
+
+        panel.addView(TextView(this).apply {
+            text = "Private DNS (DoT) и автопереключение"
+            setTextColor(Color.WHITE)
+            textSize = 18.5f
+            typeface = YandexFonts.displayBold(this@MainActivity)
+        })
+        val tvDnsBanner = TextView(this).apply {
+            val activeLabel = if (dnsModeState == "hostname" && dnsHostState.isNotBlank()) dnsHostState else "Авто"
+            text = dnsFailoverSummaryState.ifBlank { "Активный DNS: $activeLabel · Замер задержки..." }
+            setTextColor(Color.parseColor("#93C5FD"))
+            textSize = 12f
+            setPadding(0, dp(4), 0, dp(10))
+        }
+        panel.addView(tvDnsBanner)
+
+        val grid = GridLayout(this).apply {
+            columnCount = 2
+            useDefaultMargins = false
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val pillMap = LinkedHashMap<String, TextView>()
+        val baseEntries = mutableListOf(
+            "" to "Авто (opportunistic)",
+            "dns.comss.one" to "Comss Smart DNS (dns.comss.one)",
+            "router.comss.one" to "Comss Router (router.comss.one)",
+            "dns.malw.link" to "Malw Smart DNS (dns.malw.link)",
+            "xbox-dns.ru" to "Xbox DNS (xbox-dns.ru)",
+            "dns.xbox-dns.ru" to "Xbox DNS Alt (dns.xbox-dns.ru)",
+            "freedns.controld.com" to "Control D Free (freedns.controld.com)",
+            "dns.adguard-dns.com" to "AdGuard DNS (dns.adguard-dns.com)",
+            "one.one.one.one" to "Cloudflare 1.1.1.1 (one.one.one.one)",
+            "dns.google" to "Google DNS (dns.google)"
+        )
+
+        fun refreshHighlights(probes: List<DnsPresetUiItem>? = null) {
+            val activeKey = if (dnsModeState == "hostname") dnsHostState else ""
+            val byHost = probes?.associateBy { it.host }.orEmpty()
+            pillMap.forEach { (hostKey, tv) ->
+                updateModalChoicePillVisual(tv, hostKey.equals(activeKey, ignoreCase = true))
+                val baseTitle = baseEntries.firstOrNull { it.first == hostKey }?.second ?: hostKey
+                val pr = byHost[hostKey]
+                if (pr != null && pr.tested) {
+                    val lat = if (pr.ok) " · ${pr.latencyMs} мс ✓" else " · ✗"
+                    tv.text = "${pr.name} ($hostKey)$lat"
+                } else {
+                    tv.text = baseTitle
+                }
+            }
+        }
+
+        fun applyDnsChoice(host: String) {
+            tvDnsBanner.text = "⏳ Применяем DNS: ${host.ifBlank { "Авто" }}..."
+            tvDnsBanner.setTextColor(Color.parseColor("#FDE68A"))
+            thread(isDaemon = true) {
+                val payload = JSONObject()
+                    .put("mode", if (host.isBlank()) "opportunistic" else "hostname")
+                    .put("host", host)
+                    .toString()
+                val res = DaemonApi.requestJson("/api/system/dns", "POST", payload, timeoutMs = 4500)
+                handler.post {
+                    val ok = res?.optBoolean("ok", false) == true
+                    if (ok) {
+                        dnsModeState = res?.optString("mode", dnsModeState).orEmpty()
+                        dnsHostState = res?.optString("host", dnsHostState).orEmpty()
+                        tvDnsBanner.text = "✓ Применён DNS: ${dnsHostState.ifBlank { dnsModeState }}"
+                        tvDnsBanner.setTextColor(Color.parseColor("#6EE7B7"))
+                    } else {
+                        tvDnsBanner.text = "✗ Не удалось переключить DNS"
+                        tvDnsBanner.setTextColor(Color.parseColor("#FCA5A5"))
+                    }
+                    refreshHighlights()
+                }
+            }
+        }
+
+        var firstFocus: View? = null
+        baseEntries.forEachIndexed { idx, (hostKey, label) ->
+            val selected = if (hostKey.isEmpty()) dnsModeState != "hostname" else (dnsModeState == "hostname" && dnsHostState.equals(hostKey, ignoreCase = true))
+            val pill = makeModalChoicePill(label, selected) {
+                applyDnsChoice(hostKey)
+            }.apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }
+            if (idx == 0) firstFocus = pill
+            pillMap[hostKey] = pill
+            grid.addView(pill, GridLayout.LayoutParams().apply {
+                width = dp(328)
+                height = ViewGroup.LayoutParams.WRAP_CONTENT
+                setMargins(dp(4), dp(4), dp(4), dp(4))
+            })
+        }
+        panel.addView(grid)
+
+        fun runProbeOnModal() {
+            tvDnsBanner.text = "⏳ Измерение задержки DoT DNS (порт 853)..."
+            tvDnsBanner.setTextColor(Color.parseColor("#FDE68A"))
+            thread(isDaemon = true) {
+                val res = DaemonApi.requestJson(
+                    "/api/system/dns/probe",
+                    "POST",
+                    JSONObject().put("timeoutMs", 1300).toString(),
+                    timeoutMs = 7000
+                )
+                val parsed = DaemonApi.parseDnsPresets(res?.optJSONArray("presets"))
+                handler.post {
+                    if (parsed.isNotEmpty()) {
+                        dnsModeState = res?.optString("mode", dnsModeState).orEmpty()
+                        dnsHostState = res?.optString("host", dnsHostState).orEmpty()
+                        val working = parsed.count { it.ok }
+                        tvDnsBanner.text = "✓ Доступно $working из ${parsed.size} DNS · Активен: ${dnsHostState.ifBlank { "Авто" }}"
+                        tvDnsBanner.setTextColor(Color.parseColor(if (working > 0) "#6EE7B7" else "#FCA5A5"))
+                        refreshHighlights(parsed)
+                    } else {
+                        tvDnsBanner.text = "⚠ Ошибка проверки DNS"
+                        tvDnsBanner.setTextColor(Color.parseColor("#FCA5A5"))
+                    }
+                }
+            }
+        }
+
+        val actionsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(12) }
+        }
+        val btnAutoSelect = makeModalChoicePill("⚡ Найти рабочий", false) {
+            tvDnsBanner.text = "⏳ Подбор самого быстрого DNS..."
+            tvDnsBanner.setTextColor(Color.parseColor("#FDE68A"))
+            thread(isDaemon = true) {
+                val res = DaemonApi.requestJson(
+                    "/api/system/dns/failover",
+                    "POST",
+                    JSONObject().put("force", true).toString(),
+                    timeoutMs = 8000
+                )
+                handler.post {
+                    if (res?.optBoolean("ok", false) == true) {
+                        dnsModeState = res.optString("mode", dnsModeState)
+                        dnsHostState = res.optString("host", dnsHostState)
+                        val lat = res.optInt("latencyMs", -1)
+                        tvDnsBanner.text = "✓ Выбран рабочий DNS: ${dnsHostState.ifBlank { dnsModeState }}" +
+                            if (lat >= 0) " (${lat} мс)" else ""
+                        tvDnsBanner.setTextColor(Color.parseColor("#6EE7B7"))
+                        runProbeOnModal()
+                    } else {
+                        tvDnsBanner.text = "✗ Подходящий DoT DNS не ответил"
+                        tvDnsBanner.setTextColor(Color.parseColor("#FCA5A5"))
+                    }
+                }
+            }
+        }
+        lateinit var btnAutoToggle: TextView
+        btnAutoToggle = makeModalChoicePill(
+            if (dnsAutoFailoverState) "Автоперекл.: ВКЛ" else "Автоперекл.: ВЫКЛ",
+            dnsAutoFailoverState
+        ) {
+            dnsAutoFailoverState = !dnsAutoFailoverState
+            btnAutoToggle.text = if (dnsAutoFailoverState) "Автоперекл.: ВКЛ" else "Автоперекл.: ВЫКЛ"
+            updateModalChoicePillVisual(btnAutoToggle, dnsAutoFailoverState)
+            postAsync(
+                "http://127.0.0.1:8080/api/config",
+                JSONObject().put("assistant", JSONObject().put("dnsFailoverEnabled", dnsAutoFailoverState)).toString()
+            )
+            Toast.makeText(
+                this,
+                if (dnsAutoFailoverState) "Автопереключение DNS включено" else "Автопереключение DNS выключено",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        val btnProbe = makeModalChoicePill("📡 Пинг", false) { runProbeOnModal() }
+        val spacer = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
+        val btnBack = makeTextIconPill(R.drawable.ic_home, "Назад", accent = true, cleanupPool = customOverlayLensCleanups) {
+            showAndroidTvSettingsModal()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
+        }
+        actionsRow.addView(btnAutoSelect)
+        actionsRow.addView(btnProbe)
+        actionsRow.addView(btnAutoToggle)
+        actionsRow.addView(spacer)
+        actionsRow.addView(btnBack)
+        panel.addView(actionsRow)
+
+        presentOverlayModal(panel, firstFocus ?: btnAutoSelect)
+        runProbeOnModal()
     }
 
     private fun showAssistantPersonaModal() {
@@ -5358,22 +5644,10 @@ class MainActivity : Activity() {
         val nameMap = LinkedHashMap<String, TextView>()
         val voiceMap = LinkedHashMap<String, TextView>()
         val promptMap = LinkedHashMap<String, TextView>()
+        val vadMap = LinkedHashMap<Int, TextView>()
         var curPromptKey = AssistantPersonalities.keyForPrompt(assistantPromptState)
 
-        fun updateChoiceVisual(tv: TextView, sel: Boolean) {
-            tv.isSelected = sel
-            tv.setTextColor(Color.parseColor(if (sel) "#FDE68A" else "#E2E8F0"))
-            if (::spatialBackdrop.isInitialized) {
-                spatialBackdrop.updateLensSpec(tv) {
-                    it.copy(
-                        baseTint = if (sel) Color.parseColor("#442B2210") else Color.parseColor("#2A0C1220"),
-                        focusTint = if (sel) Color.parseColor("#6A403014") else Color.parseColor("#541A2C4A"),
-                        accentTint = if (sel) Color.parseColor("#FBBF24") else 0,
-                        rimAlpha = if (sel) 0.48f else 0.25f
-                    )
-                }
-            }
-        }
+        fun updateChoiceVisual(tv: TextView, sel: Boolean) = updateModalChoicePillVisual(tv, sel)
 
         fun refreshHighlights() {
             val preset = listOf("Алиса", "Джарвис", "Пятница", "Макс")
@@ -5382,6 +5656,8 @@ class MainActivity : Activity() {
             nameMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == (preset ?: "custom")) }
             voiceMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == assistantVoiceState) }
             promptMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == curPromptKey) }
+            val nearestVad = vadMap.keys.minByOrNull { kotlin.math.abs(it - assistantVadSilenceMsState) } ?: 400
+            vadMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == nearestVad) }
         }
 
         fun applyName(newName: String) {
@@ -5489,6 +5765,32 @@ class MainActivity : Activity() {
             promptRow.addView(pill)
         }
         panel.addView(promptRow)
+
+        panel.addView(makeModalSubHeading("Скорость ответа (пауза конца речи)"))
+        val vadRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        listOf(
+            300 to "300 мс (молниеносно)",
+            400 to "400 мс (быстро)",
+            600 to "600 мс (стандарт)",
+            900 to "900 мс (размеренно)"
+        ).forEach { (msVal, lbl) ->
+            val pill = makeModalChoicePill(lbl, msVal == assistantVadSilenceMsState) {
+                assistantVadSilenceMsState = msVal
+                refreshHighlights()
+                postAsync(
+                    "http://127.0.0.1:8080/api/config",
+                    JSONObject().put("assistant", JSONObject().put("vadSilenceMs", msVal)).toString()
+                )
+                Toast.makeText(this, "Пауза конца речи: ${msVal} мс", Toast.LENGTH_SHORT).show()
+            }
+            vadMap[msVal] = pill
+            vadRow.addView(pill)
+        }
+        panel.addView(vadRow)
 
         refreshHighlights()
 
@@ -6348,6 +6650,7 @@ class MainActivity : Activity() {
         val ccActive = ::controlCenter.isInitialized && controlCenter.isOpen
         val musicActive = ::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen
         val saverActive = ::screensaverOverlay.isInitialized && screensaverOverlay.isOpen
+        AnimatedSpriteHelper.syncAll(windowActive = !saverActive)
         val drawerActive = appsDrawerOpen
         val anyOverlay = infoActive || ctxActive || customActive || ccActive || musicActive || saverActive || drawerActive
 

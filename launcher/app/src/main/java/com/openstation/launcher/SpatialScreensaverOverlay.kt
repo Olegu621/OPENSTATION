@@ -356,7 +356,6 @@ class SpatialScreensaverOverlay(
             .translationY(0f)
             .setDuration(MotionPrefs.dur(context, 520L))
             .setInterpolator(MotionPrefs.easeOutCurve)
-            .withLayer()
             .start()
 
         startMotion()
@@ -388,7 +387,6 @@ class SpatialScreensaverOverlay(
             .translationY(-dp(30).toFloat())
             .setDuration(MotionPrefs.dur(context, 420L))
             .setInterpolator(MotionPrefs.easeOutCurve)
-            .withLayer()
             .withEndAction {
                 if (!isOpen) {
                     rootOverlay.visibility = View.GONE

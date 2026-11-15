@@ -1,6 +1,7 @@
 #include "assistant/tls_ws_client.hpp"
 #include "assistant/ca_roots_fallback.hpp"
 #include "assistant/sntp_packet.hpp"
+#include "net/dns_failover.hpp"
 #include "utils/base64.hpp"
 #include "utils/logger.hpp"
 
@@ -161,6 +162,47 @@ int connect_tcp_nonblock(const std::string& host,
     struct addrinfo* res = nullptr;
     int gai = getaddrinfo(host.c_str(), port_str, &hints, &res);
     if (gai != 0 || !res) {
+        std::vector<std::string> fb_ips;
+        LOGW("TlsWs", "System DNS failed for %s (%s); trying DoT/DoH fallback...", host.c_str(), gai_strerror(gai));
+        if (net::resolve_ipv4_with_fallback(host, fb_ips, "", std::min(timeout_ms, 2200),
+                                            "/data/local/openstation/cacert.pem", &abort_req) &&
+            !fb_ips.empty()) {
+            int last_fb_err = ETIMEDOUT;
+            for (const auto& ip : fb_ips) {
+                if (abort_req.load()) {
+                    err_out = "aborted";
+                    return -1;
+                }
+                struct sockaddr_in sin {};
+                sin.sin_family = AF_INET;
+                sin.sin_port = htons(static_cast<uint16_t>(port));
+                if (inet_pton(AF_INET, ip.c_str(), &sin.sin_addr) != 1) continue;
+                int fd = socket(AF_INET, SOCK_STREAM, 0);
+                if (fd < 0) { last_fb_err = errno; continue; }
+                set_nonblock(fd);
+                int rc = ::connect(fd, reinterpret_cast<const struct sockaddr*>(&sin), sizeof(sin));
+                if (rc == 0) {
+                    connected_ip_out = ip;
+                    return fd;
+                }
+                if (errno != EINPROGRESS) { last_fb_err = errno; ::close(fd); continue; }
+                int pr = wait_fd_poll(fd, POLLOUT, std::min(timeout_ms, 4000), abort_req);
+                if (pr > 0) {
+                    int so_err = 0;
+                    socklen_t sl = sizeof(so_err);
+                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &sl) == 0 && so_err == 0) {
+                        connected_ip_out = ip;
+                        return fd;
+                    }
+                    last_fb_err = (so_err != 0) ? so_err : ECONNREFUSED;
+                } else {
+                    last_fb_err = (pr == -2) ? ECANCELED : ETIMEDOUT;
+                }
+                ::close(fd);
+            }
+            err_out = std::string("TCP connect (DoT fallback) failed: ") + strerror(last_fb_err);
+            return -1;
+        }
         err_out = std::string("DNS failed: ") + gai_strerror(gai);
         return -1;
     }

@@ -417,7 +417,17 @@ class HomeEqWidgetController(
         updateHintText()
     }
 
-    private fun makeChannelBg(adjusting: Boolean, focused: Boolean): GradientDrawable =
+    private val channelBgNormal: GradientDrawable by lazy { buildChannelBg(adjusting = false, focused = false) }
+    private val channelBgFocused: GradientDrawable by lazy { buildChannelBg(adjusting = false, focused = true) }
+    private val channelBgAdjusting: GradientDrawable by lazy { buildChannelBg(adjusting = true, focused = true) }
+
+    private fun makeChannelBg(adjusting: Boolean, focused: Boolean): GradientDrawable = when {
+        adjusting -> channelBgAdjusting
+        focused -> channelBgFocused
+        else -> channelBgNormal
+    }
+
+    private fun buildChannelBg(adjusting: Boolean, focused: Boolean): GradientDrawable =
         GradientDrawable().apply {
             cornerRadius = dp(10).toFloat()
             when {

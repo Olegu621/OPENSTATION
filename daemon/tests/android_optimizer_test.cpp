@@ -206,12 +206,12 @@ void test_crashloop_and_zram_sandbox() {
     write_str(paths.proc_irq_dir + "/56/smp_affinity", "f\n");
 
     apply_kernel_and_irq_tuning(paths, hooks, stats);
-    assert(stats.kernel_tunables_written == 26);  // dirty_background_ratio(5) and read_ahead_kb(128) unchanged
+    assert(stats.kernel_tunables_written == 25);  // Three values already match the target.
     assert(read_str(paths.cpufreq_policy_dir + "/scaling_governor") == "schedutil");
-    assert(read_str(paths.cpufreq_policy_dir + "/schedutil/up_rate_limit_us") == "8000");
-    assert(read_str(paths.cpufreq_policy_dir + "/schedutil/down_rate_limit_us") == "12000");
+    assert(read_str(paths.cpufreq_policy_dir + "/schedutil/up_rate_limit_us") == "1000");
+    assert(read_str(paths.cpufreq_policy_dir + "/schedutil/down_rate_limit_us") == "15000");
     assert(read_str(paths.cpufreq_interactive_dir + "/hispeed_freq") == "1000000");
-    assert(read_str(paths.gpu_bifrost_dir + "/dvfs_period") == "50");
+    assert(read_str(paths.gpu_bifrost_dir + "/dvfs_period") == "20");
     assert(read_str(paths.gpu_bifrost_dir + "/power/autosuspend_delay_ms") == "50");
     assert(read_str(paths.gpu_bifrost_dir + "/power/control") == "auto");
     assert(stats.irq_affinities_set == 3);

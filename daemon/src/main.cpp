@@ -6,6 +6,7 @@
 #include "hw/alsa_mixer.hpp"
 #include "hw/android_optimizer.hpp"
 #include "hw/audio_engine.hpp"
+#include "hw/hdmi_route_worker.hpp"
 #include "hw/track_scrub.hpp"
 #include "hw/sy6045s_eq.hpp"
 #include "hw/framebuffer_hw.hpp"
@@ -13,6 +14,7 @@
 #include "hw/misc_repair.hpp"
 #include "hw/uinput_keys.hpp"
 #include "net/adb_manager.hpp"
+#include "net/dns_failover.hpp"
 #include "net/http_client.hpp"
 #include "net/mdns_responder.hpp"
 #include "net/mqtt_client.hpp"
@@ -56,7 +58,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.4";
+constexpr const char* kFirmwareVersion = "1.6.5";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1136,19 +1138,13 @@ std::string trim_ws_copy(const std::string& s) {
 }
 
 bool is_valid_dns_host(const std::string& host) {
-    if (host.empty() || host.size() > 128) return false;
-    for (unsigned char c : host) {
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-              (c >= '0' && c <= '9') || c == '.' || c == '-')) {
-            return false;
-        }
-    }
-    return true;
+    return openstation::net::is_valid_dns_host(host);
 }
 
 openstation::json::Value probe_gemini_live_json(const std::string& api_key_in,
                                                 const std::string& model_in,
-                                                const std::string& proxy_host_in) {
+                                                const std::string& proxy_host_in,
+                                                const std::vector<std::string>& proxy_fallbacks_in = {}) {
     using namespace openstation;
     using json::Value;
 
@@ -1184,7 +1180,16 @@ openstation::json::Value probe_gemini_live_json(const std::string& api_key_in,
 
     std::vector<std::string> targets;
     targets.push_back(""); // direct first
-    if (!proxy_host.empty()) targets.push_back(proxy_host);
+    auto push_proxy = [&](const std::string& p) {
+        if (p.empty()) return;
+        if (std::find(targets.begin(), targets.end(), p) == targets.end()) {
+            targets.push_back(p);
+        }
+    };
+    push_proxy(proxy_host);
+    for (const auto& fb : net::normalize_proxy_list(proxy_fallbacks_in)) {
+        push_proxy(fb);
+    }
 
     std::string last_err;
     std::string last_via = "direct";
@@ -1589,9 +1594,14 @@ int main(int argc, char** argv) {
     auto start_tp = std::chrono::steady_clock::now();
 
     std::mutex dns_mu;
+    std::mutex dns_apply_mu;
+    std::mutex dns_worker_mu;
+    std::thread dns_worker_thread;
+    std::atomic<bool> dns_failover_running{false};
     std::string private_dns_mode_cache;
     std::string private_dns_host_cache;
     bool dns_late_probed = false;
+    openstation::net::DnsFailoverManager dns_failover;
     auto refresh_private_dns_cache = [&]() {
         std::string m = trim_ws_copy(run_cmd_capture("/system/bin/settings get global private_dns_mode 2>/dev/null"));
         std::string h = trim_ws_copy(run_cmd_capture("/system/bin/settings get global private_dns_specifier 2>/dev/null"));
@@ -1602,6 +1612,79 @@ int main(int argc, char** argv) {
         private_dns_host_cache = std::move(h);
     };
     refresh_private_dns_cache();
+
+    auto apply_private_dns = [&](const std::string& mode,
+                                 const std::string& host,
+                                 std::string* output_out = nullptr) -> bool {
+        if (mode != "hostname" && mode != "opportunistic" && mode != "off") return false;
+        std::string clean_host = trim_ws_copy(host);
+        if (mode == "hostname" && !openstation::net::is_valid_dns_host(clean_host)) return false;
+        std::string cmd = "/system/bin/settings put global private_dns_mode " + mode;
+        if (mode == "hostname" && !clean_host.empty()) {
+            cmd += " && /system/bin/settings put global private_dns_specifier " + clean_host;
+        }
+        ShellResult sr;
+        {
+            std::lock_guard<std::mutex> alk(dns_apply_mu);
+            sr = run_shell_with_timeout(cmd, 4, 256);
+            refresh_private_dns_cache();
+        }
+        if (output_out) *output_out = sr.output;
+        return !sr.timed_out && sr.exit_code == 0;
+    };
+
+    dns_failover.set_hooks(
+        {},
+        [&](const std::string& mode, const std::string& host) -> bool {
+            return apply_private_dns(mode, host, nullptr);
+        });
+
+    auto run_dns_failover_sync = [&](bool force, bool allow_when_disabled)
+        -> openstation::net::DnsFailoverManager::FailoverOutcome {
+        std::string cur_mode, cur_host;
+        {
+            std::lock_guard<std::mutex> lk(dns_mu);
+            cur_mode = private_dns_mode_cache;
+            cur_host = private_dns_host_cache;
+        }
+        if (cur_mode.empty()) {
+            refresh_private_dns_cache();
+            std::lock_guard<std::mutex> lk(dns_mu);
+            cur_mode = private_dns_mode_cache;
+            cur_host = private_dns_host_cache;
+        }
+        bool cfg_enabled = true;
+        std::vector<std::string> custom_fb;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            cfg_enabled = cfg.assistant.dns_failover_enabled;
+            custom_fb = cfg.assistant.dns_fallback_hosts;
+        }
+        auto out = dns_failover.evaluate_and_switch(
+            cur_mode, cur_host, custom_fb,
+            allow_when_disabled || cfg_enabled,
+            force, /*min_cooldown_sec=*/25, /*probe_timeout_ms=*/1300);
+        if (out.switched) {
+            LOGW("DnsFailover", "Private DNS auto-switched -> %s (%s) reason=%s latency=%dms",
+                 out.active_mode.c_str(), out.active_host.c_str(),
+                 out.reason.c_str(), out.latency_ms);
+        }
+        return out;
+    };
+
+    auto trigger_dns_failover_async = [&](bool force, bool allow_when_disabled) {
+        if (g_stop.load()) return;
+        bool expected = false;
+        if (!dns_failover_running.compare_exchange_strong(expected, true)) return;
+        std::lock_guard<std::mutex> wlk(dns_worker_mu);
+        if (dns_worker_thread.joinable()) dns_worker_thread.join();
+        dns_worker_thread = std::thread([&, force, allow_when_disabled]() {
+            if (!g_stop.load()) {
+                (void)run_dns_failover_sync(force, allow_when_disabled);
+            }
+            dns_failover_running.store(false);
+        });
+    };
 
     AlsaMixer mixer;
     FramebufferHw leds;
@@ -1731,6 +1814,64 @@ int main(int argc, char** argv) {
     bool has_last_mute_state = false;
     bool last_applied_muted = false;
     std::atomic<bool> first_vol_state_seen{false};
+    std::atomic<int> hdmi_policy_state{-1}; // -1 unknown, 0 disconnected, 1 connected
+    std::atomic<int> hdmi_requested_state{-1};
+    std::atomic<bool> hdmi_policy_failed{false};
+
+    // Android 9 AudioPolicy only opens the HDMI output after a wired-device
+    // connection event. Keep Binder calls serialized and off the audio thread.
+    HdmiRouteWorker hdmi_route_worker(
+        [&](bool enabled) {
+            char sdk[PROP_VALUE_MAX]{};
+            __system_property_get("ro.build.version.sdk", sdk);
+            if (std::string(sdk) != "28") {
+                LOGW("Audio", "HDMI route is not supported on this Android version");
+                hdmi_policy_failed.store(true);
+                return false;
+            }
+            ShellResult result = run_argv_with_timeout({
+                "/system/bin/service", "call", "audio", "52", "i32", "1024", "i32",
+                enabled ? "1" : "0", "s16", "", "s16", "hdmi", "s16", "openstationd"
+            }, 5, 512);
+            const bool ok = !result.timed_out && result.exit_code == 0 &&
+                            result.output.find("Parcel(00000000") != std::string::npos;
+            hdmi_policy_failed.store(!ok);
+            if (ok) hdmi_policy_state.store(enabled ? 1 : 0);
+            if (!ok) LOGW("Audio", "Android HDMI routing failed: %s", result.output.c_str());
+            return ok;
+        },
+        [&]() {
+            ShellResult result = run_argv_with_timeout({"/system/bin/pidof", "audioserver"}, 2, 128);
+            return result.exit_code == 0 ? trim_ws_copy(result.output) : std::string();
+        },
+        [&](bool enabled) {
+            for (int i = 0; i < 10 && !g_stop.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            if (g_stop.load()) return;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                if ((cfg.audio.output_route == "hdmi") != enabled) return;
+            }
+            if (is_udp_port_bound(8086)) {
+                const int pct = std::clamp(volume_osd_pct.load(), 0, 100);
+                json::Value cmd = json::Value::make_obj();
+                cmd["cmd"] = json::Value::make_str("volume_set");
+                cmd["percent"] = json::Value::make_int(pct);
+                cmd["muted"] = json::Value::make_bool(pct <= 0);
+                cmd["showUi"] = json::Value::make_bool(false);
+                cmd["showOsd"] = json::Value::make_bool(false);
+                send_udp_json(8086, cmd.dump(-1));
+            }
+        });
+    auto request_hdmi_route = [&](bool enabled) {
+        int desired = enabled ? 1 : 0;
+        if (hdmi_requested_state.exchange(desired) != desired) hdmi_policy_failed.store(false);
+        hdmi_route_worker.request(enabled);
+    };
+    {
+        std::lock_guard<std::mutex> lk(cfg_mu);
+        request_hdmi_route(cfg.audio.output_route == "hdmi");
+    }
 
     // Must hold vol_apply_mu; preserves lock order vol_apply_mu -> cfg_mu -> mixer::mu_.
     auto apply_curve_unlocked = [&](int pct,
@@ -1751,6 +1892,7 @@ int main(int argc, char** argv) {
             cfg.audio.headphone_volume = hp;
             route_snap = cfg.audio.output_route;
         }
+        request_hdmi_route(route_snap == "hdmi");
         bool hp_plugged = inputs.headphone_plugged();
         bool want_muted = (p <= 0);
         if (want_muted) {
@@ -1762,6 +1904,7 @@ int main(int argc, char** argv) {
                 mixer.set_bool("Woofer Master Playback Switch", false);
                 mixer.set_bool("Tweeters Master Playback Switch", false);
                 mixer.set_bool("Headphone Headphone Switch", false);
+                if (route_snap == "hdmi") mixer.set_bool("Audio hdmi-out mute", true);
                 last_applied_muted = true;
                 has_last_mute_state = true;
             } else if (!manage_route_switches) {
@@ -1852,8 +1995,14 @@ int main(int argc, char** argv) {
         mixer.get_bool("Woofer Master Playback Switch", sw_w);
         mixer.get_bool("Tweeters Master Playback Switch", sw_t);
         mixer.get_bool("Headphone Headphone Switch", sw_h);
+        bool hdmi_mute = route_snap != "hdmi" || want_muted;
+        const bool has_hdmi_mute = mixer.get_bool("Audio hdmi-out mute", hdmi_mute);
+        std::string loopback_source;
+        const bool has_loopback = mixer.get_enum("Loopback tmdin lb source", loopback_source);
+        const bool route_drift = (has_hdmi_mute && hdmi_mute != (route_snap != "hdmi" || want_muted)) ||
+                                 (has_loopback && loopback_source != (route_snap == "hdmi" ? "TDMOUT_C" : "TDMOUT_A"));
         if (hw_w != exp_woo || hw_t != exp_twe || hw_h != exp_hp ||
-            sw_w != want_spk || sw_t != want_spk || sw_h != want_hp) {
+            sw_w != want_spk || sw_t != want_spk || sw_h != want_hp || route_drift) {
             LOGW("Audio", "Reconciling external ALSA drift (vol %ld/%ld/%ld -> %d/%d/%d, sw %d/%d/%d -> %d/%d/%d)",
                  hw_w, hw_t, hw_h, exp_woo, exp_twe, exp_hp,
                  sw_w ? 1 : 0, sw_t ? 1 : 0, sw_h ? 1 : 0,
@@ -4382,6 +4531,11 @@ int main(int argc, char** argv) {
         res["error"] = Value::make_str("unknown tool");
         return res;
     };
+    acb.on_network_or_dns_error = [&](const std::string& reason) {
+        LOGW("DnsFailover", "Assistant reported network/DNS error (%s); evaluating fallback DNS",
+             reason.c_str());
+        trigger_dns_failover_async(/*force=*/false, /*allow_when_disabled=*/false);
+    };
     DaemonConfig start_cfg;
     {
         std::lock_guard<std::mutex> lk(cfg_mu);
@@ -4533,6 +4687,7 @@ int main(int argc, char** argv) {
             root["privateDnsMode"] = Value::make_str(private_dns_mode_cache);
             root["privateDnsHost"] = Value::make_str(private_dns_host_cache);
         }
+        root["dnsFailover"] = dns_failover.get_status_json();
         root["hardware"] = leds.get_status_json();
 
         Value au = Value::make_obj();
@@ -4540,6 +4695,10 @@ int main(int argc, char** argv) {
         au["engine"] = audio.get_status_json();
         au["volumePercent"] = Value::make_int(volume_osd_pct.load());
         au["volumeMaxSteps"] = Value::make_int(android_vol_max.load());
+        const int wanted_hdmi = c.audio.output_route == "hdmi" ? 1 : 0;
+        const char* hdmi_state = hdmi_policy_state.load() == wanted_hdmi ? "ready" :
+                                 (hdmi_policy_failed.load() ? "error" : "pending");
+        au["hdmiRouteState"] = Value::make_str(hdmi_state);
         root["audio"] = std::move(au);
 
         root["assistant"] = assistant.get_status_json();
@@ -5208,6 +5367,7 @@ int main(int argc, char** argv) {
                 std::string key = c.assistant.gemini_api_key;
                 const std::string model = "gemini-3.8-live";
                 std::string proxy = c.assistant.gemini_proxy_host;
+                std::vector<std::string> fallbacks = c.assistant.gemini_proxy_fallbacks;
                 if (v.is_obj()) {
                     if (const auto* k = v.get("geminiApiKey"); k && k->is_str() && !trim_ws_copy(k->as_str()).empty()) {
                         key = k->as_str();
@@ -5215,8 +5375,14 @@ int main(int argc, char** argv) {
                     if (const auto* p = v.get("geminiProxyHost"); p && p->is_str()) {
                         proxy = p->as_str();
                     }
+                    if (const auto* pf = v.get("geminiProxyFallbacks"); pf && pf->is_arr()) {
+                        fallbacks.clear();
+                        for (const auto& item : pf->arr_val) {
+                            if (item.is_str()) fallbacks.push_back(item.as_str());
+                        }
+                    }
                 }
-                json::Value pr = probe_gemini_live_json(key, model, proxy);
+                json::Value pr = probe_gemini_live_json(key, model, proxy, fallbacks);
                 return HttpResponse::json(pr.dump(-1), 200);
             }
             if (req.method == "POST" && req.path == "/api/assistant/agent_mode") {
@@ -5374,23 +5540,114 @@ int main(int argc, char** argv) {
                 }
                 std::string host;
                 if (const auto* hp = v.get("host"); hp && hp->is_str()) host = trim_ws_copy(hp->as_str());
-                if (mode == "hostname" && !is_valid_dns_host(host)) {
+                if (mode == "hostname" && !openstation::net::is_valid_dns_host(host)) {
                     return HttpResponse::json("{\"error\":\"invalid dns host\"}", 400);
                 }
-                std::string cmd = "/system/bin/settings put global private_dns_mode " + mode;
-                if (mode == "hostname" && !host.empty()) {
-                    cmd += " && /system/bin/settings put global private_dns_specifier " + host;
-                }
-                ShellResult sr = run_shell_with_timeout(cmd, 4, 256);
-                refresh_private_dns_cache();
+                std::string out_txt;
+                bool ok = apply_private_dns(mode, host, &out_txt);
                 json::Value out = json::Value::make_obj();
-                out["ok"] = json::Value::make_bool(!sr.timed_out && sr.exit_code == 0);
+                out["ok"] = json::Value::make_bool(ok);
                 {
                     std::lock_guard<std::mutex> lk(dns_mu);
                     out["mode"] = json::Value::make_str(private_dns_mode_cache);
                     out["host"] = json::Value::make_str(private_dns_host_cache);
                 }
-                if (!sr.output.empty()) out["output"] = json::Value::make_str(sr.output);
+                if (!out_txt.empty()) out["output"] = json::Value::make_str(out_txt);
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/system/dns/presets") {
+                std::string cur_mode, cur_host;
+                {
+                    std::lock_guard<std::mutex> lk(dns_mu);
+                    cur_mode = private_dns_mode_cache;
+                    cur_host = private_dns_host_cache;
+                }
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["mode"] = json::Value::make_str(cur_mode);
+                out["host"] = json::Value::make_str(cur_host);
+                out["autoFailoverEnabled"] = json::Value::make_bool(c.assistant.dns_failover_enabled);
+                json::Value fb_arr = json::Value::make_arr();
+                for (const auto& h : c.assistant.dns_fallback_hosts) fb_arr.push(json::Value::make_str(h));
+                out["fallbackHosts"] = std::move(fb_arr);
+                out["presets"] = openstation::net::DnsFailoverManager::presets_to_json(
+                    nullptr, cur_mode, cur_host);
+                out["status"] = dns_failover.get_status_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/system/dns/probe") {
+                json::Value v;
+                json::Parser::parse(req.body, v);
+                int timeout_ms = 1300;
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+                std::vector<std::string> custom_hosts = c.assistant.dns_fallback_hosts;
+                if (v.is_obj()) {
+                    if (const auto* tp = v.get("timeoutMs"); tp && tp->is_num()) {
+                        timeout_ms = std::clamp(tp->as_int(1300), 400, 4000);
+                    }
+                    if (const auto* ch = v.get("customHosts"); ch && ch->is_arr()) {
+                        std::vector<std::string> raw;
+                        for (const auto& item : ch->arr_val) {
+                            if (item.is_str()) raw.push_back(item.as_str());
+                        }
+                        custom_hosts = openstation::net::normalize_dns_host_list(raw);
+                    }
+                }
+                std::string cur_mode, cur_host;
+                {
+                    std::lock_guard<std::mutex> lk(dns_mu);
+                    cur_mode = private_dns_mode_cache;
+                    cur_host = private_dns_host_cache;
+                }
+                auto probes = dns_failover.probe_all(cur_host, custom_hosts, timeout_ms);
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["mode"] = json::Value::make_str(cur_mode);
+                out["host"] = json::Value::make_str(cur_host);
+                out["presets"] = openstation::net::DnsFailoverManager::presets_to_json(
+                    &probes, cur_mode, cur_host);
+                out["status"] = dns_failover.get_status_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/system/dns/failover") {
+                json::Value v;
+                json::Parser::parse(req.body, v);
+                bool force = false;
+                if (v.is_obj()) {
+                    if (const auto* fp = v.get("force"); fp && fp->is_bool()) {
+                        force = fp->as_bool(false);
+                    }
+                }
+                auto res = run_dns_failover_sync(force, /*allow_when_disabled=*/true);
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(res.ok);
+                out["healthy"] = json::Value::make_bool(res.healthy);
+                out["switched"] = json::Value::make_bool(res.switched);
+                out["mode"] = json::Value::make_str(res.active_mode);
+                out["host"] = json::Value::make_str(res.active_host);
+                out["reason"] = json::Value::make_str(res.reason);
+                out["latencyMs"] = json::Value::make_int(res.latency_ms);
+                json::Value tried = json::Value::make_arr();
+                for (const auto& t : res.tried) {
+                    json::Value row = json::Value::make_obj();
+                    row["host"] = json::Value::make_str(t.host);
+                    row["ok"] = json::Value::make_bool(t.ok);
+                    row["latencyMs"] = json::Value::make_int(t.latency_ms);
+                    row["resolvedIp"] = json::Value::make_str(t.resolved_ip);
+                    row["error"] = json::Value::make_str(t.error);
+                    tried.push(std::move(row));
+                }
+                out["tried"] = std::move(tried);
+                out["status"] = dns_failover.get_status_json();
                 return HttpResponse::json(out.dump(-1));
             }
             if (req.method == "GET" && req.path == "/api/system/wifi_adb") {
@@ -6464,6 +6721,7 @@ int main(int argc, char** argv) {
     auto last_voice_udp_tp = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_ws_tp = std::chrono::steady_clock::now();
     auto last_mqtt_tp = std::chrono::steady_clock::now();
+    auto last_dns_check_tp = std::chrono::steady_clock::now();
     auto maybe_play_initial_startup_show = [&](bool send_udp_now) {
         if (initial_startup_show_played) return;
         bool setup_done = false;
@@ -6605,6 +6863,17 @@ int main(int argc, char** argv) {
                 dns_late_probed = true;
                 std::thread([]() { refresh_misc_repair_status(/*allow_power_up=*/true); }).detach();
             }
+            if ((now - last_dns_check_tp) >= std::chrono::seconds(90)) {
+                last_dns_check_tp = now;
+                bool auto_dns = false;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    auto_dns = cfg.assistant.dns_failover_enabled;
+                }
+                if (auto_dns) {
+                    trigger_dns_failover_async(/*force=*/false, /*allow_when_disabled=*/false);
+                }
+            }
             if (mqtt.is_connected()) {
                 DaemonConfig c;
                 {
@@ -6652,6 +6921,7 @@ int main(int argc, char** argv) {
     android_optimizer.stop();
     Logger::instance().set_sink(nullptr);
     ota.stop();
+    hdmi_route_worker.stop();
     if (geo_thread.joinable()) geo_thread.join();
     if (timezone_thread.joinable()) timezone_thread.join();
     timers.stop();
@@ -6660,6 +6930,10 @@ int main(int argc, char** argv) {
     adb_mgr.stop();
     mdns.stop();
     assistant.stop();
+    {
+        std::lock_guard<std::mutex> wlk(dns_worker_mu);
+        if (dns_worker_thread.joinable()) dns_worker_thread.join();
+    }
     wyoming.stop();
     audio.stop();
     inputs.stop();

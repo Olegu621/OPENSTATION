@@ -953,7 +953,6 @@ class SpatialMusicPlayerSheet(
             .translationY(0f)
             .setDuration(MotionPrefs.dur(context, 480L))
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .withEndAction {
                 if (isOpen) focusDefaultControl()
             }
@@ -978,7 +977,6 @@ class SpatialMusicPlayerSheet(
             .translationY(dp(64).toFloat())
             .setDuration(MotionPrefs.dur(context, 390L))
             .setInterpolator(easeOutCubic)
-            .withLayer()
             .withEndAction {
                 if (!isOpen) {
                     rootOverlay.visibility = View.GONE

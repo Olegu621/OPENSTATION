@@ -1451,27 +1451,36 @@ void AudioEngine::playback_loop() {
     std::vector<int16_t> mix_buf(kBlockFrames * 2, 0);
     std::vector<int16_t> mono16k;
     mono16k.reserve(128);
+    // Keep the current chunk across AAudio reopen attempts so a route change
+    // does not discard the rest of an utterance.
+    PlayChunk chunk;
+    bool has_chunk = false;
+    size_t chunk_off = 0;
+    uint64_t chunk_epoch = 0;
+    size_t chunk_frames = 0;
 
     while (running_.load()) {
         bool warm_req = false;
-        PlayChunk chunk;
-        bool has_chunk = false;
         {
             std::unique_lock<std::mutex> lk(play_mu_);
             play_cv_.wait(lk, [&] {
-                return !running_.load() || !play_q_.empty() || keep_stream_warm_.load() || fx_wake_.load();
+                return !running_.load() || has_chunk || !play_q_.empty() || keep_stream_warm_.load() || fx_wake_.load();
             });
             if (!running_.load()) break;
             fx_wake_.store(false);
             warm_req = keep_stream_warm_.load();
-            if (!play_q_.empty()) {
+            if (!has_chunk && !play_q_.empty()) {
                 chunk = std::move(play_q_.front());
                 play_q_.pop();
-                has_chunk = true;
+                chunk_off = 0;
+                chunk_epoch = chunk.epoch;
+                chunk_frames = chunk.samples_48k_stereo.size() / 2;
+                has_chunk = chunk_frames > 0;
             }
         }
 
         if (has_chunk && chunk.epoch != playback_epoch_.load()) {
+            has_chunk = false;
             continue;
         }
 
@@ -1507,9 +1516,6 @@ void AudioEngine::playback_loop() {
             continue;
         }
 
-        size_t chunk_off = 0;
-        uint64_t chunk_epoch = has_chunk ? chunk.epoch : playback_epoch_.load();
-        size_t chunk_frames = has_chunk ? (chunk.samples_48k_stereo.size() / 2) : 0;
         auto idle_since = std::chrono::steady_clock::now();
 
         while (running_.load()) {
@@ -1594,8 +1600,6 @@ void AudioEngine::playback_loop() {
                         mono16k.push_back(static_cast<int16_t>(m));
                     }
                 }
-                chunk_off += take_chunk;
-
                 float rms = static_cast<float>(std::sqrt(sq / static_cast<double>(kBlockFrames)));
                 playback_rms_.store(std::clamp(rms / 9000.0f, 0.0f, 1.0f));
                 last_playback_end_ms_.store(steady_now_ms());
@@ -1613,6 +1617,7 @@ void AudioEngine::playback_loop() {
 
             aaudio_result_t wr = g_aa.stream_write(out_s, mix_buf.data(), static_cast<int32_t>(kBlockFrames), 500000000LL);
             if (wr <= 0) break;
+            if (has_chunk) chunk_off += std::min(take_chunk, static_cast<size_t>(wr));
         }
 
         playback_rms_.store(0.0f);

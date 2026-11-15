@@ -110,7 +110,21 @@ struct AssistantConfig {
     std::string name = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0"; // Алиса (dynamic custom wake & persona name)
     std::string gemini_api_key;
     std::string gemini_model = "gemini-3.8-live";
-    std::string gemini_proxy_host = "ai-pool.comss.one"; // SNI proxy fallback on geo-block (1007)
+    std::string gemini_proxy_host = "ai-pool.comss.one"; // Primary SNI proxy fallback on geo-block (1007)
+    std::vector<std::string> gemini_proxy_fallbacks = {"gemini-pool.comss.one"};
+    bool dns_failover_enabled = true;
+    std::vector<std::string> dns_fallback_hosts = {
+        "dns.comss.one",
+        "router.comss.one",
+        "dns.malw.link",
+        "xbox-dns.ru",
+        "dns.xbox-dns.ru",
+        "freedns.controld.com",
+        "dns.adguard-dns.com",
+        "one.one.one.one",
+        "dns.google",
+        "dns.quad9.net"
+    };
     std::string voice_name = "Aoede";
     std::string system_prompt =
         "Ты — девушка, голосовая помощница Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). "
@@ -129,9 +143,9 @@ struct AssistantConfig {
     bool agent_mode = true;
     bool echo_guard = true;
     int pre_roll_ms = 450;
-    int follow_up_sec = 8;
+    int follow_up_sec = 6;
     int max_session_sec = 120;
-    int vad_silence_ms = 900;
+    int vad_silence_ms = 400;
     std::vector<std::string> memory_notes;
 };
 

@@ -22,6 +22,16 @@
   let otaPendingRestart = false;
   let bootanimBusy = false;
   let wifiAdbBusy = false;
+  let dnsPresetsCache = [];
+  let dnsPresetsFetchedOnce = false;
+  let dnsProbeBusy = false;
+
+  function parseCsvHostList(raw) {
+    return String(raw || "")
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter((s, i, arr) => s.length > 0 && arr.indexOf(s) === i);
+  }
 
   const COMPONENT_RU = {
     daemon: "Система",
@@ -203,7 +213,14 @@
       ast.geminiModel = "gemini-3.8-live";
       if ($("astModel")) $("astModel").value = "gemini-3.8-live";
       if ($("astProxyHost")) ast.geminiProxyHost = $("astProxyHost").value.trim();
-      if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 8;
+      if ($("astProxyFallbacks")) ast.geminiProxyFallbacks = parseCsvHostList($("astProxyFallbacks").value);
+      if ($("astVadSilenceMs")) {
+        const vadMs = parseInt($("astVadSilenceMs").value, 10);
+        ast.vadSilenceMs = Number.isFinite(vadMs) ? vadMs : 400;
+      }
+      if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 6;
+      if ($("sysDnsAutoFailover")) ast.dnsFailoverEnabled = $("sysDnsAutoFailover").checked;
+      if ($("sysDnsFallbacks")) ast.dnsFallbackHosts = parseCsvHostList($("sysDnsFallbacks").value);
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
@@ -685,6 +702,14 @@
     const wyo = d.wyoming || {};
     const mq = d.mqtt || {};
 
+    if ($("hdmiRouteStatus")) {
+      const hdmi = cfg.audio?.outputRoute === "hdmi";
+      $("hdmiRouteStatus").textContent = !hdmi ? "" :
+        au.hdmiRouteState === "ready" ? "Выход HDMI включён." :
+        au.hdmiRouteState === "error" ? "Не удалось включить HDMI. Станция повторит попытку." :
+        "Подключаем звук к HDMI…";
+    }
+
     if ($("sysSubtitle")) {
       $("sysSubtitle").textContent = `${d.ip || "local"} · ${d.hostname || "station-max"}.local`;
     }
@@ -927,6 +952,23 @@
           $("astProxyHost").value =
             cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "ai-pool.comss.one";
         }
+        if ($("astProxyFallbacks")) {
+          const pfb = Array.isArray(cfg.assistant.geminiProxyFallbacks)
+            ? cfg.assistant.geminiProxyFallbacks
+            : ["gemini-pool.comss.one"];
+          $("astProxyFallbacks").value = pfb.join(", ");
+        }
+        if ($("astVadSilenceMs")) {
+          const vadSel = $("astVadSilenceMs");
+          const vStr = String(cfg.assistant.vadSilenceMs ?? 400);
+          if (!Array.from(vadSel.options).some((o) => o.value === vStr)) {
+            const opt = document.createElement("option");
+            opt.value = vStr;
+            opt.textContent = `${vStr} мс (текущ.)`;
+            vadSel.appendChild(opt);
+          }
+          vadSel.value = vStr;
+        }
         if ($("astVoice")) $("astVoice").value = cfg.assistant.voiceName || "Aoede";
         if ($("astPrompt")) $("astPrompt").value = cfg.assistant.systemPrompt || "";
         syncPromptPresetButtons(cfg.assistant.systemPrompt || "");
@@ -935,8 +977,15 @@
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
         if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode !== false;
-        if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 8;
+        if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 6;
         if ($("astMaxSess")) $("astMaxSess").value = cfg.assistant.maxSessionSec ?? 120;
+        if ($("sysDnsAutoFailover")) {
+          $("sysDnsAutoFailover").checked = cfg.assistant.dnsFailoverEnabled !== false;
+        }
+        if ($("sysDnsFallbacks")) {
+          const dfb = Array.isArray(cfg.assistant.dnsFallbackHosts) ? cfg.assistant.dnsFallbackHosts : [];
+          $("sysDnsFallbacks").value = dfb.join(", ");
+        }
         if (Array.isArray(cfg.assistant.memoryNotes)) {
           currentMemoryNotes = cfg.assistant.memoryNotes.slice();
           renderMemoryNotes();
@@ -1344,6 +1393,8 @@
     "eqPreset", "actShort", "actLong", "rotaryInvert", "rotaryStep", "locCity",
     "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel",
     "astPrompt", "astWakeEn", "astChime", "astSearch", "astEchoGuard",
+    "astProxyHost", "astProxyFallbacks", "astVadSilenceMs",
+    "sysDnsAutoFailover", "sysDnsFallbacks",
     "astFollowUp", "astMaxSess", "otaAutoCheck", "otaSyncBootanim", "otaRepo", "otaBranch"
   ].forEach((id) => {
     if ($(id)) $(id).addEventListener("change", scheduleConfigPush);
@@ -2290,19 +2341,24 @@
     };
   }
 
-  async function runGeminiLiveTest(keyVal, modelVal, proxyVal, targetEl) {
+  async function runGeminiLiveTest(keyVal, modelVal, proxyVal, targetEl, proxyFallbacksVal) {
     if (targetEl) {
       targetEl.textContent = "⏳ Проверка связи с Gemini Live...";
       if (targetEl.classList.contains("status-banner")) targetEl.className = "status-banner warn";
     }
     try {
+      const fallbacks = Array.isArray(proxyFallbacksVal)
+        ? proxyFallbacksVal
+        : parseCsvHostList($("astProxyFallbacks")?.value || "gemini-pool.comss.one");
       const r = await api("/api/assistant/test", "POST", {
         geminiApiKey: keyVal || "",
         geminiModel: modelVal || "gemini-3.8-live",
-        geminiProxyHost: proxyVal ?? "ai-pool.comss.one"
+        geminiProxyHost: proxyVal ?? "ai-pool.comss.one",
+        geminiProxyFallbacks: fallbacks
       });
       if (r.ok) {
-        const msg = `✓ Связь работает (${r.latencyMs} мс)`;
+        const viaLabel = r.via ? ` · ${r.via}` : "";
+        const msg = `✓ Связь работает (${r.latencyMs} мс${viaLabel})`;
         if (targetEl) {
           targetEl.textContent = msg;
           if (targetEl.classList.contains("status-banner")) targetEl.className = "status-banner ok";
@@ -2754,6 +2810,13 @@
     if ($("wizDnsHost") && document.activeElement !== $("wizDnsHost") && dnsHost) {
       $("wizDnsHost").value = dnsHost;
     }
+    updateDnsBannerUi(d.dnsFailover, dnsMode, dnsHost);
+    if (!dnsPresetsFetchedOnce) {
+      dnsPresetsFetchedOnce = true;
+      refreshDnsPresets().catch(() => {});
+    } else if (dnsPresetsCache.length > 0 && typeof renderAllDnsPresetContainers === "function") {
+      renderAllDnsPresetContainers(dnsMode, dnsHost);
+    }
     if ($("wizNetBanner")) {
       const dnsLabel = dnsMode === "hostname" && dnsHost ? `DNS: ${dnsHost}` : "DNS: авто";
       $("wizNetBanner").textContent = `✓ Автономный режим · IP: ${d.ip || "local"} · ${dnsLabel}`;
@@ -2897,12 +2960,134 @@
     }
   }
 
+  function updateDnsBannerUi(df, mode, host) {
+    const label = mode === "hostname" && host ? host : (mode || "opportunistic");
+    const lat = df && typeof df.latencyMs === "number" && df.latencyMs >= 0 ? ` (${df.latencyMs} мс)` : "";
+    let text = `DNS: ${label}${lat}`;
+    let cls = "status-banner";
+    if (df && df.healthy === false) {
+      cls = "status-banner warn";
+      text = `⚠ DNS ${label} недоступен${df.lastError ? ": " + df.lastError : ""}`;
+    } else if (df && df.lastSwitchTo && df.lastSwitchEpoch) {
+      cls = "status-banner ok";
+      text = `✓ DNS: ${label}${lat} (резерв с ${df.lastSwitchFrom || "auto"})`;
+    } else if (mode === "hostname" && host) {
+      cls = "status-banner ok";
+      text = `✓ Активный Private DNS: ${host}${lat}`;
+    }
+    if ($("sysDnsStatusBanner") && !dnsProbeBusy) {
+      $("sysDnsStatusBanner").textContent = text;
+      $("sysDnsStatusBanner").className = cls;
+    }
+    if ($("wizDnsStatus") && !dnsProbeBusy) {
+      $("wizDnsStatus").textContent = text;
+    }
+  }
+
+  function renderDnsPresetChips(container, presets, activeMode, activeHost) {
+    if (!container) return;
+    container.innerHTML = "";
+    const items = Array.isArray(presets) ? presets : [];
+    const autoBtn = document.createElement("button");
+    autoBtn.type = "button";
+    autoBtn.className = "seg" + (activeMode !== "hostname" ? " active" : "");
+    autoBtn.textContent = "Авто (DoT Off/Auto)";
+    autoBtn.addEventListener("click", () => applyDnsHost(""));
+    container.appendChild(autoBtn);
+
+    items.forEach((p) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      const isActive = activeMode === "hostname" && p.host === activeHost;
+      btn.className = "seg" + (isActive ? " active" : "");
+      let suffix = "";
+      if (typeof p.ok === "boolean") {
+        suffix = p.ok ? ` · ${p.latencyMs} мс` : " · ✗";
+      }
+      btn.textContent = `${p.name || p.host}${suffix}`;
+      btn.title = `${p.host}${p.description ? " — " + p.description : ""}`;
+      btn.addEventListener("click", () => {
+        if ($("sysDnsHost")) $("sysDnsHost").value = p.host;
+        if ($("wizDnsHost")) $("wizDnsHost").value = p.host;
+        applyDnsHost(p.host);
+      });
+      container.appendChild(btn);
+    });
+  }
+
+  function renderAllDnsPresetContainers(mode, host) {
+    renderDnsPresetChips($("sysDnsPresets"), dnsPresetsCache, mode, host);
+    renderDnsPresetChips($("wizDnsPresets"), dnsPresetsCache, mode, host);
+  }
+
+  async function refreshDnsPresets() {
+    const r = await api("/api/system/dns/presets");
+    if (Array.isArray(r.presets)) dnsPresetsCache = r.presets;
+    renderAllDnsPresetContainers(r.mode || "", r.host || "");
+    updateDnsBannerUi(r.status, r.mode || "", r.host || "");
+  }
+
+  async function probeAllDns() {
+    if (dnsProbeBusy) return;
+    dnsProbeBusy = true;
+    if ($("sysDnsStatusBanner")) {
+      $("sysDnsStatusBanner").textContent = "⏳ Проверка DoT-серверов DNS (порт 853)...";
+      $("sysDnsStatusBanner").className = "status-banner warn";
+    }
+    if ($("wizDnsStatus")) $("wizDnsStatus").textContent = "⏳ Измерение задержки DoT-серверов...";
+    try {
+      const r = await api("/api/system/dns/probe", "POST", { timeoutMs: 1400 });
+      if (Array.isArray(r.presets)) dnsPresetsCache = r.presets;
+      dnsProbeBusy = false;
+      renderAllDnsPresetContainers(r.mode || "", r.host || "");
+      const okCount = dnsPresetsCache.filter((p) => p.ok === true).length;
+      const msg = `✓ Доступно ${okCount} из ${dnsPresetsCache.length} DNS-серверов`;
+      if ($("sysDnsStatusBanner")) {
+        $("sysDnsStatusBanner").textContent = msg;
+        $("sysDnsStatusBanner").className = okCount > 0 ? "status-banner ok" : "status-banner err";
+      }
+      if ($("wizDnsStatus")) $("wizDnsStatus").textContent = msg;
+      showToast(msg, okCount === 0);
+    } catch (e) {
+      dnsProbeBusy = false;
+      showToast("Ошибка проверки DNS: " + e.message, true);
+    }
+  }
+
+  async function runDnsFailoverAction() {
+    if (dnsProbeBusy) return;
+    dnsProbeBusy = true;
+    if ($("sysDnsStatusBanner")) {
+      $("sysDnsStatusBanner").textContent = "⏳ Поиск доступного DNS...";
+      $("sysDnsStatusBanner").className = "status-banner warn";
+    }
+    if ($("wizDnsStatus")) $("wizDnsStatus").textContent = "⏳ Поиск доступного DNS...";
+    try {
+      const r = await api("/api/system/dns/failover", "POST", { force: true });
+      dnsProbeBusy = false;
+      const msg = r.ok
+        ? `✓ Выбран рабочий DNS: ${r.host || r.mode}${r.latencyMs >= 0 ? " (" + r.latencyMs + " мс)" : ""}`
+        : `⚠ ${r.reason || "Не удалось подобрать DNS"}`;
+      if ($("sysDnsStatusBanner")) {
+        $("sysDnsStatusBanner").textContent = msg;
+        $("sysDnsStatusBanner").className = r.ok ? "status-banner ok" : "status-banner err";
+      }
+      if ($("wizDnsStatus")) $("wizDnsStatus").textContent = msg;
+      showToast(msg, !r.ok);
+      await probeAllDns();
+    } catch (e) {
+      dnsProbeBusy = false;
+      showToast("Ошибка автоподбора DNS: " + e.message, true);
+    }
+  }
+
   async function applyDnsHost(hostVal) {
     const clean = (hostVal || "").trim();
     try {
       const payload = clean ? { mode: "hostname", host: clean } : { mode: "opportunistic", host: "" };
       const r = await api("/api/system/dns", "POST", payload);
       showToast(r.ok ? `DNS обновлён: ${r.host || r.mode}` : "Не удалось обновить DNS", !r.ok);
+      renderAllDnsPresetContainers(r.mode || "", r.host || "");
       const s = await api("/api/status");
       applyTelemetry(s, false);
     } catch (e) {
@@ -2936,6 +3121,9 @@
   }
   if ($("btnApplyDns") && $("sysDnsHost")) $("btnApplyDns").addEventListener("click", () => applyDnsHost($("sysDnsHost").value));
   if ($("btnWizApplyDns") && $("wizDnsHost")) $("btnWizApplyDns").addEventListener("click", () => applyDnsHost($("wizDnsHost").value));
+  if ($("btnSysDnsProbe")) $("btnSysDnsProbe").addEventListener("click", probeAllDns);
+  if ($("btnSysDnsFailover")) $("btnSysDnsFailover").addEventListener("click", runDnsFailoverAction);
+  if ($("btnWizDnsProbe")) $("btnWizDnsProbe").addEventListener("click", runDnsFailoverAction);
   ["wizAgentStep1", "wizAgentStep2"].forEach((id) => {
     if ($(id)) {
       $(id).addEventListener("change", () => toggleAgentFromWizard($(id).checked, $(id)));

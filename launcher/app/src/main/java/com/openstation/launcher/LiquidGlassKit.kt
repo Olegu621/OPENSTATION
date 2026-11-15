@@ -221,6 +221,41 @@ object LiquidGlassKit {
         }
     }
 
+    enum class UiStyle(val id: String, val label: String) {
+        FROSTED("frosted", "Матовое стекло"),
+        CLASSIC("classic", "Классическая");
+
+        companion object {
+            fun fromId(raw: String?): UiStyle =
+                values().firstOrNull { it.id.equals(raw, ignoreCase = true) } ?: FROSTED
+        }
+    }
+
+    private const val KEY_UI_STYLE = "launcher_ui_style"
+
+    @Volatile
+    var currentUiStyle: UiStyle = UiStyle.FROSTED
+        private set
+
+    fun isClassicUi(): Boolean = currentUiStyle == UiStyle.CLASSIC
+
+    fun loadSavedUiStyle(ctx: Context): UiStyle {
+        val raw = ctx.getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
+            .getString(KEY_UI_STYLE, UiStyle.FROSTED.id)
+        return UiStyle.fromId(raw)
+    }
+
+    fun setUiStyle(ctx: Context, style: UiStyle, persist: Boolean = true): UiStyle {
+        currentUiStyle = style
+        if (persist) {
+            ctx.getSharedPreferences(PREFS_UI, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_UI_STYLE, style.id)
+                .apply()
+        }
+        return style
+    }
+
     fun currentTheme(): WallpaperTheme =
         THEMES.firstOrNull { it.id == currentThemeId } ?: THEMES.first()
 
@@ -232,6 +267,7 @@ object LiquidGlassKit {
 
     @Synchronized
     fun ensureInitialized(ctx: Context): WallpaperTheme {
+        currentUiStyle = loadSavedUiStyle(ctx)
         val saved = loadSavedThemeId(ctx)
         if (sharpWallpaper == null || blurredWallpaper == null || currentThemeId != saved) {
             setWallpaper(ctx, saved, persist = false)
@@ -426,12 +462,33 @@ object LiquidGlassKit {
             applyOrderedDither4x4(outSharp)
         }
 
-        // Downscaled pre-blurred version for ultra-smooth GPU glass refraction & modal scrims
-        val bw = 240
-        val bh = 135
+        // Downscaled creamy pre-blurred backdrop for native 60fps frosted glass & modal scrims
+        val bw = 480
+        val bh = 270
         val small = Bitmap.createScaledBitmap(outSharp, bw, bh, true)
-        fastBoxBlurInPlace(small, radius = 10, passes = 2)
+        fastBoxBlurInPlace(small, radius = 16, passes = 2)
         return outSharp to small
+    }
+
+    fun blurBitmapFast(src: Bitmap, maxDim: Int = 240, radius: Int = 14): Bitmap? {
+        if (src.isRecycled || src.width <= 0 || src.height <= 0) return null
+        return try {
+            val scale = min(maxDim.toFloat() / max(src.width, src.height).toFloat(), 1f)
+            val tw = max(16, (src.width * scale).toInt())
+            val th = max(16, (src.height * scale).toInt())
+            val small = Bitmap.createScaledBitmap(src, tw, th, true)
+            val out = if (small.isMutable && small.config == Bitmap.Config.ARGB_8888) {
+                small
+            } else {
+                small.copy(Bitmap.Config.ARGB_8888, true).also {
+                    if (it !== small) small.recycle()
+                }
+            }
+            fastBoxBlurInPlace(out, radius = radius.coerceIn(2, 24), passes = 2)
+            out
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun fastBoxBlurInPlace(bmp: Bitmap, radius: Int, passes: Int) {
@@ -665,13 +722,7 @@ object LiquidGlassKit {
         }
 
         private fun ensureBitmapShaders(bg: Bitmap) {
-            if (cachedShaderBitmap !== bg || interiorShader == null || bevelShader == null) {
-                cachedShaderBitmap = bg
-                interiorShader = android.graphics.BitmapShader(bg, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                bevelShader = android.graphics.BitmapShader(bg, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                interiorPaint.shader = interiorShader
-                bevelPaint.shader = bevelShader
-            }
+            // Deprecated per-draw BitmapShader distortion removed for locked 60fps pure frosted glass
         }
 
         override fun draw(canvas: Canvas) {
@@ -685,53 +736,19 @@ object LiquidGlassKit {
             canvas.translate(b.left.toFloat(), b.top.toFloat())
             canvas.clipPath(clipPath)
 
-            // 1. Optical refraction of blurred wallpaper mapped from window coordinates
-            val bg = blurredWallpaper
-            if (bg != null && !bg.isRecycled) {
-                ensureBitmapShaders(bg)
-                val res = anchorView.resources.displayMetrics
-                val screenW = max(1f, res.widthPixels.toFloat())
-                val screenH = max(1f, res.heightPixels.toFloat())
-                anchorView.getLocationInWindow(loc)
-
-                val sx = screenW / max(1f, bg.width.toFloat())
-                val sy = screenH / max(1f, bg.height.toFloat())
-                val cx = w * 0.5f
-                val cy = h * 0.5f
-
-                // Interior soft glass magnification around tile center
-                val zoomIn = 1f + 0.035f * refractStrength
-                interiorMatrix.reset()
-                interiorMatrix.setScale(sx, sy)
-                interiorMatrix.postTranslate(-loc[0].toFloat(), -loc[1].toFloat())
-                interiorMatrix.postScale(zoomIn, zoomIn, cx, cy)
-                interiorShader?.setLocalMatrix(interiorMatrix)
-                interiorPaint.alpha = glassAlpha
-                canvas.drawRect(0f, 0f, w, h, interiorPaint)
-
-                // Optical bevel perimeter refraction ring (visibly bends backdrop along edges)
-                val zoomBevel = 1f + (if (isFocusedState) 0.22f else 0.16f) * refractStrength
-                bevelMatrix.reset()
-                bevelMatrix.setScale(sx, sy)
-                bevelMatrix.postTranslate(-loc[0].toFloat(), -loc[1].toFloat())
-                bevelMatrix.postScale(zoomBevel, zoomBevel, cx, cy)
-                bevelShader?.setLocalMatrix(bevelMatrix)
-                bevelPaint.alpha = min(255, (glassAlpha * 0.92f).toInt())
-                canvas.drawPath(bevelPath, bevelPaint)
-            }
-
-            // 2. Translucent obsidian glass body
+            // 1. Translucent frosted obsidian glass body
             canvas.drawRect(0f, 0f, w, h, tintPaint)
 
-            // 3. Diagonal optical specular caustic gleam
-            canvas.drawRect(0f, 0f, w, h, causticPaint)
-
-            // 4. Inner crystalline top/left highlight rim
-            canvas.drawPath(innerRimPath, innerRimPaint)
+            if (!isClassicUi()) {
+                // 2. Soft frosted top/diagonal specular glaze (zero backdrop warping)
+                canvas.drawRect(0f, 0f, w, h, causticPaint)
+                // 3. Inner crystalline highlight rim
+                canvas.drawPath(innerRimPath, innerRimPaint)
+            }
 
             canvas.restoreToCount(saved)
 
-            // 5. Directional Fresnel optical hairline (never flat uniform wireframe stroke)
+            // 4. Clean glass hairline border
             val inset = borderPaint.strokeWidth * 0.5f
             rectF.set(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset)
             val rad = min(radiusPx, min(w, h) * 0.5f)

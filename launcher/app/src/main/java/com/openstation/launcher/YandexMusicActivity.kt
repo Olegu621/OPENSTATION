@@ -55,6 +55,7 @@ class YandexMusicActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         StationAudioService.ensureStarted(this)
+        LiquidGlassKit.ensureInitialized(this)
 
         val rootFrame = FrameLayout(this).apply {
             clipChildren = false
@@ -109,13 +110,6 @@ class YandexMusicActivity : Activity() {
             }
         }
         rootFrame.addView(spatialBackdrop)
-
-        rootFrame.viewTreeObserver.addOnPreDrawListener {
-            if (::spatialBackdrop.isInitialized) {
-                spatialBackdrop.syncLensesBeforeDraw(waitForFrame = true)
-            }
-            true
-        }
 
         sheet = SpatialMusicPlayerSheet(
             context = this,

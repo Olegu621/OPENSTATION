@@ -6,14 +6,16 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.4",
-    [string]$Changelog = "OpenStation Max v1.6.4: глубокая оптимизация нагрева и энергопотребления (адаптивный порог тишины Silero VAD, дедупликация SPI-кадров LED-матрицы, пауза невидимого 3D-шара и снижение GPU-нагрузки в лаунчере/скринсейвере/мастере, CPU governor schedutil и ускоренный GPU DVFS), монолитный Spatial Liquid Glass интерфейс (новый плеер, живой фото-скринсейвер, подвкладки панели управления, выбор скорости анимаций, сброс оболочки, обновлённый мастер настройки).",
+    [string]$Version = "1.6.5",
+    [string]$Changelog = "OpenStation Max v1.6.5: темы интерфейса, улучшения отклика Алисы, резервные DNS и подключение звука по HDMI.",
+    [string]$OutputDir = "",
     [switch]$Clean,
     [switch]$RebuildIme
 )
 
 $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $PSScriptRoot
+if (-not $OutputDir) { $OutputDir = Join-Path $RootDir "firmware" }
 
 function Resolve-AndroidSdkRoot {
     $candidates = @(
@@ -157,7 +159,7 @@ try {
 } finally { Pop-Location }
 
 # Compile OpenStationWebViewOverlay.apk (static RRO for Chromium SystemWebView on AOSP 9)
-$fwDir = "$RootDir\firmware"
+$fwDir = $OutputDir
 New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
 $rroOutApk = "$fwDir\OpenStationWebViewOverlay.apk"
 if (Test-Path "$RootDir\scripts\build_webview_rro.ps1") {
@@ -165,7 +167,7 @@ if (Test-Path "$RootDir\scripts\build_webview_rro.ps1") {
 }
 
 Write-Host "[4/4] Упаковка firmware/ и генерация manifest.json (SHA-256)..." -ForegroundColor Yellow
-$fwDir = "$RootDir\firmware"
+$fwDir = $OutputDir
 New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
 
 $sources = @(
@@ -210,4 +212,4 @@ $manifestPath = Join-Path $fwDir "manifest.json"
 $manifestJson = ($manifest | ConvertTo-Json -Depth 6) + "`n"
 [System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.UTF8Encoding]::new($false))
 
-Write-Host "=== Прошивка готова в firmware/ (версия $Version) ===" -ForegroundColor Green
+Write-Host "=== Прошивка готова в $fwDir (версия $Version) ===" -ForegroundColor Green

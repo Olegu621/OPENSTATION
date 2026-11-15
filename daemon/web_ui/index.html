@@ -531,15 +531,30 @@
                   <input type="text" id="astProxyHost" placeholder="ai-pool.comss.one (пусто = выкл)" value="ai-pool.comss.one" />
                 </div>
 
+                <div class="form-row">
+                  <label>Резервные SNI-прокси (через запятую)</label>
+                  <input type="text" id="astProxyFallbacks" placeholder="gemini-pool.comss.one" value="gemini-pool.comss.one" />
+                </div>
+
                 <div class="grid-2-tight">
                   <div class="form-row">
-                    <label>Продолжение диалога (сек)</label>
-                    <input type="number" id="astFollowUp" min="0" max="60" value="8" />
+                    <label>Пауза конца речи (мсек)</label>
+                    <select id="astVadSilenceMs">
+                      <option value="300">300 мс — молниеносно</option>
+                      <option value="400" selected>400 мс — быстро (по умолч.)</option>
+                      <option value="600">600 мс — стандарт</option>
+                      <option value="900">900 мс — размеренно</option>
+                    </select>
                   </div>
                   <div class="form-row">
-                    <label>Макс. длина диалога (сек)</label>
-                    <input type="number" id="astMaxSess" min="15" max="600" value="120" />
+                    <label>Продолжение диалога (сек)</label>
+                    <input type="number" id="astFollowUp" min="0" max="60" value="6" />
                   </div>
+                </div>
+
+                <div class="form-row">
+                  <label>Макс. длина диалога (сек)</label>
+                  <input type="number" id="astMaxSess" min="15" max="600" value="120" />
                 </div>
 
                 <div class="grid-2-tight">
@@ -581,6 +596,7 @@
                 <button class="seg" data-route="both">Вместе</button>
                 <button class="seg" data-route="hdmi">HDMI ТВ</button>
               </div>
+              <div class="hint" id="hdmiRouteStatus" aria-live="polite"></div>
             </div>
 
             <div class="form-row">
@@ -953,11 +969,25 @@
                 <input type="text" id="devHost" value="station-max" />
               </div>
               <div class="form-row">
-                <label>Private DNS</label>
+                <label>Private DNS (DoT) и автопереключение</label>
                 <div class="input-send-row">
                   <input type="text" id="sysDnsHost" placeholder="dns.comss.one" value="dns.comss.one" />
                   <button class="btn btn-sm" id="btnApplyDns" type="button">Применить</button>
                 </div>
+                <div class="btn-row" style="margin-top:8px;">
+                  <button class="btn btn-sm btn-accent" id="btnSysDnsFailover" type="button">⚡ Найти рабочий DNS</button>
+                  <button class="btn btn-sm" id="btnSysDnsProbe" type="button">📡 Проверить список DNS</button>
+                </div>
+                <div class="chips" id="sysDnsPresets" style="margin-top:8px;"></div>
+                <div class="status-banner" id="sysDnsStatusBanner" style="margin-top:8px;">Проверка состояния DNS...</div>
+              </div>
+              <div class="form-row toggle-row">
+                <label>Автопереключение DNS при сбое (DoT Failover)</label>
+                <input type="checkbox" id="sysDnsAutoFailover" checked />
+              </div>
+              <div class="form-row">
+                <label>Свои запасные Private DNS (через запятую)</label>
+                <input type="text" id="sysDnsFallbacks" placeholder="router.comss.one, dns.malw.link, xbox-dns.ru" />
               </div>
               <div class="btn-row">
                 <button class="btn btn-accent" id="btnSaveAll">Применить и сохранить</button>
@@ -1203,7 +1233,10 @@
               <div class="input-send-row">
                 <input type="text" id="wizDnsHost" placeholder="dns.comss.one (пусто = авто)" value="dns.comss.one" />
                 <button class="btn btn-sm" id="btnWizApplyDns" type="button">Сохранить DNS</button>
+                <button class="btn btn-sm btn-accent" id="btnWizDnsProbe" type="button">⚡ Лучший DNS</button>
               </div>
+              <div class="chips" id="wizDnsPresets" style="margin-top:8px;"></div>
+              <div class="hint" id="wizDnsStatus" style="margin-top:4px;">Доступны резервные DoT DNS при сбое основного.</div>
             </div>
             <div class="wiz-agent-card">
               <div>

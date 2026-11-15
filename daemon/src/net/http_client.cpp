@@ -1,4 +1,5 @@
 #include "net/http_client.hpp"
+#include "net/dns_failover.hpp"
 #include "assistant/ca_roots_fallback.hpp"
 #include "assistant/tls_ws_client.hpp"
 #include "utils/logger.hpp"
@@ -209,6 +210,56 @@ std::string resolve_redirect_url(const ParsedUrl& base, const std::string& locat
     return origin + dir + loc;
 }
 
+// Single non-blocking TCP attempt against one resolved sockaddr; sets aborted_out on cancel.
+int connect_single_sockaddr(const struct sockaddr* sa,
+                            socklen_t sa_len,
+                            int family,
+                            int socktype,
+                            int protocol,
+                            int timeout_ms,
+                            const std::atomic<bool>* abort_req,
+                            int& last_err_out,
+                            bool& aborted_out) {
+    if (aborted(abort_req)) {
+        aborted_out = true;
+        last_err_out = ECANCELED;
+        return -1;
+    }
+    int fd = socket(family, socktype, protocol);
+    if (fd < 0) {
+        last_err_out = errno;
+        return -1;
+    }
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+
+    int rc = ::connect(fd, sa, sa_len);
+    if (rc == 0) return fd;
+    if (errno != EINPROGRESS) {
+        last_err_out = errno;
+        ::close(fd);
+        return -1;
+    }
+
+    int per_addr_ms = std::min(timeout_ms, 4000);
+    int pr = wait_fd(fd, POLLOUT, per_addr_ms, abort_req);
+    if (pr > 0) {
+        int so_err = 0;
+        socklen_t sl = sizeof(so_err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &sl) == 0 && so_err == 0) {
+            return fd;
+        }
+        last_err_out = (so_err != 0) ? so_err : ECONNREFUSED;
+    } else if (pr == -2) {
+        aborted_out = true;
+        last_err_out = ECANCELED;
+    } else {
+        last_err_out = ETIMEDOUT;
+    }
+    ::close(fd);
+    return -1;
+}
+
 int connect_tcp(const std::string& host,
                 int port,
                 int timeout_ms,
@@ -223,6 +274,31 @@ int connect_tcp(const std::string& host,
     struct addrinfo* res = nullptr;
     int gai = getaddrinfo(host.c_str(), port_str, &hints, &res);
     if (gai != 0 || !res) {
+        std::vector<std::string> fb_ips;
+        LOGW("HttpClient", "System DNS failed for %s (%s); trying DoT/DoH fallback...",
+             host.c_str(), gai_strerror(gai));
+        if (net::resolve_ipv4_with_fallback(host, fb_ips, "", std::min(timeout_ms, 2200),
+                                            kCaBundlePath, abort_req) &&
+            !fb_ips.empty()) {
+            int last_fb_err = ETIMEDOUT;
+            bool was_aborted = false;
+            for (const auto& ip : fb_ips) {
+                struct sockaddr_in sin {};
+                sin.sin_family = AF_INET;
+                sin.sin_port = htons(static_cast<uint16_t>(port));
+                if (inet_pton(AF_INET, ip.c_str(), &sin.sin_addr) != 1) continue;
+                int fd = connect_single_sockaddr(reinterpret_cast<const struct sockaddr*>(&sin),
+                                                 sizeof(sin), AF_INET, SOCK_STREAM, 0,
+                                                 timeout_ms, abort_req, last_fb_err, was_aborted);
+                if (fd >= 0) return fd;
+                if (was_aborted) {
+                    err_out = "aborted";
+                    return -1;
+                }
+            }
+            err_out = std::string("TCP connect failed via fallback DNS: ") + strerror(last_fb_err);
+            return -1;
+        }
         err_out = std::string("DNS failed: ") + gai_strerror(gai);
         return -1;
     }
@@ -236,45 +312,20 @@ int connect_tcp(const std::string& host,
     }
 
     int last_err = ETIMEDOUT;
+    bool was_aborted = false;
     for (struct addrinfo* p : order) {
-        if (aborted(abort_req)) {
+        int fd = connect_single_sockaddr(p->ai_addr, p->ai_addrlen, p->ai_family,
+                                         p->ai_socktype, p->ai_protocol, timeout_ms,
+                                         abort_req, last_err, was_aborted);
+        if (fd >= 0) {
+            freeaddrinfo(res);
+            return fd;
+        }
+        if (was_aborted) {
             freeaddrinfo(res);
             err_out = "aborted";
             return -1;
         }
-        int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (fd < 0) {
-            last_err = errno;
-            continue;
-        }
-        int fl = fcntl(fd, F_GETFL, 0);
-        if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-
-        int rc = ::connect(fd, p->ai_addr, p->ai_addrlen);
-        if (rc == 0) {
-            freeaddrinfo(res);
-            return fd;
-        }
-        if (errno != EINPROGRESS) {
-            last_err = errno;
-            ::close(fd);
-            continue;
-        }
-
-        int per_addr_ms = std::min(timeout_ms, 4000);
-        int pr = wait_fd(fd, POLLOUT, per_addr_ms, abort_req);
-        if (pr > 0) {
-            int so_err = 0;
-            socklen_t sl = sizeof(so_err);
-            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &sl) == 0 && so_err == 0) {
-                freeaddrinfo(res);
-                return fd;
-            }
-            last_err = (so_err != 0) ? so_err : ECONNREFUSED;
-        } else {
-            last_err = (pr == -2) ? ECANCELED : ETIMEDOUT;
-        }
-        ::close(fd);
     }
     freeaddrinfo(res);
     err_out = std::string("TCP connect failed: ") + strerror(last_err);

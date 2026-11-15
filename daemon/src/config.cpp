@@ -1,4 +1,5 @@
 #include "config.hpp"
+#include "net/dns_failover.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
@@ -277,7 +278,12 @@ void DaemonConfig::sanitize_and_validate() {
     assistant.pre_roll_ms = std::clamp(assistant.pre_roll_ms, 0, 2000);
     assistant.follow_up_sec = std::clamp(assistant.follow_up_sec, 0, 30);
     assistant.max_session_sec = std::clamp(assistant.max_session_sec, 15, 600);
-    assistant.vad_silence_ms = std::clamp(assistant.vad_silence_ms, 300, 3000);
+    assistant.vad_silence_ms = std::clamp(assistant.vad_silence_ms, 150, 2000);
+    assistant.gemini_proxy_fallbacks = net::normalize_proxy_list(assistant.gemini_proxy_fallbacks, 10);
+    assistant.dns_fallback_hosts = net::normalize_dns_host_list(assistant.dns_fallback_hosts, 16);
+    if (assistant.dns_fallback_hosts.empty()) {
+        assistant.dns_fallback_hosts = DaemonConfig().assistant.dns_fallback_hosts;
+    }
     {
         auto truncate_utf8 = [](const std::string& s, size_t max_bytes) -> std::string {
             if (s.size() <= max_bytes) return s;
@@ -488,7 +494,7 @@ json::Value DaemonConfig::to_json() const {
     in["actionShort"] = Value::make_str(input.action_short);
     in["actionLong"] = Value::make_str(input.action_long);
     root["input"] = std::move(in);
-    root["configSchemaVersion"] = Value::make_int(3);
+    root["configSchemaVersion"] = Value::make_int(4);
 
     Value ast = Value::make_obj();
     ast["enabled"] = Value::make_bool(assistant.enabled);
@@ -497,6 +503,17 @@ json::Value DaemonConfig::to_json() const {
     ast["geminiApiKey"] = Value::make_str(assistant.gemini_api_key);
     ast["geminiModel"] = Value::make_str(assistant.gemini_model);
     ast["geminiProxyHost"] = Value::make_str(assistant.gemini_proxy_host);
+    {
+        Value pf = Value::make_arr();
+        for (const auto& p : assistant.gemini_proxy_fallbacks) pf.push(Value::make_str(p));
+        ast["geminiProxyFallbacks"] = std::move(pf);
+    }
+    ast["dnsFailoverEnabled"] = Value::make_bool(assistant.dns_failover_enabled);
+    {
+        Value df = Value::make_arr();
+        for (const auto& h : assistant.dns_fallback_hosts) df.push(Value::make_str(h));
+        ast["dnsFallbackHosts"] = std::move(df);
+    }
     ast["voiceName"] = Value::make_str(assistant.voice_name);
     ast["systemPrompt"] = Value::make_str(assistant.system_prompt);
     ast["wakeWordEnabled"] = Value::make_bool(assistant.wake_word_enabled);
@@ -698,6 +715,19 @@ void DaemonConfig::from_json(const json::Value& v) {
         // Locked to gemini-3.8-live regardless of stale client configs.
         assistant.gemini_model = "gemini-3.8-live";
         if (auto* x = ast->get("geminiProxyHost"); x && x->is_str()) assistant.gemini_proxy_host = x->as_str();
+        if (auto* pf = ast->get("geminiProxyFallbacks"); pf && pf->is_arr()) {
+            assistant.gemini_proxy_fallbacks.clear();
+            for (const auto& item : pf->arr_val) {
+                if (item.is_str()) assistant.gemini_proxy_fallbacks.push_back(item.as_str());
+            }
+        }
+        if (auto* x = ast->get("dnsFailoverEnabled"); x && x->is_bool()) assistant.dns_failover_enabled = x->as_bool();
+        if (auto* df = ast->get("dnsFallbackHosts"); df && df->is_arr()) {
+            assistant.dns_fallback_hosts.clear();
+            for (const auto& item : df->arr_val) {
+                if (item.is_str()) assistant.dns_fallback_hosts.push_back(item.as_str());
+            }
+        }
         if (auto* x = ast->get("voiceName"); x && x->is_str()) assistant.voice_name = x->as_str();
         if (auto* x = ast->get("systemPrompt"); x && x->is_str()) assistant.system_prompt = x->as_str();
         if (auto* x = ast->get("wakeWordEnabled"); x && x->is_bool()) assistant.wake_word_enabled = x->as_bool();
@@ -805,10 +835,18 @@ bool DaemonConfig::load() {
         return false;
     }
     from_json(v);
-    if (!v.get("configSchemaVersion") || v.get("configSchemaVersion")->as_int(1) < 3) {
-        if (input.action_long == "led_cycle" || input.action_long == "dj_mode") {
+    const int schema_ver = v.get("configSchemaVersion") ? v.get("configSchemaVersion")->as_int(1) : 1;
+    if (schema_ver < 4) {
+        if (schema_ver < 3 && (input.action_long == "led_cycle" || input.action_long == "dj_mode")) {
             input.action_long = "scrub";
             LOGI("Config", "Upgraded default long-press action -> scrub (schema v3)");
+        }
+        if (assistant.vad_silence_ms == 900) {
+            assistant.vad_silence_ms = 400;
+            LOGI("Config", "Upgraded default vadSilenceMs 900 -> 400ms (schema v4)");
+        }
+        if (assistant.follow_up_sec == 8) {
+            assistant.follow_up_sec = 6;
         }
         save();
     }

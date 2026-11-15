@@ -22,11 +22,11 @@ constexpr const char* kGeminiWsPathPrefix =
     "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=";
 constexpr const char* kCaBundlePath = "/data/local/openstation/cacert.pem";
 
-// Send ~100 ms frames upstream (1600 samples = 3200 PCM bytes)
-constexpr size_t kTxChunkSamples = 1600;
+// Send ~40 ms frames upstream (640 samples = 1280 PCM bytes) for low latency
+constexpr size_t kTxChunkSamples = 640;
 constexpr size_t kMaxConnectingPcmSamples = 16000 * 6;
 constexpr size_t kMaxLivePcmSamples = 16000 * 2;
-constexpr float kSpeechRmsThreshold = 95.0f; // Ultra-sensitive far-field speech detector (was 520, which blocked normal room voice)
+constexpr float kMinSpeechRmsThreshold = 145.0f;
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -255,8 +255,11 @@ void AssistantManager::update_config(const AssistantConfig& cfg) {
     int sens = 85;
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
-        if (cfg.gemini_proxy_host != cfg_.gemini_proxy_host) {
+        if (cfg.gemini_proxy_host != cfg_.gemini_proxy_host ||
+            cfg.gemini_proxy_fallbacks != cfg_.gemini_proxy_fallbacks) {
             use_proxy_host_.store(false);
+            std::lock_guard<std::mutex> plk(proxy_mu_);
+            active_proxy_host_.clear();
         }
         if (cfg.google_search != cfg_.google_search || cfg.gemini_api_key != cfg_.gemini_api_key || !cfg.google_search) {
             search_quota_unsupported_.store(false);
@@ -314,7 +317,15 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     }
 
     last_mic_rms_.store(rms);
-    if (rms >= kSpeechRmsThreshold) {
+    float noise = ambient_rms_ema_.load(std::memory_order_relaxed);
+    if (!cb_.is_playback_or_tail_active || !cb_.is_playback_or_tail_active()) {
+        if (rms < std::max(260.0f, noise * 1.9f)) {
+            noise = std::clamp(noise * 0.94f + rms * 0.06f, 25.0f, 320.0f);
+            ambient_rms_ema_.store(noise, std::memory_order_relaxed);
+        }
+    }
+    const float speech_thresh = std::clamp(noise * 2.25f, kMinSpeechRmsThreshold, 520.0f);
+    if (rms >= speech_thresh) {
         last_speech_ms_.store(steady_now_ms());
     }
 
@@ -1214,8 +1225,10 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     }
 
     Value aad = Value::make_obj();
-    aad["silenceDurationMs"] = Value::make_int(std::clamp(c.vad_silence_ms, 300, 3000));
-    aad["prefixPaddingMs"] = Value::make_int(120);
+    aad["silenceDurationMs"] = Value::make_int(std::clamp(c.vad_silence_ms, 150, 2000));
+    aad["prefixPaddingMs"] = Value::make_int(80);
+    aad["startOfSpeechSensitivity"] = Value::make_str("START_SENSITIVITY_HIGH");
+    aad["endOfSpeechSensitivity"] = Value::make_str("END_SENSITIVITY_HIGH");
     Value ric = Value::make_obj();
     ric["automaticActivityDetection"] = std::move(aad);
     ric["activityHandling"] = Value::make_str("START_OF_ACTIVITY_INTERRUPTS");
@@ -1291,10 +1304,31 @@ void AssistantManager::session_worker(uint64_t sid,
     };
 
     const bool ext_thinking = false;
-    const bool has_proxy_cfg = !cfg_snap.gemini_proxy_host.empty();
-    bool cur_use_proxy = use_proxy_host_.load() && has_proxy_cfg;
+    std::vector<std::string> route_hosts;
+    auto push_route = [&](const std::string& h) {
+        if (std::find(route_hosts.begin(), route_hosts.end(), h) == route_hosts.end()) {
+            route_hosts.push_back(h);
+        }
+    };
+    std::string sticky_proxy;
+    {
+        std::lock_guard<std::mutex> plk(proxy_mu_);
+        sticky_proxy = active_proxy_host_;
+    }
+    if (use_proxy_host_.load() && !sticky_proxy.empty()) {
+        push_route(sticky_proxy);
+    }
+    if (use_proxy_host_.load()) {
+        if (!cfg_snap.gemini_proxy_host.empty()) push_route(cfg_snap.gemini_proxy_host);
+        for (const auto& fb : cfg_snap.gemini_proxy_fallbacks) push_route(fb);
+        push_route("");
+    } else {
+        push_route("");
+        if (!cfg_snap.gemini_proxy_host.empty()) push_route(cfg_snap.gemini_proxy_host);
+        for (const auto& fb : cfg_snap.gemini_proxy_fallbacks) push_route(fb);
+    }
+    size_t route_idx = 0;
     bool cur_google_search = cfg_snap.google_search && !search_quota_unsupported_.load();
-    bool retried_route = false;
     bool retried_search = false;
 
     bool setup_complete = false;
@@ -1307,10 +1341,16 @@ void AssistantManager::session_worker(uint64_t sid,
 
     auto session_start_tp = std::chrono::steady_clock::now();
     auto setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
+    auto setup_complete_tp = session_start_tp;
     auto listen_idle_since = session_start_tp;
     auto listen_unconfirmed_since = session_start_tp;
+    auto turn_last_voice_tp = session_start_tp;
+    auto turn_last_tx_tp = session_start_tp;
+    auto turn_eos_flushed_tp = session_start_tp;
     auto last_pcm_flush_tp = session_start_tp;
     int64_t initial_speech_ms = last_speech_ms_.load();
+    bool turn_saw_speech = false;
+    bool turn_eos_flushed = false;
 
     auto send_client_text = [&](const std::string& t) -> bool {
         using json::Value;
@@ -1340,6 +1380,15 @@ void AssistantManager::session_worker(uint64_t sid,
         aud["mimeType"] = Value::make_str("audio/pcm;rate=16000");
         Value ri = Value::make_obj();
         ri["audio"] = std::move(aud);
+        Value msg = Value::make_obj();
+        msg["realtimeInput"] = std::move(ri);
+        return ws.send_text(msg.dump(-1));
+    };
+
+    auto send_audio_stream_end = [&]() -> bool {
+        using json::Value;
+        Value ri = Value::make_obj();
+        ri["audioStreamEnd"] = Value::make_bool(true);
         Value msg = Value::make_obj();
         msg["realtimeInput"] = std::move(ri);
         return ws.send_text(msg.dump(-1));
@@ -1410,19 +1459,27 @@ void AssistantManager::session_worker(uint64_t sid,
         AssistantConfig eff_cfg = cfg_snap;
         eff_cfg.google_search = cur_google_search;
         const std::string setup_json_str = build_setup_json(eff_cfg).dump(-1);
-        std::string connect_host = cur_use_proxy ? cfg_snap.gemini_proxy_host : "";
+        const std::string connect_host = (route_idx < route_hosts.size()) ? route_hosts[route_idx] : "";
+        const bool has_next_route = (route_idx + 1 < route_hosts.size());
+        const auto next_route_label = [&]() -> const char* {
+            if (route_idx + 1 >= route_hosts.size()) return kGeminiHost;
+            return route_hosts[route_idx + 1].empty() ? kGeminiHost : route_hosts[route_idx + 1].c_str();
+        };
         err.clear();
         if (!ws.connect(kGeminiHost, kGeminiPort, ws_path, kCaBundlePath, err, 8000, connect_host)) {
             if (session_abort_.load() || !running_.load()) {
                 break;
             }
-            if (!retried_route && has_proxy_cfg) {
-                retried_route = true;
-                cur_use_proxy = !cur_use_proxy;
+            if (cb_.on_network_or_dns_error &&
+                (contains_ci(err, "DNS") || contains_ci(err, "connect") || contains_ci(err, "timeout"))) {
+                cb_.on_network_or_dns_error(err);
+            }
+            if (has_next_route) {
                 LOGW("Assistant", "Gemini connect via '%s' failed (%s); retrying via '%s'",
                      connect_host.empty() ? kGeminiHost : connect_host.c_str(),
                      err.c_str(),
-                     cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost);
+                     next_route_label());
+                ++route_idx;
                 continue;
             }
             set_error("Подключение к Gemini: " + err, src != TriggerSource::Text);
@@ -1433,11 +1490,9 @@ void AssistantManager::session_worker(uint64_t sid,
         // Send BidiGenerateContentSetup
         if (!ws.send_text(setup_json_str)) {
             ws.close();
-            if (!session_abort_.load() && running_.load() && !retried_route && has_proxy_cfg) {
-                retried_route = true;
-                cur_use_proxy = !cur_use_proxy;
-                LOGW("Assistant", "Failed to send Gemini setup; retrying via '%s'",
-                     cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost);
+            if (!session_abort_.load() && running_.load() && has_next_route) {
+                LOGW("Assistant", "Failed to send Gemini setup; retrying via '%s'", next_route_label());
+                ++route_idx;
                 continue;
             }
             if (!session_abort_.load() && running_.load()) {
@@ -1462,10 +1517,16 @@ void AssistantManager::session_worker(uint64_t sid,
 
         session_start_tp = std::chrono::steady_clock::now();
         setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
+        setup_complete_tp = session_start_tp;
         listen_idle_since = session_start_tp;
         listen_unconfirmed_since = session_start_tp;
+        turn_last_voice_tp = session_start_tp;
+        turn_last_tx_tp = session_start_tp;
+        turn_eos_flushed_tp = session_start_tp;
         last_pcm_flush_tp = session_start_tp;
         initial_speech_ms = last_speech_ms_.load();
+        turn_saw_speech = false;
+        turn_eos_flushed = false;
 
         auto handle_server_json = [&](const std::string& raw) -> bool {
             json::Value msg;
@@ -1477,11 +1538,11 @@ void AssistantManager::session_worker(uint64_t sid,
             if (const auto* e = msg.get("error"); e && e->is_obj()) {
                 std::string em = "Gemini API error";
                 if (const auto* m = e->get("message"); m && m->is_str()) em = m->as_str();
-                if (!setup_complete && !retried_route && has_proxy_cfg &&
+                if (!setup_complete && has_next_route &&
                     (contains_ci(em, "location") || contains_ci(em, "region") ||
                      contains_ci(em, "country") || contains_ci(em, "unavailable"))) {
                     LOGW("Assistant", "Pre-setup JSON error (%s); retrying via '%s'",
-                         em.c_str(), !cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost);
+                         em.c_str(), next_route_label());
                     retry_alternate = true;
                     return false;
                 }
@@ -1497,14 +1558,24 @@ void AssistantManager::session_worker(uint64_t sid,
 
             if (msg.get("setupComplete")) {
                 setup_complete = true;
-                use_proxy_host_.store(cur_use_proxy);
+                use_proxy_host_.store(!connect_host.empty());
+                {
+                    std::lock_guard<std::mutex> plk(proxy_mu_);
+                    active_proxy_host_ = connect_host;
+                }
                 had_interaction = (src == TriggerSource::Text) || !pending_voice_greeting.empty();
-                listen_idle_since = std::chrono::steady_clock::now();
-                listen_unconfirmed_since = listen_idle_since;
-                last_pcm_flush_tp = listen_idle_since;
-                LOGI("Assistant", "Gemini Live setupComplete (via=%s, voice=%s)",
-                     cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : "direct",
-                     cfg_snap.voice_name.c_str());
+                setup_complete_tp = std::chrono::steady_clock::now();
+                listen_idle_since = setup_complete_tp;
+                listen_unconfirmed_since = setup_complete_tp;
+                turn_last_voice_tp = setup_complete_tp;
+                turn_last_tx_tp = setup_complete_tp;
+                last_pcm_flush_tp = setup_complete_tp;
+                turn_saw_speech = false;
+                turn_eos_flushed = false;
+                LOGI("Assistant", "Gemini Live setupComplete (via=%s, voice=%s, vadMs=%d)",
+                     connect_host.empty() ? "direct" : connect_host.c_str(),
+                     cfg_snap.voice_name.c_str(),
+                     cfg_snap.vad_silence_ms);
                 if (!pending_voice_greeting.empty()) {
                     set_state(AssistantState::Thinking);
                     send_client_text(pending_voice_greeting);
@@ -1619,6 +1690,10 @@ void AssistantManager::session_worker(uint64_t sid,
                     awaiting_playback_drain = false;
                     listen_idle_since = std::chrono::steady_clock::now();
                     listen_unconfirmed_since = listen_idle_since;
+                    turn_last_voice_tp = listen_idle_since;
+                    turn_last_tx_tp = listen_idle_since;
+                    turn_saw_speech = false;
+                    turn_eos_flushed = false;
                     set_state(AssistantState::Listening);
                 }
 
@@ -1628,8 +1703,12 @@ void AssistantManager::session_worker(uint64_t sid,
                         if (!delta.empty()) {
                             silent_turn = false;
                             had_interaction = true;
+                            turn_saw_speech = true;
+                            turn_eos_flushed = false;
                             listen_idle_since = std::chrono::steady_clock::now();
                             listen_unconfirmed_since = listen_idle_since;
+                            turn_last_voice_tp = listen_idle_since;
+                            turn_last_tx_tp = listen_idle_since;
                             {
                                 std::lock_guard<std::mutex> lk(hist_mu_);
                                 live_user_text_ += delta;
@@ -1644,6 +1723,8 @@ void AssistantManager::session_worker(uint64_t sid,
                     flush_live_user();
                     had_interaction = true;
                     model_turn_done = false;
+                    turn_saw_speech = false;
+                    turn_eos_flushed = false;
                     if (const auto* parts = mt->get("parts"); parts && parts->is_arr()) {
                         for (const auto& pt : parts->arr_val) {
                             if (const auto* idata = pt.get("inlineData"); idata && idata->is_obj()) {
@@ -1739,7 +1820,7 @@ void AssistantManager::session_worker(uint64_t sid,
                     LOGI("Assistant", "Gemini WebSocket closed cleanly (code=%u, reason=%s)",
                          frame.close_code, close_reason.c_str());
                     bool can_fallback =
-                        !setup_complete && !retried_route && has_proxy_cfg &&
+                        !setup_complete && has_next_route &&
                         !session_abort_.load() && running_.load() &&
                         (frame.close_code == 1007 || frame.close_code == 1006 || frame.close_code == 0 ||
                          contains_ci(close_reason, "location") || contains_ci(close_reason, "region") ||
@@ -1747,8 +1828,8 @@ void AssistantManager::session_worker(uint64_t sid,
                     if (can_fallback) {
                         LOGW("Assistant", "Pre-setup close (code=%u) via '%s'; retrying via '%s'",
                              frame.close_code,
-                             cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost,
-                             !cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost);
+                             connect_host.empty() ? kGeminiHost : connect_host.c_str(),
+                             next_route_label());
                         retry_alternate = true;
                         break;
                     }
@@ -1774,9 +1855,9 @@ void AssistantManager::session_worker(uint64_t sid,
                     break;
                 }
                 if (rst == WsRecvStatus::Error) {
-                    if (!setup_complete && !retried_route && has_proxy_cfg && !session_abort_.load() && running_.load()) {
+                    if (!setup_complete && has_next_route && !session_abort_.load() && running_.load()) {
                         LOGW("Assistant", "Pre-setup WebSocket read error (%s); retrying via '%s'",
-                             rerr.c_str(), !cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost);
+                             rerr.c_str(), next_route_label());
                         retry_alternate = true;
                         break;
                     }
@@ -1794,10 +1875,10 @@ void AssistantManager::session_worker(uint64_t sid,
 
             if (!setup_complete) {
                 if (now >= setup_deadline_tp) {
-                    if (!retried_route && has_proxy_cfg && running_.load() && !session_abort_.load()) {
+                    if (has_next_route && running_.load() && !session_abort_.load()) {
                         LOGW("Assistant", "setupComplete timeout via '%s'; retrying via '%s'",
-                             cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost,
-                             !cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : kGeminiHost);
+                             connect_host.empty() ? kGeminiHost : connect_host.c_str(),
+                             next_route_label());
                         retry_alternate = true;
                     } else {
                         set_error("Таймаут setupComplete от Gemini Live", src != TriggerSource::Text);
@@ -1830,17 +1911,30 @@ void AssistantManager::session_worker(uint64_t sid,
             }
             if (fatal_error) break;
 
-            // 3. Send buffered 16 kHz PCM audio (chunked in ~100 ms frames)
+            // 3. Send buffered 16 kHz PCM audio (chunked in ~40 ms frames for minimal latency)
             bool speaking_now = (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active());
             if (!(src == TriggerSource::Text && !had_interaction)) {
+                const float barge_thresh = std::clamp(ambient_rms_ema_.load(std::memory_order_relaxed) * 2.4f, 180.0f, 560.0f);
+                if (turn_eos_flushed && !speaking_now &&
+                    last_mic_rms_.load(std::memory_order_relaxed) >= barge_thresh) {
+                    turn_eos_flushed = false;
+                    turn_saw_speech = true;
+                    turn_last_voice_tp = now;
+                    set_state(AssistantState::Listening);
+                }
+
                 std::vector<int16_t> pcm_batch;
                 {
                     std::lock_guard<std::mutex> lk(tx_mu_);
-                    bool time_due = !tx_pcm_.empty() &&
-                                    (now - last_pcm_flush_tp >= std::chrono::milliseconds(110));
-                    if (tx_pcm_.size() >= kTxChunkSamples || time_due) {
-                        pcm_batch.swap(tx_pcm_);
-                        last_pcm_flush_tp = now;
+                    if (turn_eos_flushed) {
+                        tx_pcm_.clear();
+                    } else {
+                        bool time_due = !tx_pcm_.empty() &&
+                                        (now - last_pcm_flush_tp >= std::chrono::milliseconds(45));
+                        if (tx_pcm_.size() >= kTxChunkSamples || time_due) {
+                            pcm_batch.swap(tx_pcm_);
+                            last_pcm_flush_tp = now;
+                        }
                     }
                 }
                 if (!pcm_batch.empty()) {
@@ -1870,6 +1964,10 @@ void AssistantManager::session_worker(uint64_t sid,
                     }
                     listen_idle_since = now;
                     listen_unconfirmed_since = now;
+                    turn_last_voice_tp = now;
+                    turn_last_tx_tp = now;
+                    turn_saw_speech = false;
+                    turn_eos_flushed = false;
                     initial_speech_ms = last_speech_ms_.load();
                     set_state(AssistantState::Listening);
                 } else {
@@ -1879,6 +1977,53 @@ void AssistantManager::session_worker(uint64_t sid,
                 if (!speaking_now && last_speech_ms_.load() > initial_speech_ms) {
                     initial_speech_ms = last_speech_ms_.load();
                     listen_idle_since = now;
+                    turn_last_voice_tp = now;
+                    if (now - setup_complete_tp >= std::chrono::milliseconds(160)) {
+                        turn_saw_speech = true;
+                    }
+                }
+                // Crisp client-side end-of-speech flush so room noise never keeps Gemini VAD waiting seconds
+                if (turn_saw_speech && !turn_eos_flushed && !speaking_now && !model_turn_done) {
+                    bool has_transcript = false;
+                    {
+                        std::lock_guard<std::mutex> hlk(hist_mu_);
+                        has_transcript = !live_user_text_.empty();
+                    }
+                    const int base_vad_ms = std::clamp(cfg_snap.vad_silence_ms, 150, 2000);
+                    const int eff_wait_ms = has_transcript ? base_vad_ms : std::min(1200, base_vad_ms + 120);
+                    const auto last_act_tp = std::max(turn_last_voice_tp, turn_last_tx_tp);
+                    if (now - last_act_tp >= std::chrono::milliseconds(eff_wait_ms)) {
+                        std::vector<int16_t> tail_pcm;
+                        {
+                            std::lock_guard<std::mutex> lk(tx_mu_);
+                            if (!tx_pcm_.empty()) tail_pcm.swap(tx_pcm_);
+                            last_pcm_flush_tp = now;
+                        }
+                        if (!tail_pcm.empty()) {
+                            size_t off = 0;
+                            while (off < tail_pcm.size()) {
+                                size_t n = std::min(kTxChunkSamples, tail_pcm.size() - off);
+                                if (!send_audio_pcm(tail_pcm.data() + off, n)) {
+                                    set_error("Ошибка отправки аудио в Gemini Live", src != TriggerSource::Text);
+                                    fatal_error = true;
+                                    break;
+                                }
+                                off += n;
+                            }
+                        }
+                        if (fatal_error) break;
+                        if (send_audio_stream_end()) {
+                            turn_eos_flushed = true;
+                            turn_eos_flushed_tp = now;
+                            set_state(AssistantState::Thinking);
+                            LOGI("Assistant", "Fast EOS audioStreamEnd after %dms silence (tx=%d)",
+                                 eff_wait_ms, has_transcript ? 1 : 0);
+                        } else {
+                            set_error("Ошибка завершения аудио в Gemini Live", src != TriggerSource::Text);
+                            fatal_error = true;
+                            break;
+                        }
+                    }
                 }
                 if (listening_deadline_expired(now - listen_idle_since, now - listen_unconfirmed_since,
                                                cfg_snap.follow_up_sec, had_interaction)) {
@@ -1888,6 +2033,17 @@ void AssistantManager::session_worker(uint64_t sid,
                     session_done = true;
                     break;
                 }
+            } else if (state_.load() == AssistantState::Thinking && turn_eos_flushed && !speaking_now &&
+                       !model_turn_done &&
+                       now - turn_eos_flushed_tp >= std::chrono::milliseconds(5500)) {
+                // Recover smoothly if a brief room cough triggered EOS without a real query
+                turn_eos_flushed = false;
+                turn_saw_speech = false;
+                listen_idle_since = now;
+                listen_unconfirmed_since = now;
+                turn_last_voice_tp = now;
+                turn_last_tx_tp = now;
+                set_state(AssistantState::Listening);
             }
 
             if (now - session_start_tp >= std::chrono::seconds(std::max(15, cfg_snap.max_session_sec))) {
@@ -1921,18 +2077,21 @@ void AssistantManager::session_worker(uint64_t sid,
                     ". Подтверди смену голоса пользователю 1–2 короткими фразами этим новым голосом.";
             }
             fatal_error = false;
-            retried_route = false;
+            route_idx = 0;
             continue;
         }
-        if (retry_alternate && !retried_route && has_proxy_cfg && running_.load() && !session_abort_.load()) {
+        if (retry_alternate && has_next_route && running_.load() && !session_abort_.load()) {
             ws.close();
-            retried_route = true;
-            cur_use_proxy = !cur_use_proxy;
+            ++route_idx;
             continue;
         }
         if (retry_without_search && !retried_search && cur_google_search && running_.load() && !session_abort_.load()) {
             ws.close();
-            if (cur_use_proxy) use_proxy_host_.store(true);
+            if (!connect_host.empty()) {
+                use_proxy_host_.store(true);
+                std::lock_guard<std::mutex> plk(proxy_mu_);
+                active_proxy_host_ = connect_host;
+            }
             search_quota_unsupported_.store(true);
             retried_search = true;
             cur_google_search = false;
@@ -1978,8 +2137,18 @@ json::Value AssistantManager::get_status_json() {
     obj["mode"] = Value::make_str(c.mode);
     obj["model"] = Value::make_str("gemini-3.8-live");
     obj["voiceName"] = Value::make_str(c.voice_name);
-    obj["proxyHost"] = Value::make_str(c.gemini_proxy_host);
+    {
+        std::lock_guard<std::mutex> plk(proxy_mu_);
+        obj["proxyHost"] = Value::make_str(
+            (use_proxy_host_.load() && !active_proxy_host_.empty()) ? active_proxy_host_ : c.gemini_proxy_host);
+    }
     obj["proxyActive"] = Value::make_bool(use_proxy_host_.load() && !c.gemini_proxy_host.empty());
+    {
+        Value pf = Value::make_arr();
+        for (const auto& p : c.gemini_proxy_fallbacks) pf.push(Value::make_str(p));
+        obj["proxyFallbacks"] = std::move(pf);
+    }
+    obj["vadSilenceMs"] = Value::make_int(c.vad_silence_ms);
     obj["hasApiKey"] = Value::make_bool(!c.gemini_api_key.empty());
     obj["agentMode"] = Value::make_bool(c.agent_mode);
 
