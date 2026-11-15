@@ -108,7 +108,7 @@ data class GlassLensSnapshot(
 )
 
 /**
- * Locked-60FPS HWUI Frosted Glass & Classic Backdrop Compositor.
+ * HWUI frosted-glass and classic backdrop compositor.
  *
  * Replaces multi-context OpenGL background distortion with native single-pipeline HWUI rendering:
  * - Zero TextureView GlLayer double-copy and zero BufferQueue stalls on Mali-G31.

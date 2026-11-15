@@ -31,6 +31,7 @@ object AnimatedSpriteHelper {
     private val attachedViews = ArrayList<WeakReference<ImageView>>(12)
     @Volatile
     private var globalWindowActive = true
+    private var exclusiveVisibleRoot: WeakReference<View>? = null
 
     fun loadDrawable(context: Context, resId: Int, autoStart: Boolean = true): Drawable? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -98,6 +99,14 @@ object AnimatedSpriteHelper {
         }
     }
 
+    // A full-screen screensaver covers the home UI but contains its own sprites.
+    // Keep only sprites inside that overlay running until it closes.
+    fun setExclusiveVisibleRoot(root: View?) {
+        if (exclusiveVisibleRoot?.get() === root) return
+        exclusiveVisibleRoot = root?.let { WeakReference(it) }
+        syncAll()
+    }
+
     private fun syncView(view: ImageView, drawable: AnimatedImageDrawable) {
         val shouldAnimate = globalWindowActive &&
             view.isAttachedToWindow &&
@@ -112,12 +121,15 @@ object AnimatedSpriteHelper {
 
     private fun isEffectivelyVisible(view: View): Boolean {
         if (view.visibility != View.VISIBLE || view.alpha <= 0.02f) return false
+        val requiredRoot = exclusiveVisibleRoot?.get()
+        var inRequiredRoot = requiredRoot == null || view === requiredRoot
         var p: ViewParent? = view.parent
         while (p is View) {
+            if (p === requiredRoot) inRequiredRoot = true
             if (p.visibility != View.VISIBLE || p.alpha <= 0.02f) return false
             p = (p as View).parent
         }
-        return true
+        return inRequiredRoot
     }
 }
 

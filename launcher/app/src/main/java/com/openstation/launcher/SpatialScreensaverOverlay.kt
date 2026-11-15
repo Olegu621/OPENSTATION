@@ -80,6 +80,8 @@ class SpatialScreensaverOverlay(
     private var crossfadeStartNs = 0L
     private var animRunning = false
     private var loadingNext = false
+    private var loadingInitial = false
+    private var slideGeneration = 0L
 
     private val frameCallback: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -341,7 +343,11 @@ class SpatialScreensaverOverlay(
         slideStartNs = System.nanoTime()
         crossfadeActive = false
         imgFront.alpha = 0f
-        loadSlideSyncIntoBack(photoPool[curIdx])
+        val generation = ++slideGeneration
+        loadingNext = false
+        loadingInitial = true
+        if (backBmp == null) imgBack.setImageBitmap(LiquidGlassKit.sharpWallpaper)
+        loadSlideIntoBack(photoPool[curIdx], generation)
 
         rootOverlay.animate().cancel()
         rootOverlay.visibility = View.VISIBLE
@@ -356,6 +362,9 @@ class SpatialScreensaverOverlay(
             .translationY(0f)
             .setDuration(MotionPrefs.dur(context, 520L))
             .setInterpolator(MotionPrefs.easeOutCurve)
+            .withEndAction {
+                if (isOpen) AnimatedSpriteHelper.syncAll()
+            }
             .start()
 
         startMotion()
@@ -367,6 +376,9 @@ class SpatialScreensaverOverlay(
     fun close(immediate: Boolean = false) {
         if (!isOpen && rootOverlay.visibility != View.VISIBLE) return
         isOpen = false
+        ++slideGeneration
+        loadingInitial = false
+        loadingNext = false
         stopMotion()
         rootOverlay.animate().cancel()
 
@@ -493,7 +505,7 @@ class SpatialScreensaverOverlay(
         imgBack.translationX = backTx
         imgBack.translationY = backTy
 
-        if (elapsedSec >= 12.2f && !crossfadeActive && !loadingNext) {
+        if (elapsedSec >= 12.2f && !crossfadeActive && !loadingNext && !loadingInitial) {
             preloadNextSlide(nowNs)
         }
 
@@ -539,25 +551,40 @@ class SpatialScreensaverOverlay(
         null
     }
 
-    private fun loadSlideSyncIntoBack(resId: Int) {
-        val old = backBmp
-        backBmp = decodeResSampled(resId)
-        imgBack.setImageBitmap(backBmp)
-        if (old != null && old !== backBmp && !old.isRecycled) old.recycle()
+    private fun loadSlideIntoBack(resId: Int, generation: Long) {
+        thread(isDaemon = true) {
+            val decoded = decodeResSampled(resId)
+            handler.post {
+                if (!isOpen || generation != slideGeneration) {
+                    decoded?.recycle()
+                    return@post
+                }
+                loadingInitial = false
+                slideStartNs = System.nanoTime()
+                if (decoded != null) {
+                    val old = backBmp
+                    backBmp = decoded
+                    imgBack.setImageBitmap(decoded)
+                    if (old != null && old !== decoded && !old.isRecycled) old.recycle()
+                }
+            }
+        }
     }
 
     private fun preloadNextSlide(nowNs: Long) {
         loadingNext = true
         val nextIdx = (curIdx + 1) % photoPool.size
         val nextRes = photoPool[nextIdx]
+        val generation = slideGeneration
         thread(isDaemon = true) {
             val decoded = decodeResSampled(nextRes)
             handler.post {
-                loadingNext = false
-                if (!isOpen || decoded == null) {
+                if (!isOpen || generation != slideGeneration) {
                     decoded?.recycle()
                     return@post
                 }
+                loadingNext = false
+                if (decoded == null) return@post
                 val oldFront = frontBmp
                 frontBmp = decoded
                 imgFront.setImageBitmap(decoded)
@@ -571,6 +598,9 @@ class SpatialScreensaverOverlay(
 
     fun release() {
         isOpen = false
+        ++slideGeneration
+        loadingInitial = false
+        loadingNext = false
         stopMotion()
         rootOverlay.animate().cancel()
         releaseBitmaps()

@@ -972,7 +972,7 @@ class MainActivity : Activity() {
         val ccOpen = ::controlCenter.isInitialized && controlCenter.isOpen
         val musicSheetActive = ::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen
         val saverActive = ::screensaverOverlay.isInitialized && screensaverOverlay.isOpen
-        AnimatedSpriteHelper.syncAll(windowActive = !saverActive)
+        AnimatedSpriteHelper.setExclusiveVisibleRoot(if (saverActive) screensaverOverlay.rootOverlay else null)
         val otherOverlayActive = appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen || musicSheetActive || saverActive
         val overlayActive = ccOpen || otherOverlayActive
         val topTargetAlpha = if (otherOverlayActive) 0f else 1f
@@ -6650,7 +6650,8 @@ class MainActivity : Activity() {
         val ccActive = ::controlCenter.isInitialized && controlCenter.isOpen
         val musicActive = ::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen
         val saverActive = ::screensaverOverlay.isInitialized && screensaverOverlay.isOpen
-        AnimatedSpriteHelper.syncAll(windowActive = !saverActive)
+        AnimatedSpriteHelper.setExclusiveVisibleRoot(if (saverActive) screensaverOverlay.rootOverlay else null)
+        AnimatedSpriteHelper.syncAll()
         val drawerActive = appsDrawerOpen
         val anyOverlay = infoActive || ctxActive || customActive || ccActive || musicActive || saverActive || drawerActive
 
