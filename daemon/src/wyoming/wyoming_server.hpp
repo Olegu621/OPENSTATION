@@ -5,7 +5,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -43,6 +45,9 @@ public:
 private:
     void accept_loop();
     void handle_client(int cfd);
+    void audio_send_loop();
+    void send_audio_chunk(const int16_t* samples, size_t count, float rms, uint64_t generation);
+    void clear_audio_queue();
     bool send_event(int fd, const std::string& type, const json::Value& data,
                     const uint8_t* payload = nullptr, size_t payload_len = 0);
     bool send_raw(int fd, const void* buf, size_t len);
@@ -59,6 +64,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> client_connected_{false};
+    std::atomic<uint64_t> client_generation_{0};
     std::atomic<bool> streaming_active_{false};
     std::atomic<bool> remote_run_pipeline_{false};
     std::string peer_addr_;
@@ -70,6 +76,16 @@ private:
     int tts_rate_ = 22050;
     int tts_channels_ = 1;
 
+    struct AudioChunk {
+        std::vector<int16_t> samples;
+        float rms = 0;
+        uint64_t generation = 0;
+    };
+    std::mutex audio_queue_mu_;
+    std::condition_variable audio_queue_cv_;
+    std::deque<AudioChunk> audio_queue_;
+    size_t audio_queue_samples_ = 0;
+    std::thread audio_send_thread_;
     std::thread accept_thread_;
 };
 

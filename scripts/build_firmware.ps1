@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = "1.6.5",
-    [string]$Changelog = "OpenStation Max v1.6.5: темы интерфейса, улучшения отклика Алисы, резервные DNS и подключение звука по HDMI.",
+    [string]$Changelog = "OpenStation Max v1.6.5: темы интерфейса, улучшения отклика Алисы, резервные DNS, звук по HDMI и связь с Home Assistant.",
     [string]$OutputDir = "",
     [switch]$Clean,
     [switch]$RebuildIme

@@ -1,4 +1,5 @@
 #include "wyoming/wyoming_server.hpp"
+#include "wyoming/framed_reader.hpp"
 #include "utils/logger.hpp"
 
 #include <arpa/inet.h>
@@ -56,13 +57,18 @@ bool WyomingServer::start(const WyomingConfig& cfg, TtsAudioCallback tts_cb, Sta
     }
 
     running_.store(true);
+    audio_send_thread_ = std::thread(&WyomingServer::audio_send_loop, this);
     accept_thread_ = std::thread(&WyomingServer::accept_loop, this);
     LOGI("Wyoming", "Listening for Home Assistant on port %d", cfg.port);
     return true;
 }
 
 void WyomingServer::stop() {
-    running_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(audio_queue_mu_);
+        running_.store(false);
+    }
+    audio_queue_cv_.notify_all();
     if (listen_fd_ >= 0) {
         shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
@@ -74,6 +80,8 @@ void WyomingServer::stop() {
         if (client_fd_ >= 0) shutdown(client_fd_, SHUT_RDWR);
     }
     if (accept_thread_.joinable()) accept_thread_.join();
+    if (audio_send_thread_.joinable()) audio_send_thread_.join();
+    clear_audio_queue();
 }
 
 void WyomingServer::update_config(const WyomingConfig& cfg) {
@@ -118,6 +126,49 @@ void WyomingServer::stop_session() {
 }
 
 void WyomingServer::feed_audio_16k(const int16_t* samples, size_t count, float rms) {
+    const uint64_t generation = client_generation_.load();
+    if (!running_.load() || !client_connected_.load() || !samples || count == 0 ||
+        generation != client_generation_.load()) return;
+    constexpr size_t kMaxQueuedSamples = 16000; // One second at 16 kHz.
+    if (count > kMaxQueuedSamples) {
+        samples += count - kMaxQueuedSamples;
+        count = kMaxQueuedSamples;
+    }
+    {
+        std::lock_guard<std::mutex> lk(audio_queue_mu_);
+        if (!running_.load() || !client_connected_.load() || generation != client_generation_.load()) return;
+        while (!audio_queue_.empty() && audio_queue_samples_ + count > kMaxQueuedSamples) {
+            audio_queue_samples_ -= audio_queue_.front().samples.size();
+            audio_queue_.pop_front();
+        }
+        audio_queue_.push_back({std::vector<int16_t>(samples, samples + count), rms, generation});
+        audio_queue_samples_ += count;
+    }
+    audio_queue_cv_.notify_one();
+}
+
+void WyomingServer::clear_audio_queue() {
+    std::lock_guard<std::mutex> lk(audio_queue_mu_);
+    audio_queue_.clear();
+    audio_queue_samples_ = 0;
+}
+
+void WyomingServer::audio_send_loop() {
+    while (running_.load()) {
+        AudioChunk chunk;
+        {
+            std::unique_lock<std::mutex> lk(audio_queue_mu_);
+            audio_queue_cv_.wait(lk, [&] { return !running_.load() || !audio_queue_.empty(); });
+            if (!running_.load()) break;
+            chunk = std::move(audio_queue_.front());
+            audio_queue_.pop_front();
+            audio_queue_samples_ -= chunk.samples.size();
+        }
+        send_audio_chunk(chunk.samples.data(), chunk.samples.size(), chunk.rms, chunk.generation);
+    }
+}
+
+void WyomingServer::send_audio_chunk(const int16_t* samples, size_t count, float rms, uint64_t generation) {
     if (!client_connected_.load() || !samples || count == 0) return;
 
     WyomingConfig c;
@@ -130,7 +181,7 @@ void WyomingServer::feed_audio_16k(const int16_t* samples, size_t count, float r
     std::string notify_state;
     {
         std::lock_guard<std::mutex> lk(client_mu_);
-        if (client_fd_ < 0) return;
+        if (client_fd_ < 0 || generation != client_generation_.load()) return;
 
         auto now = std::chrono::steady_clock::now();
         bool want_stream = false;
@@ -244,9 +295,13 @@ void WyomingServer::accept_loop() {
             peer_addr_ = ip;
             audio_start_sent_ = false;
         }
+        client_generation_.fetch_add(1);
+        clear_audio_queue();
         client_connected_.store(true);
         handle_client(cfd);
         client_connected_.store(false);
+        client_generation_.fetch_add(1);
+        clear_audio_queue();
         streaming_active_.store(false);
         remote_run_pipeline_.store(false);
         {
@@ -263,30 +318,10 @@ void WyomingServer::accept_loop() {
 }
 
 void WyomingServer::handle_client(int cfd) {
-    auto read_exact = [&](uint8_t* dst, size_t n) -> bool {
-        size_t got = 0;
-        while (got < n && running_.load()) {
-            ssize_t r = recv(cfd, dst + got, n - got, 0);
-            if (r <= 0) return false;
-            got += static_cast<size_t>(r);
-        }
-        return got == n;
-    };
-
-    auto read_line = [&](std::string& out) -> bool {
-        out.clear();
-        char c = 0;
-        while (running_.load() && out.size() < 16384) {
-            ssize_t r = recv(cfd, &c, 1, 0);
-            if (r <= 0) return false;
-            if (c == '\n') return true;
-            if (c != '\r') out.push_back(c);
-        }
-        return false;
-    };
+    wyoming::FramedReader reader(cfd, running_);
 
     std::string line;
-    while (running_.load() && read_line(line)) {
+    while (running_.load() && reader.read_line(line)) {
         if (line.empty()) continue;
         json::Value hdr;
         if (!json::Parser::parse(line, hdr) || !hdr.is_obj()) continue;
@@ -304,7 +339,7 @@ void WyomingServer::handle_client(int cfd) {
         if (data_len >= 1048576 || payload_len >= 4194304) break;
         if (data_len > 0) {
             std::string dstr(data_len, '\0');
-            if (!read_exact(reinterpret_cast<uint8_t*>(&dstr[0]), data_len)) break;
+            if (!reader.read_exact(reinterpret_cast<uint8_t*>(&dstr[0]), data_len)) break;
             json::Value parsed;
             if (json::Parser::parse(dstr, parsed) && parsed.is_obj()) {
                 data_obj = std::move(parsed);
@@ -313,7 +348,7 @@ void WyomingServer::handle_client(int cfd) {
         std::vector<uint8_t> payload;
         if (payload_len > 0) {
             payload.resize(payload_len);
-            if (!read_exact(payload.data(), payload_len)) break;
+            if (!reader.read_exact(payload.data(), payload_len)) break;
         }
 
         if (type == "describe") {
