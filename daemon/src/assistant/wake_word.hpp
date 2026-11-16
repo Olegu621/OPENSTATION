@@ -32,6 +32,7 @@ public:
 
     bool start(const WakeWordSettings& settings, WakeCallback cb);
     void stop();
+    void restart(const WakeWordSettings& settings);
 
     void update_settings(const WakeWordSettings& settings);
     void set_paused(bool paused);

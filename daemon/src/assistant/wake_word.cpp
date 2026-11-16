@@ -151,6 +151,12 @@ void WakeWordEngine::stop() {
     vad_speech_active_.store(false);
 }
 
+void WakeWordEngine::restart(const WakeWordSettings& settings) {
+    WakeCallback cb = cb_;
+    stop();
+    start(settings, std::move(cb));
+}
+
 void WakeWordEngine::update_settings(const WakeWordSettings& settings) {
     std::lock_guard<std::mutex> lk(cfg_mu_);
     if (settings.enabled != settings_.enabled ||

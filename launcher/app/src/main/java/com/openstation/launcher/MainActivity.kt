@@ -273,6 +273,7 @@ class MainActivity : Activity() {
     private lateinit var btnServiceTimers: LinearLayout
     private lateinit var tvServiceTimers: TextView
     private var assistantNameState = "Алиса"
+    private var assistantWakePhraseState = "alisa"
     private var assistantVoiceState = "Aoede"
     private var assistantPromptState = ""
     private var hwEqSupportedState = false
@@ -3176,6 +3177,7 @@ class MainActivity : Activity() {
                     val pVoice = (astCfg?.optString("voiceName", "") ?: "").trim().ifEmpty { "Aoede" }
                     val pPrompt = astCfg?.optString("systemPrompt", "") ?: ""
                     assistantNameState = pName
+                    assistantWakePhraseState = astCfg?.optString("wakePhrase", "alisa") ?: "alisa"
                     assistantVoiceState = pVoice
                     assistantPromptState = pPrompt
                     LiveOrbState.updateAssistantPersona(pName, pVoice)
@@ -4955,13 +4957,14 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         })
         panel.addView(TextView(this).apply {
-            text = "Выберите имя для офлайн-распознавания (Wake Word), тембр голоса и стиль ответов"
+            text = "Выберите имя для офлайн-распознавания (Wake Word), тембр голоса и стиль ответов. «Алиса»/«Яндекс» — выбор слова для штатного Yandex-споттера (одновременно только одно), остальные имена — OpenStation KWS."
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 11.5f
             setPadding(0, dp(2), 0, dp(8))
         })
 
         val nameMap = LinkedHashMap<String, TextView>()
+        val wakeMap = LinkedHashMap<String, TextView>()
         val voiceMap = LinkedHashMap<String, TextView>()
         val promptMap = LinkedHashMap<String, TextView>()
         var curPromptKey = AssistantPersonalities.keyForPrompt(assistantPromptState)
@@ -4972,6 +4975,11 @@ class MainActivity : Activity() {
             nameMap["custom"]?.text = if (preset == null) "✏ $assistantNameState" else "✏ Своё имя"
             nameMap.forEach { (k, tv) ->
                 val sel = (k == (preset ?: "custom"))
+                tv.isSelected = sel
+                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+            }
+            wakeMap.forEach { (k, tv) ->
+                val sel = (k == assistantWakePhraseState)
                 tv.isSelected = sel
                 tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
             }
@@ -5036,6 +5044,23 @@ class MainActivity : Activity() {
         nameMap["custom"] = customBtn
         nameRow.addView(customBtn)
         panel.addView(nameRow)
+
+        panel.addView(makeModalSubHeading("Слово активации (штатный споттер, для имени «Алиса»)"))
+        val wakeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("alisa" to "Алиса", "yandex" to "Яндекс").forEach { (id, lbl) ->
+            val pill = makeModalChoicePill(lbl, id == assistantWakePhraseState) {
+                assistantWakePhraseState = id
+                refreshHighlights()
+                postAsync(
+                    "http://127.0.0.1:8080/api/config",
+                    JSONObject().put("assistant", JSONObject().put("wakePhrase", id)).toString()
+                )
+                Toast.makeText(this, "Слово активации: $lbl", Toast.LENGTH_SHORT).show()
+            }
+            wakeMap[id] = pill
+            wakeRow.addView(pill)
+        }
+        panel.addView(wakeRow)
 
         panel.addView(makeModalSubHeading("Голос ассистента (Gemini Live TTS)"))
         val voiceRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }

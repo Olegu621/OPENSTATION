@@ -893,7 +893,7 @@ void AudioEngine::capture_loop() {
                 capture_backend_ = "alsa_fallback";
             }
             LOGW("AudioEngine", "Cannot open AAudio capture stream, trying direct ALSA fallback...");
-            run_alsa_capture_session();
+            run_alsa_capture_session(30);
             if (!capture_enabled_.load() || reopen_capture_.load() || !running_.load()) continue;
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             continue;

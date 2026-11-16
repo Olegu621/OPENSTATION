@@ -63,6 +63,7 @@ public:
     void feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms);
 
     bool trigger_session(const std::string& reason = "manual");
+    bool trigger_wake_session(const std::string& keyword = "stock");
     bool toggle_session();
     void stop_session(const std::string& reason = "stop");
     bool send_text_prompt(const std::string& text);
@@ -123,6 +124,7 @@ private:
     std::deque<std::string> tx_texts_;
     std::atomic<float> last_mic_rms_{0.0f};
     std::atomic<int64_t> last_speech_ms_{0};
+    std::atomic<int64_t> last_voice_ms_{0};
 
     // Session thread management
     std::mutex session_ctrl_mu_;
@@ -140,6 +142,7 @@ private:
     std::string last_error_;
     std::string last_trigger_reason_;
     std::atomic<uint64_t> sessions_count_{0};
+    std::atomic<uint64_t> stock_wake_detections_{0};
     std::atomic<bool> use_proxy_host_{false};
     std::atomic<bool> search_quota_unsupported_{false};
 

@@ -105,6 +105,7 @@ class SetupWizardActivity : Activity() {
     private lateinit var btnStep4WakeToggle: TextView
     private lateinit var btnStep4AgentToggle: TextView
     private val namePills = LinkedHashMap<String, TextView>()
+    private val wakePills = LinkedHashMap<String, TextView>()
     private val voicePills = LinkedHashMap<String, TextView>()
     private val promptPills = LinkedHashMap<String, TextView>()
 
@@ -148,6 +149,7 @@ class SetupWizardActivity : Activity() {
     private var curOtaError = ""
     private var curHasKey = false
     private var curAssistantName = "Алиса"
+    private var curWakePhrase = "alisa"
     private var curVoice = "Aoede"
     private var curProxyHost = "ai-pool.comss.one"
     private var curWakeEn = true
@@ -801,7 +803,7 @@ class SetupWizardActivity : Activity() {
         tvAliceHeading = makeScreenTitle("Шаг 4 · Ассистент «Алиса»")
         rightCol.addView(tvAliceHeading)
 
-        rightCol.addView(makeSubLabel("Имя и слово активации"))
+        rightCol.addView(makeSubLabel("Имя и слово активации · «Алиса»/«Яндекс» — выбор слова для штатного споттера (только одно), остальные — OpenStation KWS"))
         val nameRow = makeChoiceRow()
         listOf("Алиса", "Джарвис", "Пятница", "Макс").forEach { n ->
             val p = makeChoicePill(n) { applyAssistantNameChoice(n) }
@@ -812,6 +814,19 @@ class SetupWizardActivity : Activity() {
         namePills["custom"] = customNamePill
         nameRow.addView(customNamePill)
         rightCol.addView(nameRow)
+
+        rightCol.addView(makeSubLabel("Слово активации (штатный споттер, для имени «Алиса»)"))
+        val wakeRow = makeChoiceRow()
+        listOf("alisa" to "Алиса", "yandex" to "Яндекс").forEach { (id, lbl) ->
+            val p = makeChoicePill(lbl) {
+                curWakePhrase = id
+                pushConfigPatch(JSONObject().put("assistant", JSONObject().put("wakePhrase", id)), "Слово активации: $lbl")
+                syncChoicesHighlight()
+            }
+            wakePills[id] = p
+            wakeRow.addView(p)
+        }
+        rightCol.addView(wakeRow)
 
         rightCol.addView(makeSubLabel("Голос (Gemini Live)"))
         val voiceRow = makeChoiceRow()
@@ -1349,6 +1364,7 @@ class SetupWizardActivity : Activity() {
             .firstOrNull { it.equals(curAssistantName, ignoreCase = true) }
         namePills["custom"]?.text = if (presetName == null) "✏ $curAssistantName" else "✏ Своё"
         styleMap(namePills, presetName ?: "custom")
+        styleMap(wakePills, curWakePhrase)
         styleMap(voicePills, curVoice)
         styleMap(promptPills, activePromptPreset)
         styleMap(routePills, curRoute)
@@ -1623,6 +1639,7 @@ class SetupWizardActivity : Activity() {
                         curHasKey = astCfg?.optBoolean("geminiApiKeySet", false) == true ||
                             !(astCfg?.optString("geminiApiKey", "") ?: "").isBlank()
                         curAssistantName = (astCfg?.optString("name", "") ?: "").trim().ifEmpty { "Алиса" }
+                        curWakePhrase = astCfg?.optString("wakePhrase", "alisa") ?: "alisa"
                         curVoice = astCfg?.optString("voiceName", "Aoede") ?: "Aoede"
                         curAgentMode = astCfg?.optBoolean("agentMode", ast?.optBoolean("agentMode", true) ?: true) ?: true
                         curProxyHost = astCfg?.optString("geminiProxyHost", "ai-pool.comss.one") ?: "ai-pool.comss.one"
@@ -1727,7 +1744,7 @@ class SetupWizardActivity : Activity() {
         if (!tvAliceStatus.text.startsWith("⏳") && !tvAliceStatus.text.startsWith("✗")) {
             tvAliceStatus.text = when {
                 !curHasKey -> "• Нужен ключ Gemini Live"
-                curKwsReady -> "✓ Готова · отклик «$curAssistantName»"
+                curKwsReady -> "✓ Готова · отклик «${if (curAssistantName.equals("Алиса", true) && curWakePhrase == "yandex") "Яндекс" else curAssistantName}»"
                 else -> "✓ Ключ задан · кнопка Action"
             }
             tvAliceStatus.setTextColor(Color.parseColor(if (curHasKey) "#6EE7B7" else "#FDE68A"))

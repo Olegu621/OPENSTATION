@@ -421,6 +421,15 @@
               <div class="hint" id="astNameHint">Ассистент сразу переключает фразу активации, голос и подачу ответов.</div>
             </div>
 
+            <div class="form-row" id="astWakePhraseRow">
+              <label>Слово активации (штатный споттер)</label>
+              <div class="seg-group" id="astWakePhrasePresets">
+                <button class="seg active" type="button" data-wphrase="alisa">Алиса</button>
+                <button class="seg" type="button" data-wphrase="yandex">Яндекс</button>
+              </div>
+              <div class="hint">Одновременно работает только выбранное слово. Доступно для имени «Алиса».</div>
+            </div>
+
             <div class="form-row">
               <label>Голос ответа</label>
               <select id="astVoice">
@@ -1263,6 +1272,14 @@
                 <button class="seg" type="button" data-aname="Пятница" data-gender="female">Пятница</button>
                 <button class="seg" type="button" data-aname="Макс" data-gender="male">Макс</button>
               </div>
+            </div>
+            <div class="form-row" id="wizWakePhraseRow">
+              <label>Слово активации (штатный споттер)</label>
+              <div class="seg-group" id="wizWakePhrasePresets">
+                <button class="seg active" type="button" data-wphrase="alisa">Алиса</button>
+                <button class="seg" type="button" data-wphrase="yandex">Яндекс</button>
+              </div>
+              <div class="hint">Только одно слово одновременно; доступно для имени «Алиса».</div>
             </div>
             <div class="form-row">
               <label>Gemini API Key</label>

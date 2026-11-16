@@ -1,5 +1,6 @@
 #include "assistant/assistant_intents.hpp"
 #include "assistant/assistant_manager.hpp"
+#include "assistant/focus_helper_dex.hpp"
 #include "assistant/timer_manager.hpp"
 #include "assistant/tls_ws_client.hpp"
 #include "config.hpp"
@@ -1328,24 +1329,32 @@ int main(int argc, char** argv) {
     std::mutex apps_mu;
     json::Value apps_cache = json::Value::make_arr();
 
+    // Android audio-focus helper paths (see FocusHelper.java). The helper holds
+    // AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK while the assistant is active so that
+    // other players duck themselves without touching the amplifier or the TTS.
+    static constexpr const char* kFocusDex = "/data/local/openstation/focus.dex";
+    static constexpr const char* kFocusFlag = "/data/local/openstation/assistant_duck";
+    static constexpr const char* kFocusPid = "/data/local/openstation/focus_helper.pid";
+
     // Live native Yandex Music state pushed by StationAudioService (/api/music/state)
     std::mutex music_mu;
     MusicPlaybackState music_state;
     std::string last_announced_music_banner;
     std::atomic<bool> music_duck_active{false};
     auto set_music_duck = [&](bool duck) {
-        if (music_duck_active.exchange(duck) != duck) {
-            if (is_udp_port_bound(8086)) {
-                json::Value dcmd = json::Value::make_obj();
-                dcmd["cmd"] = json::Value::make_str("music_duck");
-                dcmd["duck"] = json::Value::make_bool(duck);
-                send_udp_json(8086, dcmd.dump(-1));
-            }
+        music_duck_active.store(duck);
+        if (FILE* f = fopen(kFocusFlag, "w")) {
+            fputs(duck ? "1\n" : "0\n", f);
+            fclose(f);
         }
     };
     auto get_music_json = [&]() -> json::Value {
         std::lock_guard<std::mutex> lk(music_mu);
-        return music_state.to_json();
+        json::Value j = music_state.to_json();
+        if (music_duck_active.load()) {
+            j["ducked"] = json::Value::make_bool(true);
+        }
+        return j;
     };
 
     // System Android STREAM_MUSIC volume percentage (synced with Android settings/StationAudioService)
@@ -1770,6 +1779,55 @@ int main(int argc, char** argv) {
         push_style_sync_to_launcher(c);
     };
 
+    // Android audio-focus helper: a tiny app_process daemon that holds
+    // AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK while the assistant is active. The
+    // Bluetooth A2DP sink and Yandex Music then lower only their own output
+    // (verified: A2DP track gain -12 dB) while the assistant TTS stays at full
+    // volume, so no digital gain or amplifier ducking is needed.
+    auto focus_helper_alive = [&]() -> bool {
+        FILE* f = fopen(kFocusPid, "r");
+        if (!f) return false;
+        long pid = 0;
+        const bool ok = (fscanf(f, "%ld", &pid) == 1);
+        fclose(f);
+        if (!ok || pid <= 0) return false;
+        // /proc/<pid>/cmdline may be blocked by SELinux for the daemon domain,
+        // so use a liveness probe; only FocusHelper writes this pidfile.
+        return ::kill(static_cast<pid_t>(pid), 0) == 0;
+    };
+    auto install_focus_dex = [&]() {
+        struct stat st {};
+        if (stat(kFocusDex, &st) == 0 && st.st_size == static_cast<off_t>(kFocusHelperDexSize)) {
+            return;
+        }
+        if (FILE* f = fopen(kFocusDex, "wb")) {
+            const size_t n = fwrite(kFocusHelperDex, 1, kFocusHelperDexSize, f);
+            fclose(f);
+            if (n == kFocusHelperDexSize) {
+                chmod(kFocusDex, 0644);
+            } else {
+                LOGW("Main", "Focus helper dex write failed: %zu/%zu", n, kFocusHelperDexSize);
+            }
+        }
+    };
+    auto ensure_focus_helper = [&]() {
+        if (focus_helper_alive()) return;
+        install_focus_dex();
+        if (access(kFocusDex, R_OK) != 0) return;
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+                 "env -u LD_LIBRARY_PATH CLASSPATH=%s nohup /system/bin/app_process "
+                 "/system/bin FocusHelper %s </dev/null >/data/local/openstation/focus.log 2>&1 &",
+                 kFocusDex, kFocusFlag);
+        int rc = std::system(cmd);
+        if (rc != 0) {
+            LOGW("Main", "Focus helper start rc=%d", rc);
+        }
+    };
+
+    set_music_duck(false);
+    ensure_focus_helper();
+
     auto set_android_volume_pct = [&](int pct,
                                       bool show_osd,
                                       int* out_woo = nullptr,
@@ -1999,6 +2057,15 @@ int main(int argc, char** argv) {
                      boot_cfg.audio.hardware_eq_profile.c_str());
             }
         }
+    }
+
+    // Start the optional stock Yandex spotter bridges (glibc chroot helpers).
+    // Both are no-ops when the corresponding script is absent.
+    for (const char* script : {"/data/local/spotter-root/run_spotter.sh",
+                               "/data/local/spotter-root/run_spotter_yandex.sh"}) {
+        std::string cmd = "if [ -x " + std::string(script) +
+                          " ]; then exec /system/bin/sh " + script + "; fi";
+        spawn_detached({"/system/bin/sh", "-c", cmd});
     }
 
     std::thread geo_thread([&]() {
@@ -4771,11 +4838,22 @@ int main(int argc, char** argv) {
             }
             if (req.method == "POST" && req.path == "/api/assistant/trigger") {
                 std::string reason = "webui";
+                std::string keyword = "stock";
+                bool wake = false;
                 json::Value v;
-                if (json::Parser::parse(req.body, v) && v.get("reason") && v.get("reason")->is_str()) {
-                    reason = v.get("reason")->as_str();
+                if (json::Parser::parse(req.body, v)) {
+                    if (v.get("reason") && v.get("reason")->is_str()) {
+                        reason = v.get("reason")->as_str();
+                    }
+                    if (v.get("wake") && v.get("wake")->is_bool()) {
+                        wake = v.get("wake")->as_bool(false);
+                    }
+                    if (v.get("keyword") && v.get("keyword")->is_str()) {
+                        keyword = v.get("keyword")->as_str();
+                    }
                 }
-                bool ok = assistant.trigger_session(reason);
+                bool ok = wake ? assistant.trigger_wake_session(keyword)
+                               : assistant.trigger_session(reason);
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}", ok ? 200 : 400);
             }
             if (req.method == "POST" && req.path == "/api/assistant/stop") {
@@ -6008,6 +6086,7 @@ int main(int argc, char** argv) {
 
         if ((now - last_mqtt_tp) >= std::chrono::seconds(5)) {
             last_mqtt_tp = now;
+            ensure_focus_helper();
             reconcile_volume_if_drifted();
             if (!dns_late_probed &&
                 std::chrono::duration_cast<std::chrono::seconds>(now - start_tp).count() >= 12) {
