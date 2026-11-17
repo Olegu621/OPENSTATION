@@ -133,9 +133,20 @@ def boot_single_image(backend, img_path, retries=2):
             print(f"  ROM: {rom_maj}.{rom_min} Stage: {stage_maj}.{stage_min}")
             print(f"  Need Password: {need_password} Password OK: {password_ok}")
 
-            # Do not repeatedly send BL2 when BootROM explicitly reports that
-            # password authentication is required and has not succeeded.
-            # This is a diagnostic stop, not an attempt to bypass the lock.
+            # Genuine G12 BootROM is ROM 3.x with Stage 0.0. A station already
+            # running U-Boot replies with other bytes (e.g. ROM 0.7 Stage 0.16).
+            # Never send BootROM-only requests to a live U-Boot: it drops the
+            # USB link with "Устройство не опознано".
+            if rom_maj != 3 or stage_min != 0:
+                print(
+                    f"  [✓] Устройство уже в режиме U-Boot/Update "
+                    f"(ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}) — загрузка не нужна."
+                )
+                return True
+
+            # Interpret password flags only after confirming this is the G12
+            # BootROM response. Other boot stages may use these bytes differently.
+            # Never send BL2 when the ROM explicitly reports an unaccepted password.
             if need_password not in (0, 1) or password_ok not in (0, 1):
                 raise RuntimeError(
                     f"Неизвестные флаги защиты BootROM: Need Password={need_password}, "
@@ -149,17 +160,6 @@ def boot_single_image(backend, img_path, retries=2):
                     "USB-таймауты после этого статуса не являются доказательством "
                     "неисправности кабеля или образа."
                 )
-
-            # Genuine G12 BootROM is ROM 3.x with Stage 0.0. A station already
-            # running U-Boot replies with other bytes (e.g. ROM 0.7 Stage 0.16).
-            # Never send BootROM-only requests to a live U-Boot: it drops the
-            # USB link with "Устройство не опознано".
-            if rom_maj != 3 or stage_min != 0:
-                print(
-                    f"  [✓] Устройство уже в режиме U-Boot/Update "
-                    f"(ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}) — загрузка не нужна."
-                )
-                return True
 
             loadAddr = 0xFFFA0000
             print(f"  Writing {os.path.basename(img_path)} at 0x{loadAddr:x} (BL2)...")
