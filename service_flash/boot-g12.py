@@ -18,6 +18,11 @@ import usb.util
 from pyamlboot import pyamlboot
 
 
+class BootRomPasswordRequired(Exception):
+    """BootROM reports that a password is required but not accepted."""
+
+
+
 def resolve_usb_backend():
     if os.name == "nt":
         is_64 = sys.maxsize > 2**32
@@ -122,9 +127,11 @@ def boot_single_image(backend, img_path, retries=2):
             socid = dev.identify()
             rom_maj, rom_min = ord(socid[0]), ord(socid[1])
             stage_maj, stage_min = ord(socid[2]), ord(socid[3])
+            need_password = ord(socid[4])
+            password_ok = ord(socid[5])
             print("  Firmware Version :")
             print(f"  ROM: {rom_maj}.{rom_min} Stage: {stage_maj}.{stage_min}")
-            print(f"  Need Password: {ord(socid[4])} Password OK: {ord(socid[5])}")
+            print(f"  Need Password: {need_password} Password OK: {password_ok}")
 
             # Genuine G12 BootROM is ROM 3.x with Stage 0.0. A station already
             # running U-Boot replies with other bytes (e.g. ROM 0.7 Stage 0.16).
@@ -136,6 +143,23 @@ def boot_single_image(backend, img_path, retries=2):
                     f"(ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}) — загрузка не нужна."
                 )
                 return True
+
+            # Interpret password flags only after confirming this is the G12
+            # BootROM response. Other boot stages may use these bytes differently.
+            # Never send BL2 when the ROM explicitly reports an unaccepted password.
+            if need_password not in (0, 1) or password_ok not in (0, 1):
+                raise RuntimeError(
+                    f"Неизвестные флаги защиты BootROM: Need Password={need_password}, "
+                    f"Password OK={password_ok}. Передача BL2 отменена."
+                )
+            if need_password == 1 and password_ok != 1:
+                raise BootRomPasswordRequired(
+                    "BootROM требует пароль (Need Password=1), но пароль не принят "
+                    "(Password OK=0). Передача BL2 отменена. Используйте только "
+                    "официальный/предусмотренный проектом способ авторизации; "
+                    "USB-таймауты после этого статуса не являются доказательством "
+                    "неисправности кабеля или образа."
+                )
 
             loadAddr = 0xFFFA0000
             print(f"  Writing {os.path.basename(img_path)} at 0x{loadAddr:x} (BL2)...")
@@ -180,6 +204,9 @@ def boot_single_image(backend, img_path, retries=2):
                     dev = reset_usb_connection(backend)
                     continue
 
+        except BootRomPasswordRequired as e:
+            print(f"  [AUTH REQUIRED] {e}")
+            return None
         except Exception as e:
             print(f"  [!] Ошибка при загрузке {os.path.basename(img_path)} (попытка {attempt}/{retries}): {e}")
         finally:
@@ -206,11 +233,14 @@ def main():
     print("====================================================================")
 
     for cand in candidates:
-        if boot_single_image(backend, cand, retries=args.retries):
+        result = boot_single_image(backend, cand, retries=args.retries)
+        if result is True:
             print(f"\n[+] УСПЕХ: U-Boot успешно запущен с помощью {os.path.basename(cand)}!")
             return 0
-        else:
-            print(f"[-] Не удалось запустить через {os.path.basename(cand)}, пробуем следующий вариант...")
+        if result is None:
+            print("\n[ОСТАНОВКА] BootROM ожидает успешную парольную авторизацию. Другие образы пробовать бессмысленно.")
+            return 2
+        print(f"[-] Не удалось запустить через {os.path.basename(cand)}, пробуем следующий вариант...")
 
     print("\n[ОШИБКА] Ни один из образов (0008/00052 и 00053) не смог инициализировать U-Boot.")
     print("Проверьте: контакт сервисного Type-C, перемычку 6 пина на GND и подачу 19V питания.")
