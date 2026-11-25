@@ -446,9 +446,23 @@ try:
 except Exception:
     pass
 idb = d.identify()
+print("ROM=" + str(ord(idb[0])) + "." + str(ord(idb[1])))
 print("STAGE=" + str(ord(idb[3])))
+if len(idb) >= 6:
+    print("NEED_PW=" + str(ord(idb[4])))
+    print("PW_OK=" + str(ord(idb[5])))
 '@
     $stageOut = ($probeStagePy | & $PythonExe - $ServiceFlashDir 2>$null | Out-String).Trim()
+    if ($stageOut -match 'ROM=3\.\d+' -and $stageOut -match 'STAGE=0' -and $stageOut -match 'NEED_PW=(\d+)' -and $stageOut -match 'PW_OK=(\d+)') {
+        $needPw = [int]($stageOut | Select-String -Pattern 'NEED_PW=(\d+)').Matches[0].Groups[1].Value
+        $pwOk = [int]($stageOut | Select-String -Pattern 'PW_OK=(\d+)').Matches[0].Groups[1].Value
+        if ($needPw -notin @(0, 1) -or $pwOk -notin @(0, 1)) {
+            throw "Неизвестные флаги защиты BootROM: Need Password=$needPw, Password OK=$pwOk. Передача BL2 отменена."
+        }
+        if ($needPw -eq 1 -and $pwOk -ne 1) {
+            throw "BootROM требует пароль (Need Password=1, Password OK=$pwOk). Передача BL2 отменена; перебор образов aml.img невозможен без авторизованного загрузчика."
+        }
+    }
     if ($stageOut -match 'STAGE=(\d+)' -and [int]$Matches[1] -ne 0) {
         Push-Location $ServiceFlashDir
         try {
@@ -468,7 +482,11 @@ print("STAGE=" + str(ord(idb[3])))
 if (-not $ubootReady) {
     Write-Host "  -> Запуск boot-g12.py (ревизия: $Revision)..." -ForegroundColor Yellow
     $bootOut = (& $PythonExe (Join-Path $ServiceFlashDir "boot-g12.py") "--revision" $Revision "--retries" "3" 2>&1 | Out-String)
+    $bootExit = $LASTEXITCODE
     Write-Host ($bootOut.Trim()) -ForegroundColor Gray
+    if ($bootExit -eq 2) {
+        throw "BootROM требует парольную авторизацию (Need Password=1, Password OK=0). Передача BL2 остановлена.`n`nЛог boot-g12.py:`n$bootOut"
+    }
 
     # Проверяем готовность после вызова boot-g12.py
     Start-Sleep -Seconds 2
