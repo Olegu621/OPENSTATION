@@ -312,6 +312,9 @@ def _byte_at(buf, idx: int) -> int:
         return ord(v)
 
 
+EXIT_BOOTROM_PASSWORD = 4
+
+
 def classify_usb_id(socid) -> dict:
     """Classify an Amlogic identify reply.
 
@@ -321,7 +324,15 @@ def classify_usb_id(socid) -> dict:
     BootROM-only requests (WR_LARGE_MEM) to a live U-Boot kills the session
     with ``libusb0 ... Устройство не опознано``, so this distinction is exact.
     """
-    info = {"rom": (0, 0), "stage": (0, 0), "mode": "unknown"}
+    info = {
+        "rom": (0, 0),
+        "stage": (0, 0),
+        "mode": "unknown",
+        "need_password": None,
+        "password_ok": None,
+        "password_blocked": False,
+        "password_invalid": False,
+    }
     if socid is None or len(socid) < 4:
         return info
     rom = (_byte_at(socid, 0), _byte_at(socid, 1))
@@ -330,9 +341,40 @@ def classify_usb_id(socid) -> dict:
     info["stage"] = stage
     if rom[0] == 3 and stage[1] == 0:
         info["mode"] = "bootrom"
+        if len(socid) >= 6:
+            need_pw = _byte_at(socid, 4)
+            pw_ok = _byte_at(socid, 5)
+            info["need_password"] = need_pw
+            info["password_ok"] = pw_ok
+            if need_pw not in (0, 1) or pw_ok not in (0, 1):
+                info["password_invalid"] = True
+            elif need_pw == 1 and pw_ok != 1:
+                info["password_blocked"] = True
     else:
         info["mode"] = "uboot"
     return info
+
+
+def _bootrom_password_error(info: dict) -> str:
+    """Return a diagnostic message when BootROM password flags block BL2 upload."""
+    if not isinstance(info, dict) or info.get("mode") != "bootrom":
+        return ""
+    need_pw = info.get("need_password")
+    pw_ok = info.get("password_ok")
+    if info.get("password_invalid"):
+        return (
+            f"Неизвестные флаги защиты BootROM: Need Password={need_pw}, "
+            f"Password OK={pw_ok}. Передача BL2 отменена."
+        )
+    if info.get("password_blocked"):
+        return (
+            "BootROM требует пароль (Need Password=1), но пароль не принят "
+            "(Password OK=0). Передача BL2 отменена. Используйте только "
+            "официальный/предусмотренный проектом способ авторизации; "
+            "USB-таймауты после этого статуса не являются доказательством "
+            "неисправности кабеля или образа."
+        )
+    return ""
 
 
 def _update_output_failed(out: str, returncode: int) -> bool:
@@ -407,7 +449,17 @@ def is_uboot_alive(timeout: int = 4) -> bool:
 
 def probe_usb_identify(preferred_service: str = "") -> dict:
     """Read-only pyusb identify (never writes anything to the station)."""
-    res = {"present": False, "mode": "none", "rom": (0, 0), "stage": (0, 0), "backend": ""}
+    res = {
+        "present": False,
+        "mode": "none",
+        "rom": (0, 0),
+        "stage": (0, 0),
+        "backend": "",
+        "need_password": None,
+        "password_ok": None,
+        "password_blocked": False,
+        "password_invalid": False,
+    }
     try:
         from pyamlboot_local import proto
     except Exception:
@@ -427,6 +479,10 @@ def probe_usb_identify(preferred_service: str = "") -> dict:
                 rom=info["rom"],
                 stage=info["stage"],
                 backend=be_name,
+                need_password=info.get("need_password"),
+                password_ok=info.get("password_ok"),
+                password_blocked=info.get("password_blocked", False),
+                password_invalid=info.get("password_invalid", False),
             )
             return res
         except Exception:
@@ -672,12 +728,19 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
                 pass
 
             socid = soc.identify()
+            ident_info = classify_usb_id(socid)
             stage = usb_boot_stage(socid)
-            emit(f"  [{be_name}] WorldCup ID: {'-'.join(str(ord(c)) for c in socid[:4])}")
+            emit(f"  [{be_name}] WorldCup ID: {'-'.join(str(_byte_at(socid, i)) for i in range(min(4, len(socid))))}")
+            if len(socid) >= 6:
+                emit(f"  [{be_name}] Need Password: {_byte_at(socid, 4)} Password OK: {_byte_at(socid, 5)}")
             if stage == "uboot":
                 return 0
             if stage != "rom":
                 raise RuntimeError("Для запуска BL2 переподключите питание станции в режиме BootROM.")
+            pw_err = _bootrom_password_error(ident_info)
+            if pw_err:
+                emit(f"  [AUTH REQUIRED] {pw_err}")
+                return EXIT_BOOTROM_PASSWORD
 
             load_addr = 0xFFFA0000
             transfer_started = True
@@ -751,6 +814,10 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
             return True
         emit("  [!] U-Boot на USB, но update.exe его не видит — повторная загрузка BL2 отменена.")
         return False
+    pw_err = _bootrom_password_error(pre)
+    if pw_err:
+        emit(f"[AUTH REQUIRED] {pw_err}")
+        return False
 
     if revision == "00053":
         cand_names = ("aml_00053.img", "bootloader.img", "aml_bundle.img")
@@ -796,6 +863,9 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
                 if txt:
                     emit(f"  {txt}")
             p.wait(timeout=45)
+            if p.returncode == EXIT_BOOTROM_PASSWORD:
+                emit("[ОСТАНОВКА] BootROM ожидает успешную парольную авторизацию. Другие образы пробовать бессмысленно.")
+                return False
             if p.returncode in (0, 2):
                 if p.returncode == 2:
                     emit("  [OK] U-Boot уже запущен — пропускаем загрузку BL2.")
@@ -860,6 +930,9 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
             if txt:
                 emit(f"  [g12] {txt}")
         p.wait(timeout=90)
+        if p.returncode == 2:
+            emit("[ОСТАНОВКА] BootROM ожидает успешную парольную авторизацию. Другие образы пробовать бессмысленно.")
+            return False
         if p.returncode == 0 and wait_uboot_alive():
             return True
 
@@ -1267,6 +1340,10 @@ def ensure_burn_mode() -> bool:
     info = check_usb_device()
     pref_svc = info.get("usb_service", "")
     observed = probe_usb_identify(pref_svc)
+    pw_err = _bootrom_password_error(observed)
+    if pw_err:
+        emit(f"[AUTH REQUIRED] {pw_err}")
+        return False
     if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
         emit("[USB] Не удалось подтвердить начальный режим станции; загрузка не начата.")
         return False
@@ -1307,6 +1384,9 @@ def ensure_burn_mode() -> bool:
         except subprocess.TimeoutExpired:
             failed_rc = 1
             emit("[USB] Подготовка не завершилась вовремя; проверяем состояние устройства.")
+        if failed_rc == EXIT_BOOTROM_PASSWORD:
+            emit("[ОСТАНОВКА] BootROM ожидает успешную парольную авторизацию. Передача BL2 остановлена.")
+            return False
         if _wait_for_burn_after_loader():
             return True
         if failed_rc != 0:

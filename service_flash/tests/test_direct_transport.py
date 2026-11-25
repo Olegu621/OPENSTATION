@@ -297,4 +297,109 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(os.path.basename(p_00053), 'misc_00053.img')
         self.assertEqual(os.path.basename(p_auto), 'misc_00053.img')
 
+    def test_bootrom_password_required_aborts_before_bl2_write(self):
+        from pyamlboot_local import proto
+        class Device:
+            def __init__(self, ident):
+                self.dev = self
+                self._ident = ident
+                self.events = []
+            def set_configuration(self): pass
+            def identify(self): return self._ident
+            def writeSimpleMemory(self, *args): self.events.append('ddr')
+            def writeLargeMemory(self, *args): self.events.append('bl2')
+            def run(self, *args): self.events.append('run')
+            def close(self): pass
+
+        with tempfile.NamedTemporaryFile(delete=False) as image:
+            image.write(b'x' * 70000)
+            path = image.name
+        try:
+            locked = ''.join(map(chr, (3, 2, 0, 0, 1, 0, 0, 0)))
+            dev_locked = Device(locked)
+            with patch.object(f, 'get_pyusb_backends', return_value=[('fake', object())]), \
+                 patch.object(proto, 'AmlogicSoC', return_value=dev_locked), \
+                 patch.object(f, 'emit'):
+                rc = f.run_usb_boot_step_inproc(path)
+            self.assertEqual(rc, f.EXIT_BOOTROM_PASSWORD)
+            self.assertEqual(dev_locked.events, [])
+
+            invalid = ''.join(map(chr, (3, 2, 0, 0, 7, 0, 0, 0)))
+            dev_invalid = Device(invalid)
+            with patch.object(f, 'get_pyusb_backends', return_value=[('fake', object())]), \
+                 patch.object(proto, 'AmlogicSoC', return_value=dev_invalid), \
+                 patch.object(f, 'emit'):
+                rc_inv = f.run_usb_boot_step_inproc(path)
+            self.assertEqual(rc_inv, f.EXIT_BOOTROM_PASSWORD)
+            self.assertEqual(dev_invalid.events, [])
+
+            # Live U-Boot may report arbitrary values in bytes 4..5; never block it.
+            uboot_info = f.classify_usb_id(''.join(map(chr, (0, 7, 0, 16, 1, 0))))
+            self.assertEqual(uboot_info['mode'], 'uboot')
+            self.assertFalse(uboot_info['password_blocked'])
+        finally:
+            os.unlink(path)
+
+    def test_ensure_burn_mode_and_yasta_stop_on_password_locked_bootrom(self):
+        locked_ident = {
+            'present': True,
+            'rom': (3, 2),
+            'stage': (0, 0),
+            'mode': 'bootrom',
+            'need_password': 1,
+            'password_ok': 0,
+            'password_blocked': True,
+            'password_invalid': False,
+        }
+        with patch.object(f, 'probe_burn_mode', return_value=False), \
+             patch.object(f, 'check_usb_device', return_value={}), \
+             patch.object(f, 'probe_usb_identify', return_value=locked_ident), \
+             patch.object(f.subprocess, 'run') as sub_run, \
+             patch.object(f, 'emit'):
+            self.assertFalse(f.ensure_burn_mode())
+            sub_run.assert_not_called()
+
+        with patch.object(f, 'is_uboot_alive', return_value=False), \
+             patch.object(f, 'warn_conflicting_usb_tools'), \
+             patch.object(f, 'check_usb_device', return_value={}), \
+             patch.object(f, 'probe_usb_identify', return_value=locked_ident), \
+             patch.object(f.subprocess, 'Popen') as popen, \
+             patch.object(f, 'emit'):
+            self.assertFalse(f.boot_uboot_via_yasta('00052'))
+            popen.assert_not_called()
+
+    def test_boot_g12_stops_with_exit_code_2_on_password_locked_bootrom(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('boot_g12_mod', os.path.join(f.SCRIPT_DIR, 'boot-g12.py'))
+        bg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bg)
+
+        class Device:
+            def __init__(self, ident):
+                self.dev = self
+                self._ident = ident
+                self.wrote_bl2 = False
+            def set_configuration(self): pass
+            def identify(self): return self._ident
+            def writeLargeMemory(self, *args): self.wrote_bl2 = True
+            def close(self): pass
+
+        dev = Device(''.join(map(chr, (3, 2, 0, 0, 1, 0, 0, 0))))
+        with tempfile.NamedTemporaryFile(delete=False) as image:
+            image.write(b'x' * 70000)
+            path = image.name
+        try:
+            with patch.object(bg.pyamlboot, 'AmlogicSoC', return_value=dev), \
+                 patch.object(bg, 'resolve_usb_backend', return_value=object()), \
+                 patch.object(bg, 'get_image_candidates', return_value=[path, path]), \
+                 patch.object(bg, 'parse_cmdline', return_value=argparse.Namespace(revision='00052', retries=2, binary=None)):
+                self.assertEqual(bg.main(), 2)
+                self.assertFalse(dev.wrote_bl2)
+
+            dev_uboot = Device(''.join(map(chr, (0, 7, 0, 16, 1, 0))))
+            with patch.object(bg.pyamlboot, 'AmlogicSoC', return_value=dev_uboot):
+                self.assertTrue(bg.boot_single_image(object(), path, retries=1))
+        finally:
+            os.unlink(path)
+
 if __name__ == '__main__': unittest.main()
