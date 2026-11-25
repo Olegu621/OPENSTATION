@@ -16,6 +16,7 @@ namespace openstation {
 
 struct WakeWordSettings {
     bool enabled = true;
+    bool kws_enabled = true;
     std::string keywords = "\xE2\x96\x81\xD0\xB0 \xD0\xBB\xD0\xB8 \xD1\x81\xD0\xB0 @\xD0\xB0\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
     float threshold = 0.20f;
     float score = 1.5f;
@@ -34,6 +35,7 @@ public:
 
     bool start(const WakeWordSettings& settings, WakeCallback cb, QuickCallback quick_cb = {});
     void stop();
+    void restart(const WakeWordSettings& settings);
 
     void update_settings(const WakeWordSettings& settings);
     void set_paused(bool paused);

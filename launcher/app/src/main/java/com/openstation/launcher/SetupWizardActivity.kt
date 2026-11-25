@@ -101,10 +101,13 @@ class SetupWizardActivity : Activity() {
     private lateinit var waveView: WizardWaveformView
     private lateinit var tvAliceStatus: TextView
     private lateinit var tvAliceHeading: TextView
+    private lateinit var tvStep4WakePhraseLabel: TextView
+    private lateinit var llStep4WakePhraseRow: LinearLayout
     private lateinit var tvPersonalityLabel: TextView
     private lateinit var btnStep4WakeToggle: TextView
     private lateinit var btnStep4AgentToggle: TextView
     private val namePills = LinkedHashMap<String, TextView>()
+    private val wakePills = LinkedHashMap<String, TextView>()
     private val voicePills = LinkedHashMap<String, TextView>()
     private val promptPills = LinkedHashMap<String, TextView>()
 
@@ -148,6 +151,10 @@ class SetupWizardActivity : Activity() {
     private var curOtaError = ""
     private var curHasKey = false
     private var curAssistantName = "Алиса"
+    private var curWakePhrase = "alisa"
+    private var curWakeEngine = "kws"
+    private var curStockFallback = false
+    private var curAvailableWakePhrases: Set<String> = emptySet()
     private var curVoice = "Aoede"
     private var curProxyHost = "ai-pool.comss.one"
     private var curWakeEn = true
@@ -801,7 +808,7 @@ class SetupWizardActivity : Activity() {
         tvAliceHeading = makeScreenTitle("Шаг 4 · Ассистент «Алиса»")
         rightCol.addView(tvAliceHeading)
 
-        rightCol.addView(makeSubLabel("Имя и слово активации"))
+        rightCol.addView(makeSubLabel("Имя и слово активации · «Алиса»/«Яндекс» — для штатного споттера, остальные — OpenStation KWS"))
         val nameRow = makeChoiceRow()
         listOf("Алиса", "Джарвис", "Пятница", "Макс").forEach { n ->
             val p = makeChoicePill(n) { applyAssistantNameChoice(n) }
@@ -812,6 +819,22 @@ class SetupWizardActivity : Activity() {
         namePills["custom"] = customNamePill
         nameRow.addView(customNamePill)
         rightCol.addView(nameRow)
+
+        tvStep4WakePhraseLabel = makeSubLabel("Слово активации (штатный споттер, для имени «Алиса»)")
+        rightCol.addView(tvStep4WakePhraseLabel)
+        llStep4WakePhraseRow = makeChoiceRow()
+        listOf("alisa" to "Алиса", "yandex" to "Яндекс").forEach { (id, lbl) ->
+            val p = makeChoicePill(lbl) {
+                val phraseRu = if (id == "yandex") "яндекс" else "алиса"
+                if (!curAvailableWakePhrases.contains(phraseRu)) return@makeChoicePill
+                curWakePhrase = id
+                pushConfigPatch(JSONObject().put("assistant", JSONObject().put("wakePhrase", id)), "Слово активации: $lbl")
+                syncChoicesHighlight()
+            }
+            wakePills[id] = p
+            llStep4WakePhraseRow.addView(p)
+        }
+        rightCol.addView(llStep4WakePhraseRow)
 
         rightCol.addView(makeSubLabel("Голос (Gemini Live)"))
         val voiceRow = makeChoiceRow()
@@ -1349,6 +1372,20 @@ class SetupWizardActivity : Activity() {
             .firstOrNull { it.equals(curAssistantName, ignoreCase = true) }
         namePills["custom"]?.text = if (presetName == null) "✏ $curAssistantName" else "✏ Своё"
         styleMap(namePills, presetName ?: "custom")
+        val isAlisa = curAssistantName.equals("Алиса", ignoreCase = true) ||
+            curAssistantName.equals("Alisa", ignoreCase = true)
+        val showWakeRow = isAlisa && curAvailableWakePhrases.isNotEmpty()
+        tvStep4WakePhraseLabel.visibility = if (showWakeRow) View.VISIBLE else View.GONE
+        llStep4WakePhraseRow.visibility = if (showWakeRow) View.VISIBLE else View.GONE
+        wakePills.forEach { (k, tv) ->
+            val phraseRu = if (k == "yandex") "яндекс" else "алиса"
+            val available = curAvailableWakePhrases.contains(phraseRu)
+            val sel = (k == curWakePhrase) && available
+            tv.isEnabled = available
+            tv.alpha = if (available) 1f else 0.45f
+            tv.isSelected = sel
+            tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+        }
         styleMap(voicePills, curVoice)
         styleMap(promptPills, activePromptPreset)
         styleMap(routePills, curRoute)
@@ -1623,6 +1660,18 @@ class SetupWizardActivity : Activity() {
                         curHasKey = astCfg?.optBoolean("geminiApiKeySet", false) == true ||
                             !(astCfg?.optString("geminiApiKey", "") ?: "").isBlank()
                         curAssistantName = (astCfg?.optString("name", "") ?: "").trim().ifEmpty { "Алиса" }
+                        curWakePhrase = astCfg?.optString("wakePhrase", "alisa") ?: "alisa"
+                        curWakeEngine = ww?.optString("engine", "kws") ?: "kws"
+                        curStockFallback = ww?.optBoolean("stockFallback", false) == true
+                        val availArr = ww?.optJSONArray("availablePhrases")
+                        val availSet = LinkedHashSet<String>()
+                        if (availArr != null) {
+                            for (i in 0 until availArr.length()) {
+                                val ph = availArr.optString(i, "").trim().lowercase()
+                                if (ph.isNotEmpty()) availSet.add(ph)
+                            }
+                        }
+                        curAvailableWakePhrases = availSet
                         curVoice = astCfg?.optString("voiceName", "Aoede") ?: "Aoede"
                         curAgentMode = astCfg?.optBoolean("agentMode", ast?.optBoolean("agentMode", true) ?: true) ?: true
                         curProxyHost = astCfg?.optString("geminiProxyHost", "ai-pool.comss.one") ?: "ai-pool.comss.one"
@@ -1725,9 +1774,15 @@ class SetupWizardActivity : Activity() {
 
         // Screen 4 Alice
         if (!tvAliceStatus.text.startsWith("⏳") && !tvAliceStatus.text.startsWith("✗")) {
+            val activeWakeLabel = if (
+                (curAssistantName.equals("Алиса", true) || curAssistantName.equals("Alisa", true)) &&
+                curWakeEngine == "stock" &&
+                curWakePhrase == "yandex"
+            ) "Яндекс" else curAssistantName
             tvAliceStatus.text = when {
                 !curHasKey -> "• Нужен ключ Gemini Live"
-                curKwsReady -> "✓ Готова · отклик «$curAssistantName»"
+                curKwsReady -> "✓ Готова · отклик «$activeWakeLabel»" +
+                    if (curStockFallback) " (резерв KWS)" else ""
                 else -> "✓ Ключ задан · кнопка Action"
             }
             tvAliceStatus.setTextColor(Color.parseColor(if (curHasKey) "#6EE7B7" else "#FDE68A"))

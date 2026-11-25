@@ -273,6 +273,8 @@ class MainActivity : Activity() {
     private lateinit var btnServiceTimers: LinearLayout
     private lateinit var tvServiceTimers: TextView
     private var assistantNameState = "Алиса"
+    private var assistantWakePhraseState = "alisa"
+    private var assistantWakeAvailablePhrases: Set<String> = emptySet()
     private var assistantVoiceState = "Aoede"
     private var assistantPromptState = ""
     private var hwEqSupportedState = false
@@ -3166,6 +3168,16 @@ class MainActivity : Activity() {
                     val pVoice = (astCfg?.optString("voiceName", "") ?: "").trim().ifEmpty { "Aoede" }
                     val pPrompt = astCfg?.optString("systemPrompt", "") ?: ""
                     assistantNameState = pName
+                    assistantWakePhraseState = astCfg?.optString("wakePhrase", "alisa") ?: "alisa"
+                    val availArr = ast?.optJSONObject("wakeWord")?.optJSONArray("availablePhrases")
+                    val availSet = LinkedHashSet<String>()
+                    if (availArr != null) {
+                        for (i in 0 until availArr.length()) {
+                            val ph = availArr.optString(i, "").trim().lowercase()
+                            if (ph.isNotEmpty()) availSet.add(ph)
+                        }
+                    }
+                    assistantWakeAvailablePhrases = availSet
                     assistantVoiceState = pVoice
                     assistantPromptState = pPrompt
                     LiveOrbState.updateAssistantPersona(pName, pVoice)
@@ -4945,16 +4957,19 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         })
         panel.addView(TextView(this).apply {
-            text = "Выберите имя для офлайн-распознавания (Wake Word), тембр голоса и стиль ответов"
+            text = "Выберите имя для офлайн-распознавания (Wake Word), тембр голоса и стиль ответов. Если установлен штатный Yandex-споттер, для «Алиса» доступно переключение слова «Алиса»/«Яндекс»."
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 11.5f
             setPadding(0, dp(2), 0, dp(8))
         })
 
         val nameMap = LinkedHashMap<String, TextView>()
+        val wakeMap = LinkedHashMap<String, TextView>()
         val voiceMap = LinkedHashMap<String, TextView>()
         val promptMap = LinkedHashMap<String, TextView>()
         var curPromptKey = AssistantPersonalities.keyForPrompt(assistantPromptState)
+        lateinit var wakeHeading: TextView
+        lateinit var wakeRow: LinearLayout
 
         fun refreshHighlights() {
             val preset = listOf("Алиса", "Джарвис", "Пятница", "Макс")
@@ -4962,6 +4977,20 @@ class MainActivity : Activity() {
             nameMap["custom"]?.text = if (preset == null) "✏ $assistantNameState" else "✏ Своё имя"
             nameMap.forEach { (k, tv) ->
                 val sel = (k == (preset ?: "custom"))
+                tv.isSelected = sel
+                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+            }
+            val isAlisa = assistantNameState.equals("Алиса", ignoreCase = true) ||
+                assistantNameState.equals("Alisa", ignoreCase = true)
+            val showWakeRow = isAlisa && assistantWakeAvailablePhrases.isNotEmpty()
+            wakeHeading.visibility = if (showWakeRow) View.VISIBLE else View.GONE
+            wakeRow.visibility = if (showWakeRow) View.VISIBLE else View.GONE
+            wakeMap.forEach { (k, tv) ->
+                val phraseRu = if (k == "yandex") "яндекс" else "алиса"
+                val available = assistantWakeAvailablePhrases.contains(phraseRu)
+                val sel = (k == assistantWakePhraseState) && available
+                tv.isEnabled = available
+                tv.alpha = if (available) 1f else 0.45f
                 tv.isSelected = sel
                 tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
             }
@@ -5026,6 +5055,26 @@ class MainActivity : Activity() {
         nameMap["custom"] = customBtn
         nameRow.addView(customBtn)
         panel.addView(nameRow)
+
+        wakeHeading = makeModalSubHeading("Слово активации (штатный споттер, для имени «Алиса»)")
+        panel.addView(wakeHeading)
+        wakeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("alisa" to "Алиса", "yandex" to "Яндекс").forEach { (id, lbl) ->
+            val pill = makeModalChoicePill(lbl, id == assistantWakePhraseState) {
+                val phraseRu = if (id == "yandex") "яндекс" else "алиса"
+                if (!assistantWakeAvailablePhrases.contains(phraseRu)) return@makeModalChoicePill
+                assistantWakePhraseState = id
+                refreshHighlights()
+                postAsync(
+                    "http://127.0.0.1:8080/api/config",
+                    JSONObject().put("assistant", JSONObject().put("wakePhrase", id)).toString()
+                )
+                Toast.makeText(this, "Слово активации: $lbl", Toast.LENGTH_SHORT).show()
+            }
+            wakeMap[id] = pill
+            wakeRow.addView(pill)
+        }
+        panel.addView(wakeRow)
 
         panel.addView(makeModalSubHeading("Голос ассистента (Gemini Live TTS)"))
         val voiceRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }

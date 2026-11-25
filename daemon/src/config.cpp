@@ -243,6 +243,9 @@ void DaemonConfig::sanitize_and_validate() {
         utf8_truncate(nm, 48);
         if (nm.empty()) nm = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
     }
+    if (!is_one_of(assistant.wake_phrase, {"alisa", "yandex"})) {
+        assistant.wake_phrase = "alisa";
+    }
     if (assistant.gemini_api_key.size() > 256) assistant.gemini_api_key.resize(256);
     while (!assistant.gemini_api_key.empty() &&
            (assistant.gemini_api_key.back() == '\n' || assistant.gemini_api_key.back() == '\r' || assistant.gemini_api_key.back() == ' ')) {
@@ -469,6 +472,7 @@ json::Value DaemonConfig::to_json() const {
     ast["enabled"] = Value::make_bool(assistant.enabled);
     ast["mode"] = Value::make_str(assistant.mode);
     ast["name"] = Value::make_str(assistant.name);
+    ast["wakePhrase"] = Value::make_str(assistant.wake_phrase);
     ast["geminiApiKey"] = Value::make_str(assistant.gemini_api_key);
     ast["geminiModel"] = Value::make_str(assistant.gemini_model);
     ast["quickCommands"] = Value::make_bool(assistant.quick_commands);
@@ -673,6 +677,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ast->get("mode"); x && x->is_str()) assistant.mode = x->as_str();
         if (auto* x = ast->get("quickCommands"); x && x->is_bool()) assistant.quick_commands = x->as_bool();
         if (auto* x = ast->get("name"); x && x->is_str()) assistant.name = x->as_str();
+        if (auto* x = ast->get("wakePhrase"); x && x->is_str()) assistant.wake_phrase = x->as_str();
         // Empty = preserve stored secret because status JSON masks secrets.
         if (auto* x = ast->get("geminiApiKey"); x && x->is_str() && !x->as_str().empty()) assistant.gemini_api_key = x->as_str();
         // Locked to gemini-3.8-live regardless of stale client configs.
