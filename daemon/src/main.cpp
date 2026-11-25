@@ -57,7 +57,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.32";
+constexpr const char* kFirmwareVersion = "1.6.34";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";

@@ -2420,10 +2420,10 @@ json::Value AssistantManager::get_status_json() {
     }
 
     Value ww = wake_word_.get_status_json();
-    const bool stock_cfg = use_stock_wake_config(c);
+    const bool alisa_cfg = is_alisa_name(c.name);
     const bool stock_active = is_stock_wake_active(c);
     ww["engine"] = Value::make_str(stock_active ? "stock" : "kws");
-    if (stock_cfg) {
+    if (alisa_cfg) {
         const size_t active = stock_phrase_index(c);
         Value available = Value::make_arr();
         if (stock_alisa_available()) available.push(Value::make_str("\xD0\xB0\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0"));

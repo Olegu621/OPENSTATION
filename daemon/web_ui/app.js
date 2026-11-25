@@ -622,9 +622,9 @@
     const clean = (name || "").trim() || "Алиса";
     const wwState = ww || lastWakeWordStatus || {};
     const isAlisa = clean.toLowerCase() === "алиса" || clean.toLowerCase() === "alisa";
-    const avail = Array.isArray(wwState.availablePhrases) ? wwState.availablePhrases : null;
-    const hasStock = isAlisa && (!avail || avail.length > 0);
-    const stockActive = isAlisa && (wwState.engine === "stock" || (!wwState.engine && hasStock));
+    const avail = Array.isArray(wwState.availablePhrases) ? wwState.availablePhrases : [];
+    const hasStock = isAlisa && avail.length > 0;
+    const stockActive = isAlisa && wwState.engine === "stock";
     const stockFallback = isAlisa && !!wwState.stockFallback;
     const phraseName = (stockActive && getWakePhrase() === "yandex") ? "Яндекс" : clean;
     syncWakePhraseVisibility(hasStock);

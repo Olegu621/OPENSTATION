@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.32",
-    [string]$Changelog = "Плеер Spotify с поиском, плейлистами и избранным. Выбор сервиса на ТВ и в веб-пульте.",
+    [string]$Version = "1.6.34",
+    [string]$Changelog = "Штатный Яндекс-споттер (переключение «Алиса»/«Яндекс») с резервом OpenStation KWS, адаптивный конец речи (audioStreamEnd), приглушение плееров через FocusHelper, root SSH в deploy.ps1 и диагностика пароля BootROM.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
