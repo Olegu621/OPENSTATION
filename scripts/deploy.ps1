@@ -6,6 +6,8 @@
   .\scripts\deploy.ps1 -GeminiApiKey "ВАШ_GEMINI_API_KEY"
 .EXAMPLE
   .\scripts\deploy.ps1 -UsePrebuilt -DeviceSerial 192.168.0.20 -GeminiApiKey "ВАШ_GEMINI_API_KEY"
+.EXAMPLE
+  .\scripts\deploy.ps1 -Transport ssh -SshHost 127.0.0.1 -SshPort 2222 -SshUser root
 #>
 [CmdletBinding()]
 param(
@@ -14,6 +16,14 @@ param(
     [string]$GeminiApiKey = $env:GEMINI_API_KEY,
     [string]$PrivateDnsHost = "dns.comss.one",
     [string]$ReleaseRepo = "Olegu621/OPENSTATION",
+    [ValidateSet("auto", "adb", "ssh")]
+    [string]$Transport = "auto",
+    [string]$SshHost = "",
+    [int]$SshPort = 2222,
+    [int]$SshRemotePort = 2222,
+    [string]$SshUser = "root",
+    [string]$SshKeyPath = "",
+    [string]$SshPath = "",
     [switch]$UseFirmware,
     [switch]$UsePrebuilt,
     [switch]$SkipBuild,
@@ -166,6 +176,95 @@ function Connect-TcpAdbIfNeeded {
     }
 }
 
+$script:ActiveTransport = "adb"
+$script:ResolvedSshPath = ""
+$script:HasAdbTransport = $true
+$script:UseAdbForward = $false
+
+function Resolve-SshExecutable {
+    param([string]$Requested)
+    if ($Requested) {
+        if (Test-Path $Requested) { return (Resolve-Path $Requested).Path }
+        $cmd = Get-Command $Requested -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+        throw "Указанный ssh не найден: $Requested"
+    }
+    $candidates = @()
+    $c1 = Get-Command ssh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c1) { $candidates += $c1.Source }
+    $c2 = Get-Command ssh -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c2) { $candidates += $c2.Source }
+    if ($env:WINDIR) {
+        $candidates += (Join-Path $env:WINDIR "System32\OpenSSH\ssh.exe")
+    }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
+    }
+    throw "OpenSSH клиент (ssh) не найден. Установите OpenSSH Client или укажите -SshPath."
+}
+
+function ConvertTo-ShSingleQuoted {
+    param([string]$Value)
+    return "'" + ($Value -replace "'", "'`"'`"'") + "'"
+}
+
+function Get-SshCommonArgs {
+    $nullHosts = if ($env:OS -eq "Windows_NT") { "NUL" } else { "/dev/null" }
+    $argsList = @(
+        "-p", [string]$SshPort,
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=$nullHosts",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=5"
+    )
+    if ($SshKeyPath) {
+        if (-not (Test-Path $SshKeyPath)) {
+            throw "Указанный SSH-ключ не найден: $SshKeyPath"
+        }
+        $argsList += @("-i", (Resolve-Path $SshKeyPath).Path)
+    }
+    return $argsList
+}
+
+function Ensure-SshForward {
+    if ($script:UseAdbForward -and $script:HasAdbTransport) {
+        Connect-TcpAdbIfNeeded
+        $fwdArgs = @()
+        if ($DeviceSerial) { $fwdArgs += @("-s", $DeviceSerial) }
+        $fwdArgs += @("forward", ("tcp:{0}" -f $SshPort), ("tcp:{0}" -f $SshRemotePort))
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $null = & $AdbPath @fwdArgs 2>$null
+            $rc = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        if ($rc -ne 0) {
+            throw "Не удалось настроить проброс adb forward tcp:${SshPort} -> tcp:${SshRemotePort}"
+        }
+    }
+}
+
+function Invoke-SshCommand {
+    param([string]$RemoteCmd, [switch]$AllowFailure)
+    Ensure-SshForward
+    $sshArgs = @(Get-SshCommonArgs) + @("${SshUser}@${SshHost}", $RemoteCmd)
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & $script:ResolvedSshPath @sshArgs
+        $rc = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if (-not $AllowFailure -and $rc -ne 0) {
+        throw "SSH command failed ($rc): $RemoteCmd"
+    }
+    return $out
+}
+
 function Invoke-Adb {
     param([string[]]$ArgsList)
     Connect-TcpAdbIfNeeded
@@ -182,7 +281,115 @@ function Invoke-AdbSh {
     param([string]$Script)
     $clean = $Script -replace "`r", ""
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($clean))
+    if ($script:ActiveTransport -eq "ssh") {
+        Invoke-SshCommand "echo $b64 | base64 -d | sh"
+        return
+    }
     Invoke-Adb @("shell", "echo $b64 | base64 -d | sh")
+}
+
+function Push-DeviceFile {
+    param([string]$LocalPath, [string]$RemotePath, [string]$Mode = "")
+    if ($script:ActiveTransport -eq "adb") {
+        Invoke-Adb @("push", $LocalPath, $RemotePath)
+        if ($Mode) {
+            $qRemote = ConvertTo-ShSingleQuoted $RemotePath
+            Invoke-AdbSh "chmod $Mode $qRemote"
+        }
+        return
+    }
+    if ($script:HasAdbTransport) {
+        $stage = "/data/local/tmp/.openstation_push_" + [Guid]::NewGuid().ToString("N")
+        Invoke-Adb @("push", $LocalPath, $stage)
+        $qStage = ConvertTo-ShSingleQuoted $stage
+        $qRemote = ConvertTo-ShSingleQuoted $RemotePath
+        $remoteParent = $RemotePath -replace '/[^/]+$', ''
+        if (-not $remoteParent) { $remoteParent = "/" }
+        $qDir = ConvertTo-ShSingleQuoted $remoteParent
+        $chmodLine = if ($Mode) { "chmod $Mode $qRemote" } else { ":" }
+        $stageScript = @"
+set -e
+cleanup() { rm -f $qStage; }
+trap cleanup EXIT
+mkdir -p $qDir
+mv -f $qStage $qRemote
+chown 0:0 $qRemote 2>/dev/null || true
+$chmodLine
+trap - EXIT
+"@
+        Invoke-AdbSh $stageScript
+        return
+    }
+    Ensure-SshForward
+    $qTmp = ConvertTo-ShSingleQuoted ($RemotePath + ".os_tmp_" + [Guid]::NewGuid().ToString("N"))
+    $qRemote = ConvertTo-ShSingleQuoted $RemotePath
+    $remoteParent = $RemotePath -replace '/[^/]+$', ''
+    if (-not $remoteParent) { $remoteParent = "/" }
+    $qDir = ConvertTo-ShSingleQuoted $remoteParent
+    $chmodLine = if ($Mode) { "chmod $Mode $qRemote" } else { ":" }
+    $remoteCmd = "mkdir -p $qDir && { cat > $qTmp && mv -f $qTmp $qRemote; } || { rm -f $qTmp; exit 1; } && { chown 0:0 $qRemote 2>/dev/null || true; } && $chmodLine"
+    $sshArgs = @(Get-SshCommonArgs) + @("${SshUser}@${SshHost}", $remoteCmd)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $script:ResolvedSshPath
+    if ($psi.PSObject.Properties["ArgumentList"]) {
+        foreach ($arg in $sshArgs) { $null = $psi.ArgumentList.Add($arg) }
+    } else {
+        $psi.Arguments = (($sshArgs | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join " ")
+    }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardError = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $fs = [System.IO.File]::OpenRead($LocalPath)
+        try { $fs.CopyTo($proc.StandardInput.BaseStream) } finally { $fs.Dispose() }
+        $proc.StandardInput.Close()
+        $errTxt = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        if ($proc.ExitCode -ne 0) {
+            throw "SSH file push failed ($($proc.ExitCode)) for ${RemotePath}: $errTxt"
+        }
+    } finally {
+        $proc.Dispose()
+    }
+}
+
+function Pull-DeviceFile {
+    param([string]$RemotePath, [string]$LocalPath)
+    if ($script:ActiveTransport -eq "adb") {
+        Invoke-Adb @("pull", $RemotePath, $LocalPath)
+        return
+    }
+    if ($script:HasAdbTransport) {
+        $stage = "/data/local/tmp/.openstation_pull_" + [Guid]::NewGuid().ToString("N")
+        $qStage = ConvertTo-ShSingleQuoted $stage
+        $qRemote = ConvertTo-ShSingleQuoted $RemotePath
+        Invoke-AdbSh @"
+set -e
+cp -f $qRemote $qStage
+chmod 644 $qStage
+"@
+        try {
+            Invoke-Adb @("pull", $stage, $LocalPath)
+        } finally {
+            try { Invoke-AdbSh "rm -f $qStage" | Out-Null } catch {}
+        }
+        return
+    }
+    $qRemote = ConvertTo-ShSingleQuoted $RemotePath
+    $b64Out = ((Invoke-AdbSh "base64 $qRemote | tr -d '\r\n'") | Out-String).Trim()
+    if (-not $b64Out) {
+        throw "Не удалось скачать файл через SSH: $RemotePath"
+    }
+    [System.IO.File]::WriteAllBytes($LocalPath, [Convert]::FromBase64String($b64Out))
+}
+
+function Invoke-DeviceReboot {
+    if ($script:HasAdbTransport) {
+        Invoke-Adb @("reboot")
+        return
+    }
+    try { Invoke-AdbSh "svc power reboot || reboot" | Out-Null } catch {}
 }
 
 function Wait-AdbReady {
@@ -203,22 +410,37 @@ function Wait-AdbReady {
     throw "Таймаут ожидания подключения ADB ($TimeoutSec сек)"
 }
 
+function Wait-TransportReady {
+    param([int]$TimeoutSec = 90)
+    if ($script:HasAdbTransport) {
+        Wait-AdbReady -TimeoutSec $TimeoutSec
+    }
+    if ($script:ActiveTransport -ne "ssh") {
+        return
+    }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $out = ((Invoke-AdbSh "echo READY") | Out-String).Trim()
+            if ($out -eq "READY") {
+                return
+            }
+        } catch {}
+        Start-Sleep -Seconds 2
+    }
+    throw "Таймаут ожидания готовности SSH (${SshUser}@${SshHost}:${SshPort}, $TimeoutSec сек)"
+}
+
 function Wait-BootCompleted {
     param([int]$TimeoutSec = 90)
     $probe = @'
 bc=$(getprop sys.boot_completed | tr -d '\r')
 [ "$bc" = "1" ] && pidof system_server >/dev/null 2>&1 && settings get global adb_enabled >/dev/null 2>&1 && pm path android >/dev/null 2>&1 && echo READY
 '@
-    $probe = $probe -replace "`r", ""
-    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($probe))
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        Connect-TcpAdbIfNeeded
-        $adbArgs = @()
-        if ($DeviceSerial) { $adbArgs += @("-s", $DeviceSerial) }
-        $adbArgs += @("shell", "echo $b64 | base64 -d | sh")
         $out = ""
-        try { $out = ((& $AdbPath @adbArgs 2>$null) | Out-String).Trim() } catch {}
+        try { $out = ((Invoke-AdbSh $probe) | Out-String).Trim() } catch {}
         if ($out -eq "READY") {
             return
         }
@@ -228,10 +450,17 @@ bc=$(getprop sys.boot_completed | tr -d '\r')
 }
 
 Write-Host "=== OpenStation Max v1.3.6 Deploy ===" -ForegroundColor Cyan
-$AdbPath = Resolve-AdbExecutable -Requested $AdbPath
-Write-Host "ADB: $AdbPath" -ForegroundColor Gray
+$pureDirectSsh = ($Transport -eq "ssh") -and (-not [string]::IsNullOrWhiteSpace($SshHost)) -and ($SshHost -notin @("127.0.0.1", "localhost")) -and (-not $DeviceSerial)
+try {
+    $AdbPath = Resolve-AdbExecutable -Requested $AdbPath
+    Write-Host "ADB: $AdbPath" -ForegroundColor Gray
+} catch {
+    if (-not $pureDirectSsh) { throw }
+    $AdbPath = ""
+    $script:HasAdbTransport = $false
+}
 
-if ($Interactive -and -not $DeviceSerial) {
+if ($Interactive -and -not $DeviceSerial -and ($Transport -ne "ssh" -or -not $SshHost)) {
     while (-not $DeviceSerial) {
         $devs = @(Get-ConnectedAdbDevices | Where-Object { $_.State -eq "device" })
         if ($devs.Count -eq 1) {
@@ -424,11 +653,54 @@ foreach ($f in @($DaemonBin, $ImeApk, $LauncherApk)) {
     if (-not (Test-Path $f)) { throw "Отсутствует артефакт сборки: $f (запустите без -SkipBuild или используйте -UsePrebuilt)" }
 }
 
-Write-Host "[2/7] Проверка подключения ADB и прав root..." -ForegroundColor Yellow
-Wait-AdbReady -TimeoutSec 60
-$idOut = (Invoke-Adb @("shell", "id") | Out-String)
-if ($idOut -notmatch "uid=0") {
-    throw "adbd должен работать от root (uid=0). Получено: $idOut"
+Write-Host "[2/7] Проверка подключения и привилегированного доступа (uid=0)..." -ForegroundColor Yellow
+if ($Transport -eq "ssh") {
+    $script:ActiveTransport = "ssh"
+    $script:ResolvedSshPath = Resolve-SshExecutable -Requested $SshPath
+    if (-not $SshHost) { $SshHost = "127.0.0.1" }
+    $script:UseAdbForward = ($SshHost -in @("127.0.0.1", "localhost"))
+    if ($script:UseAdbForward) {
+        if (-not $AdbPath) { throw "Для -SshHost $SshHost требуется ADB (adb forward)" }
+        $script:HasAdbTransport = $true
+    } elseif ($DeviceSerial) {
+        $script:HasAdbTransport = $true
+    } elseif ($AdbPath) {
+        $devs = @(Get-ConnectedAdbDevices | Where-Object { $_.State -eq "device" })
+        $script:HasAdbTransport = ($devs.Count -gt 0)
+    } else {
+        $script:HasAdbTransport = $false
+    }
+    Wait-TransportReady -TimeoutSec 60
+    $sshId = (Invoke-AdbSh "id" | Out-String).Trim()
+    if ($sshId -notmatch "uid=0") {
+        throw "SSH-сессия (${SshUser}@${SshHost}:${SshPort}) должна работать от root (uid=0). Получено: $sshId"
+    }
+    Write-Host "[*] Активный транспорт: SSH (${SshUser}@${SshHost}:${SshPort}, $sshId; adb_staging=$($script:HasAdbTransport))" -ForegroundColor Green
+} else {
+    $script:ActiveTransport = "adb"
+    $script:HasAdbTransport = $true
+    Wait-AdbReady -TimeoutSec 60
+    $idOut = ((Invoke-Adb @("shell", "id")) | Out-String).Trim()
+    if ($idOut -notmatch "uid=0") {
+        if ($Transport -eq "adb") {
+            throw "adbd должен работать от root (uid=0). Получено: $idOut"
+        }
+        Write-Host "[!] adbd работает без root ($idOut) — пробую fallback на SSH (Dropbear)..." -ForegroundColor Yellow
+        $script:ResolvedSshPath = Resolve-SshExecutable -Requested $SshPath
+        if (-not $SshHost) { $SshHost = "127.0.0.1" }
+        $script:UseAdbForward = ($SshHost -in @("127.0.0.1", "localhost"))
+        $script:ActiveTransport = "ssh"
+        try {
+            Wait-TransportReady -TimeoutSec 15
+            $sshId = (Invoke-AdbSh "id" | Out-String).Trim()
+        } catch {
+            throw "adbd не от root ($idOut), а SSH fallback (${SshUser}@${SshHost}:${SshPort}) недоступен: $($_.Exception.Message)"
+        }
+        if ($sshId -notmatch "uid=0") {
+            throw "adbd не от root ($idOut), и SSH (${SshUser}@${SshHost}:${SshPort}) вернул: $sshId"
+        }
+        Write-Host "[*] Переключено на SSH-транспорт (${SshUser}@${SshHost}:${SshPort}, $sshId)" -ForegroundColor Green
+    }
 }
 Wait-BootCompleted -TimeoutSec 60
 
@@ -556,7 +828,7 @@ if (($remoteBackups -notcontains "rc_local.sh") -and (Test-Path "$BackupLocalDir
 # Скачать копию бэкапа на ПК (не перезаписывая существующие файлы в backup/)
 foreach ($bf in $remoteBackups) {
     if (-not (Test-Path "$BackupLocalDir\$bf")) {
-        Invoke-Adb @("pull", "/data/local/openstation/backup/$bf", "$BackupLocalDir\$bf")
+        Pull-DeviceFile "/data/local/openstation/backup/$bf" "$BackupLocalDir\$bf"
     }
 }
 
@@ -574,7 +846,7 @@ if pidof openstationd >/dev/null 2>&1; then
     killall -9 openstationd 2>/dev/null || true
 fi
 '@
-Invoke-Adb @("push", $DaemonBin, "/data/local/openstation/openstationd")
+Push-DeviceFile $DaemonBin "/data/local/openstation/openstationd" "755"
 
 Write-Host "Синхронизация моделей Алисы, cacert и плеера Яндекс Музыки..." -ForegroundColor Gray
 $assetSpecs = @(
@@ -624,8 +896,7 @@ foreach ($sp in $assetSpecs) {
     $remHash = if ($remoteHashes.ContainsKey($sp.Remote)) { $remoteHashes[$sp.Remote] } else { "missing" }
     if ($locSize -ne $remSize -or $locHash -ne $remHash) {
         Write-Host "  -> push $(Split-Path -Leaf $sp.Local) ($locSize bytes)" -ForegroundColor Gray
-        Invoke-Adb @("push", $sp.Local, $sp.Remote)
-        Invoke-AdbSh "chmod $($sp.Mode) `"$($sp.Remote)`""
+        Push-DeviceFile $sp.Local $sp.Remote $sp.Mode
         if ($sp.Remote.EndsWith("ym_app.tar.gz")) { $ymTgzChanged = $true }
     }
 }
@@ -746,7 +1017,7 @@ if ($BootAnimZip -and (Test-Path $BootAnimZip)) {
     }
     $bootAnimHash = (Get-FileHash -Path $BootAnimZip -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Host "Установка фирменной заставки загрузки (bootanimation.zip)..." -ForegroundColor Gray
-    Invoke-Adb @("push", $BootAnimZip, "/data/local/tmp/openstation_bootanim.zip")
+    Push-DeviceFile $BootAnimZip "/data/local/tmp/openstation_bootanim.zip"
     $baScript = (@'
 set -e
 NEW_SHA="__NEW_SHA__"
@@ -805,14 +1076,14 @@ rm -f /data/local/tmp/openstation_bootanim.zip
     $baOut = (Invoke-AdbSh $baScript | Out-String).Trim()
     if ($baOut) { Write-Host "  $baOut" -ForegroundColor Gray }
     if (($baOut -match "BOOTANIM_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\bootanimation.zip.stock"))) {
-        Invoke-Adb @("pull", "/data/local/openstation/backup/bootanimation.zip.stock", "$BackupLocalDir\bootanimation.zip.stock")
+        Pull-DeviceFile "/data/local/openstation/backup/bootanimation.zip.stock" "$BackupLocalDir\bootanimation.zip.stock"
     }
 }
 
 if ($BootLogodBin -and (Test-Path $BootLogodBin)) {
     $bldHash = (Get-FileHash -Path $BootLogodBin -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Host "Установка матричного бут-демона (/sbin/bootlogod)..." -ForegroundColor Gray
-    Invoke-Adb @("push", $BootLogodBin, "/data/local/tmp/openstation_bootlogod")
+    Push-DeviceFile $BootLogodBin "/data/local/tmp/openstation_bootlogod"
     $bldScript = (@'
 set -e
 NEW_SHA="__NEW_SHA__"
@@ -862,7 +1133,7 @@ rm -f /data/local/tmp/openstation_bootlogod
     $bldOut = (Invoke-AdbSh $bldScript | Out-String).Trim()
     if ($bldOut) { Write-Host "  $bldOut" -ForegroundColor Gray }
     if (($bldOut -match "BOOTLOGOD_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\bootlogod.stock"))) {
-        Invoke-Adb @("pull", "/data/local/openstation/backup/bootlogod.stock", "$BackupLocalDir\bootlogod.stock")
+        Pull-DeviceFile "/data/local/openstation/backup/bootlogod.stock" "$BackupLocalDir\bootlogod.stock"
     }
 }
 
@@ -870,7 +1141,7 @@ if ($BootLogoImg -and (Test-Path $BootLogoImg)) {
     $logoHash = (Get-FileHash -Path $BootLogoImg -Algorithm SHA256).Hash.ToLowerInvariant()
     $logoLen = [int64](Get-Item $BootLogoImg).Length
     Write-Host "Установка раннего HDMI логотипа (/dev/block/logo)..." -ForegroundColor Gray
-    Invoke-Adb @("push", $BootLogoImg, "/data/local/tmp/openstation_logo.img")
+    Push-DeviceFile $BootLogoImg "/data/local/tmp/openstation_logo.img"
     $logoScript = (@'
 set -e
 NEW_SHA="__NEW_SHA__"
@@ -898,7 +1169,7 @@ rm -f /data/local/tmp/openstation_logo.img
     $logoOut = (Invoke-AdbSh $logoScript | Out-String).Trim()
     if ($logoOut) { Write-Host "  $logoOut" -ForegroundColor Gray }
     if (($logoOut -match "LOGO_STOCK_BACKED_UP=") -and (-not (Test-Path "$BackupLocalDir\logo.img.stock"))) {
-        Invoke-Adb @("pull", "/data/local/openstation/backup/logo.img.stock", "$BackupLocalDir\logo.img.stock")
+        Pull-DeviceFile "/data/local/openstation/backup/logo.img.stock" "$BackupLocalDir\logo.img.stock"
     }
 }
 
@@ -1364,7 +1635,7 @@ sh /data/local/openstation/tmp_guard.sh </dev/null >/dev/null 2>&1 &
 start
 '@
 
-Wait-AdbReady -TimeoutSec 90
+Wait-TransportReady -TimeoutSec 90
 Wait-BootCompleted -TimeoutSec 90
 Start-Sleep -Seconds 2
 
@@ -1420,12 +1691,9 @@ cur_s=$(settings get global private_dns_specifier 2>/dev/null | tr -d '\r\n')
 $adbEnabledCur = (Invoke-AdbSh "settings get global adb_enabled | tr -d '\r\n'" | Out-String).Trim()
 if ($adbEnabledCur -ne "1") {
     Write-Host "Применение adb_enabled=1 (возможен кратковременный перезапуск adbd)..." -ForegroundColor Gray
-    $adbArgs = @()
-    if ($DeviceSerial) { $adbArgs += @("-s", $DeviceSerial) }
-    $adbArgs += @("shell", "settings put global adb_enabled 1")
-    try { & $AdbPath @adbArgs 2>$null | Out-Null } catch {}
+    try { Invoke-AdbSh "settings put global adb_enabled 1" | Out-Null } catch {}
     Start-Sleep -Seconds 2
-    Wait-AdbReady -TimeoutSec 60
+    Wait-TransportReady -TimeoutSec 60
     Wait-BootCompleted -TimeoutSec 90
 }
 
@@ -1488,13 +1756,9 @@ rm -f /data/local/openstation/usb_norm.sh
 NORM
 sh /data/local/openstation/usb_norm.sh </dev/null >/dev/null 2>&1 &
 '@ -replace "`r", ""
-    $b64Norm = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normScript))
-    $adbArgs = @()
-    if ($DeviceSerial) { $adbArgs += @("-s", $DeviceSerial) }
-    $adbArgs += @("shell", "echo $b64Norm | base64 -d | sh")
-    try { & $AdbPath @adbArgs 2>$null | Out-Null } catch {}
+    try { Invoke-AdbSh $normScript | Out-Null } catch {}
     Start-Sleep -Seconds 3
-    Wait-AdbReady -TimeoutSec 60
+    Wait-TransportReady -TimeoutSec 60
     Wait-BootCompleted -TimeoutSec 90
 }
 
@@ -1518,9 +1782,9 @@ if (Test-Path $postMiscSh) {
 
 if (-not $NoReboot) {
     Write-Host "[6/7] Перезагрузка для чистой проверки автозапуска openstationd и стойкости ADB..." -ForegroundColor Yellow
-    Invoke-Adb @("reboot")
+    Invoke-DeviceReboot
     Start-Sleep -Seconds 6
-    Wait-AdbReady -TimeoutSec 90
+    Wait-TransportReady -TimeoutSec 90
     Write-Host "Ожидание полной загрузки Android..." -ForegroundColor Gray
     Wait-BootCompleted -TimeoutSec 90
     Start-Sleep -Seconds 3
@@ -1537,8 +1801,8 @@ fi
 
 Write-Host "[7/7] Установка и активация OpenStationIME и OpenStationLauncher..." -ForegroundColor Yellow
 Invoke-AdbSh "rm -f /data/local/openstation/pause_usb_guard /data/local/openstation/tmp_guard.pid"
-Invoke-Adb @("push", $ImeApk, "/data/local/tmp/OpenStationIME.apk")
-Invoke-Adb @("push", $LauncherApk, "/data/local/tmp/OpenStationLauncher.apk")
+Push-DeviceFile $ImeApk "/data/local/tmp/OpenStationIME.apk"
+Push-DeviceFile $LauncherApk "/data/local/tmp/OpenStationLauncher.apk"
 
 # Запись базового firmware_manifest.json на станцию для точной работы OTA через GitHub
 $localFwManifest = "$RootDir\firmware\manifest.json"
@@ -1547,8 +1811,7 @@ $launcherHash = (Get-FileHash -Path $LauncherApk -Algorithm SHA256).Hash.ToLower
 $imeHash = (Get-FileHash -Path $ImeApk -Algorithm SHA256).Hash.ToLowerInvariant()
 $manifestPushed = $false
 if ($UseFirmware -and (Test-Path $localFwManifest)) {
-    Invoke-Adb @("push", $localFwManifest, "/data/local/openstation/firmware_manifest.json")
-    Invoke-AdbSh "chmod 644 /data/local/openstation/firmware_manifest.json"
+    Push-DeviceFile $localFwManifest "/data/local/openstation/firmware_manifest.json" "644"
     $manifestPushed = $true
 } elseif (Test-Path $localFwManifest) {
     try {
@@ -1556,8 +1819,7 @@ if ($UseFirmware -and (Test-Path $localFwManifest)) {
         if ($mfObj.files.daemon.sha256 -eq $daemonHash -and
             $mfObj.files.launcher.sha256 -eq $launcherHash -and
             $mfObj.files.ime.sha256 -eq $imeHash) {
-            Invoke-Adb @("push", $localFwManifest, "/data/local/openstation/firmware_manifest.json")
-            Invoke-AdbSh "chmod 644 /data/local/openstation/firmware_manifest.json"
+            Push-DeviceFile $localFwManifest "/data/local/openstation/firmware_manifest.json" "644"
             $manifestPushed = $true
         }
     } catch {}
