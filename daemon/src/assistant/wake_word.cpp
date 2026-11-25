@@ -155,9 +155,17 @@ void WakeWordEngine::stop() {
     vad_speech_active_.store(false);
 }
 
+void WakeWordEngine::restart(const WakeWordSettings& settings) {
+    WakeCallback cb = cb_;
+    QuickCallback quick_cb = quick_cb_;
+    stop();
+    start(settings, std::move(cb), std::move(quick_cb));
+}
+
 void WakeWordEngine::update_settings(const WakeWordSettings& settings) {
     std::lock_guard<std::mutex> lk(cfg_mu_);
     if (settings.enabled != settings_.enabled ||
+        settings.kws_enabled != settings_.kws_enabled ||
         settings.quick_commands != settings_.quick_commands ||
         settings.keywords != settings_.keywords ||
         std::abs(settings.threshold - settings_.threshold) > 1e-4f ||
@@ -281,7 +289,8 @@ void WakeWordEngine::worker_loop() {
 
     auto create_engines = [&](const WakeWordSettings& cur) -> bool {
         destroy_engines();
-        if (!cur.enabled) {
+        const bool want_vad = cur.enabled && (cur.kws_enabled || (cur.quick_commands && quick_cb_));
+        if (!want_vad) {
             set_status("disabled");
             return false;
         }
@@ -310,46 +319,50 @@ void WakeWordEngine::worker_loop() {
             return false;
         }
 
-        std::string kw_buf = normalize_keywords_buf(cur.keywords, &tokenizer);
+        if (cur.kws_enabled) {
+            std::string kw_buf = normalize_keywords_buf(cur.keywords, &tokenizer);
 
-        SherpaOnnxKeywordSpotterConfig kws_cfg {};
-        memset(&kws_cfg, 0, sizeof(kws_cfg));
-        kws_cfg.feat_config.sample_rate = 16000;
-        kws_cfg.feat_config.feature_dim = 80;
-        kws_cfg.model_config.transducer.encoder = enc_path.c_str();
-        kws_cfg.model_config.transducer.decoder = dec_path.c_str();
-        kws_cfg.model_config.transducer.joiner = join_path.c_str();
-        kws_cfg.model_config.tokens = tok_path.c_str();
-        kws_cfg.model_config.num_threads = std::clamp(cur.num_threads, 1, 4);
-        kws_cfg.model_config.provider = "cpu";
-        kws_cfg.model_config.debug = 0;
-        kws_cfg.max_active_paths = 4;
-        kws_cfg.num_trailing_blanks = 1;
-        kws_cfg.keywords_score = cur.score;
-        kws_cfg.keywords_threshold = eff_kws_thr;
-        kws_cfg.keywords_file = nullptr;
-        kws_cfg.keywords_buf = kw_buf.c_str();
-        kws_cfg.keywords_buf_size = static_cast<int32_t>(kw_buf.size());
+            SherpaOnnxKeywordSpotterConfig kws_cfg {};
+            memset(&kws_cfg, 0, sizeof(kws_cfg));
+            kws_cfg.feat_config.sample_rate = 16000;
+            kws_cfg.feat_config.feature_dim = 80;
+            kws_cfg.model_config.transducer.encoder = enc_path.c_str();
+            kws_cfg.model_config.transducer.decoder = dec_path.c_str();
+            kws_cfg.model_config.transducer.joiner = join_path.c_str();
+            kws_cfg.model_config.tokens = tok_path.c_str();
+            kws_cfg.model_config.num_threads = std::clamp(cur.num_threads, 1, 4);
+            kws_cfg.model_config.provider = "cpu";
+            kws_cfg.model_config.debug = 0;
+            kws_cfg.max_active_paths = 4;
+            kws_cfg.num_trailing_blanks = 1;
+            kws_cfg.keywords_score = cur.score;
+            kws_cfg.keywords_threshold = eff_kws_thr;
+            kws_cfg.keywords_file = nullptr;
+            kws_cfg.keywords_buf = kw_buf.c_str();
+            kws_cfg.keywords_buf_size = static_cast<int32_t>(kw_buf.size());
 
-        kws = g_sherpa.createKws(&kws_cfg);
-        if (!kws) {
-            destroy_engines();
-            set_status("error: createKws failed");
-            LOGE("WakeWord", "Failed to create KeywordSpotter (check tokens/keywords)");
-            return false;
-        }
-        kws_stream = g_sherpa.createKwsStream(kws);
-        if (!kws_stream) {
-            destroy_engines();
-            set_status("error: createKwsStream failed");
-            return false;
+            kws = g_sherpa.createKws(&kws_cfg);
+            if (!kws) {
+                destroy_engines();
+                set_status("error: createKws failed");
+                LOGE("WakeWord", "Failed to create KeywordSpotter (check tokens/keywords)");
+                return false;
+            }
+            kws_stream = g_sherpa.createKwsStream(kws);
+            if (!kws_stream) {
+                destroy_engines();
+                set_status("error: createKwsStream failed");
+                return false;
+            }
         }
 
         ready_.store(true);
-        set_status("listening");
-        LOGI("WakeWord", "Initialized (sherpa %s, kwsThr=%.2f, vadThr=%.2f, score=%.2f, sens=%d%%, threads=%d)",
+        set_status(cur.kws_enabled ? "listening" : "vad_only");
+        LOGI("WakeWord", "Initialized (sherpa %s, kws=%s, quick=%s, kwsThr=%.2f, vadThr=%.2f, sens=%d%%)",
              g_sherpa.getVersion ? g_sherpa.getVersion() : "?",
-             eff_kws_thr, vad_thr, cur.score, cur.mic_sensitivity, cur.num_threads);
+             cur.kws_enabled ? "on" : "off",
+             cur.quick_commands ? "on" : "off",
+             eff_kws_thr, vad_thr, cur.mic_sensitivity);
         return true;
     };
 
@@ -455,7 +468,7 @@ void WakeWordEngine::worker_loop() {
     std::string pending_wake;
     const std::array<float, 5120> playback_lead{};
     auto reset_playback_state = [&] {
-        if (playback_stream) g_sherpa.resetKwsStream(kws, playback_stream);
+        if (kws && playback_stream) g_sherpa.resetKwsStream(kws, playback_stream);
         last_playback_audio = {};
         playback_wakes.clear();
         pending_wake.clear();
@@ -538,7 +551,7 @@ void WakeWordEngine::worker_loop() {
 
         if (!ready_ || paused_) continue;
 
-        if (!playback_batch.empty()) {
+        if (!playback_batch.empty() && kws) {
             const auto now = Clock::now();
             if (!playback_stream) playback_stream = g_sherpa.createKwsStream(kws);
             if (playback_stream) {
@@ -644,71 +657,73 @@ void WakeWordEngine::worker_loop() {
             }
 
             bool fed_current = false;
-            if (speech) {
-                if (!kws_active) {
-                    feed_lead_to_kws();
-                    kws_active = true;
-                    music_cont_wins = 0;
-                }
-                hangover_wins = 30; // ~960 ms KWS tail across syllables ("а-ли-са") and playback stop
-                g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
-                fed_current = true;
-                if (continuous_audio) {
-                    // Maintain rolling 512 ms context and refresh long continuous music streams ~every 30s
-                    // at an energy dip so transducer decoder state stays bounded without blind spots.
-                    push_lead_win(win);
-                    if (++music_cont_wins >= 937 &&
-                        (mean_sq <= avg_music_sq * 0.85f || music_cont_wins >= 1250)) {
-                        g_sherpa.resetKwsStream(kws, kws_stream);
+            if (kws && kws_stream) {
+                if (speech) {
+                    if (!kws_active) {
                         feed_lead_to_kws();
+                        kws_active = true;
                         music_cont_wins = 0;
                     }
-                }
-            } else if (kws_active && hangover_wins > 0) {
-                g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
-                fed_current = true;
-                --hangover_wins;
-                if (hangover_wins == 0) {
-                    kws_active = false;
-                    music_cont_wins = 0;
-                    g_sherpa.resetKwsStream(kws, kws_stream);
-                }
-            }
-
-            if (!fed_current) {
-                push_lead_win(win);
-            }
-
-            if (kws_active || hangover_wins > 0) {
-                while (g_sherpa.isKwsReady(kws, kws_stream)) {
-                    g_sherpa.decodeKws(kws, kws_stream);
-                    const SherpaOnnxKeywordResult* res = g_sherpa.getKwsResult(kws, kws_stream);
-                    std::string hit;
-                    if (res && res->keyword && res->keyword[0] != '\0') {
-                        hit = res->keyword;
-                    }
-                    if (res) {
-                        g_sherpa.destroyKwsResult(res);
-                    }
-                    if (!hit.empty()) {
-                        g_sherpa.resetKwsStream(kws, kws_stream);
-                        kws_active = false;
-                        hangover_wins = 0;
-                        active_energy_wins = 0;
-                        music_cont_wins = 0;
-                        lead_count = 0;
-
-                        const auto now = Clock::now();
-                        if (during_reply_ && now - last_playback_audio <= std::chrono::milliseconds(300)) {
-                            // Let the digital reference catch up before accepting the mic result.
-                            if (pending_wake.empty()) {
-                                pending_wake = std::move(hit);
-                                pending_deadline = now + std::chrono::milliseconds(110);
-                            }
-                        } else {
-                            emit_wake(hit, now);
+                    hangover_wins = 30; // ~960 ms KWS tail across syllables ("а-ли-са") and playback stop
+                    g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
+                    fed_current = true;
+                    if (continuous_audio) {
+                        // Maintain rolling 512 ms context and refresh long continuous music streams ~every 30s
+                        // at an energy dip so transducer decoder state stays bounded without blind spots.
+                        push_lead_win(win);
+                        if (++music_cont_wins >= 937 &&
+                            (mean_sq <= avg_music_sq * 0.85f || music_cont_wins >= 1250)) {
+                            g_sherpa.resetKwsStream(kws, kws_stream);
+                            feed_lead_to_kws();
+                            music_cont_wins = 0;
                         }
-                        break;
+                    }
+                } else if (kws_active && hangover_wins > 0) {
+                    g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
+                    fed_current = true;
+                    --hangover_wins;
+                    if (hangover_wins == 0) {
+                        kws_active = false;
+                        music_cont_wins = 0;
+                        g_sherpa.resetKwsStream(kws, kws_stream);
+                    }
+                }
+
+                if (!fed_current) {
+                    push_lead_win(win);
+                }
+
+                if (kws_active || hangover_wins > 0) {
+                    while (g_sherpa.isKwsReady(kws, kws_stream)) {
+                        g_sherpa.decodeKws(kws, kws_stream);
+                        const SherpaOnnxKeywordResult* res = g_sherpa.getKwsResult(kws, kws_stream);
+                        std::string hit;
+                        if (res && res->keyword && res->keyword[0] != '\0') {
+                            hit = res->keyword;
+                        }
+                        if (res) {
+                            g_sherpa.destroyKwsResult(res);
+                        }
+                        if (!hit.empty()) {
+                            g_sherpa.resetKwsStream(kws, kws_stream);
+                            kws_active = false;
+                            hangover_wins = 0;
+                            active_energy_wins = 0;
+                            music_cont_wins = 0;
+                            lead_count = 0;
+
+                            const auto now = Clock::now();
+                            if (during_reply_ && now - last_playback_audio <= std::chrono::milliseconds(300)) {
+                                // Let the digital reference catch up before accepting the mic result.
+                                if (pending_wake.empty()) {
+                                    pending_wake = std::move(hit);
+                                    pending_deadline = now + std::chrono::milliseconds(110);
+                                }
+                            } else {
+                                emit_wake(hit, now);
+                            }
+                            break;
+                        }
                     }
                 }
             }

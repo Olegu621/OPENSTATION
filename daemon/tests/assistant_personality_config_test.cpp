@@ -23,6 +23,7 @@ int main() {
     assert(defaults.assistant.agent_mode == true);
     assert(defaults.network.wifi_adb_enabled == true);
     assert(defaults.assistant.gemini_model == "gemini-3.8-live");
+    assert(defaults.assistant.wake_phrase == "alisa");
     assert(defaults.led_screen.visualizer_style == "pulse_bars");
 
     {
@@ -194,4 +195,27 @@ int main() {
     assert(!restored.assistant.system_prompt.empty());
     assert(!restored.assistant.name.empty());
     assert(restored.assistant.gemini_model == "gemini-3.8-live");
+
+    // wakePhrase validation & JSON roundtrip
+    {
+        DaemonConfig wp;
+        json::Value patch = json::Value::make_obj();
+        patch["assistant"]["wakePhrase"] = json::Value::make_str("yandex");
+        wp.from_json(patch);
+        wp.sanitize_and_validate();
+        assert(wp.assistant.wake_phrase == "yandex");
+        json::Value dumped = wp.to_json();
+        assert(dumped.get("assistant") && dumped.get("assistant")->get("wakePhrase") &&
+               dumped.get("assistant")->get("wakePhrase")->as_str() == "yandex");
+
+        DaemonConfig wp_rt;
+        wp_rt.from_json(dumped);
+        wp_rt.sanitize_and_validate();
+        assert(wp_rt.assistant.wake_phrase == "yandex");
+
+        patch["assistant"]["wakePhrase"] = json::Value::make_str("unknown_phrase");
+        wp_rt.from_json(patch);
+        wp_rt.sanitize_and_validate();
+        assert(wp_rt.assistant.wake_phrase == "alisa");
+    }
 }

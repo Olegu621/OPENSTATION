@@ -3,6 +3,7 @@
 #include "assistant/wake_word.hpp"
 #include "assistant/offline_asr.hpp"
 #include "assistant/quick_commands.hpp"
+#include "assistant/live_turn_policy.hpp"
 #include "config.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "utils/json_min.hpp"
@@ -68,6 +69,7 @@ public:
 
     void feed_playback_16k(const int16_t* samples, size_t count);
     bool trigger_session(const std::string& reason = "manual");
+    bool trigger_wake_session(const std::string& keyword = "stock");
     bool toggle_session();
     bool begin_remote_turn();
     void feed_remote_audio_16k(const int16_t* samples, size_t count);
@@ -108,7 +110,8 @@ private:
     void set_error(const std::string& msg, bool play_chime = true);
 
     json::Value build_setup_json(const AssistantConfig& c, bool announcement = false, bool manual_activity = false) const;
-    static WakeWordSettings to_ww_settings(const AssistantConfig& c, int mic_sensitivity);
+    static WakeWordSettings to_ww_settings(const AssistantConfig& c, int mic_sensitivity, bool stock_active);
+    bool is_stock_wake_active(const AssistantConfig& c) const;
 
     AssistantConfig cfg_;
     int mic_sensitivity_ = 85;
@@ -142,6 +145,7 @@ private:
     std::atomic<float> last_noise_rms_{50.0f};
     std::atomic<bool> quiet_reply_active_{false};
     std::atomic<int64_t> last_speech_ms_{0};
+    std::atomic<int64_t> last_voice_ms_{0};
     std::atomic<bool> remote_turn_{false};
     std::atomic<bool> remote_recording_{false};
     std::atomic<bool> remote_end_pending_{false};
@@ -163,6 +167,11 @@ private:
     std::string last_error_;
     std::string last_trigger_reason_;
     std::atomic<uint64_t> sessions_count_{0};
+    std::atomic<uint64_t> stock_wake_detections_{0};
+    std::atomic<bool> stock_ready_{false};
+    std::atomic<bool> stock_fallback_to_kws_{false};
+    std::mutex stock_mu_;
+    StockSpotterHealth stock_health_;
     std::atomic<bool> use_proxy_host_{false};
     std::atomic<bool> search_quota_unsupported_{false};
 

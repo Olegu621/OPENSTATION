@@ -110,6 +110,7 @@ struct AssistantConfig {
     bool enabled = true;
     std::string mode = "gemini"; // gemini, wyoming, off
     std::string name = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0"; // Алиса (dynamic custom wake & persona name)
+    std::string wake_phrase = "alisa"; // alisa or yandex (stock Yandex spotter only)
     std::string gemini_api_key;
     std::string gemini_model = "gemini-3.8-live";
     bool quick_commands = true;

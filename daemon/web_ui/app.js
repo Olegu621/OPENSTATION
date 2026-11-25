@@ -182,6 +182,7 @@
       const ast = {
         enabled: $("astEnabled").checked,
         name: ($("astName")?.value.trim()) || "Алиса",
+        wakePhrase: getWakePhrase(),
         voiceName: $("astVoice")?.value || "Aoede",
         systemPrompt: $("astPrompt")?.value || "",
         wakeWordEnabled: $("astWakeEn") ? $("astWakeEn").checked : true,
@@ -596,8 +597,37 @@
     }
   }
 
-  function syncAssistantNameLabels(name) {
+  let lastWakeWordStatus = {};
+
+  function getWakePhrase() {
+    const active = document.querySelector("#astWakePhrasePresets .seg.active")
+      || document.querySelector("#wizWakePhrasePresets .seg.active");
+    return (active && active.dataset.wphrase === "yandex") ? "yandex" : "alisa";
+  }
+
+  function syncWakePhraseUI(phrase) {
+    const p = phrase === "yandex" ? "yandex" : "alisa";
+    document.querySelectorAll("#astWakePhrasePresets .seg, #wizWakePhrasePresets .seg").forEach((b) => {
+      b.classList.toggle("active", (b.dataset.wphrase || "alisa") === p);
+    });
+  }
+
+  function syncWakePhraseVisibility(showRow) {
+    const show = showRow ? "" : "none";
+    if ($("astWakePhraseRow")) $("astWakePhraseRow").style.display = show;
+    if ($("wizWakePhraseRow")) $("wizWakePhraseRow").style.display = show;
+  }
+
+  function syncAssistantNameLabels(name, ww) {
     const clean = (name || "").trim() || "Алиса";
+    const wwState = ww || lastWakeWordStatus || {};
+    const isAlisa = clean.toLowerCase() === "алиса" || clean.toLowerCase() === "alisa";
+    const avail = Array.isArray(wwState.availablePhrases) ? wwState.availablePhrases : null;
+    const hasStock = isAlisa && (!avail || avail.length > 0);
+    const stockActive = isAlisa && (wwState.engine === "stock" || (!wwState.engine && hasStock));
+    const stockFallback = isAlisa && !!wwState.stockFallback;
+    const phraseName = (stockActive && getWakePhrase() === "yandex") ? "Яндекс" : clean;
+    syncWakePhraseVisibility(hasStock);
     document.querySelectorAll(".js-ast-name").forEach((el) => { el.textContent = clean; });
     if ($("sideTabAlice")) $("sideTabAlice").dataset.title = clean;
     if ($("mobTabAlice")) $("mobTabAlice").dataset.title = clean;
@@ -606,11 +636,24 @@
     if ($("btnAliceTrigger")) $("btnAliceTrigger").textContent = `Разбудить (${clean})`;
     if ($("btnWizTestSay")) $("btnWizTestSay").textContent = `🎤 Разбудить (${clean})`;
     if ($("aliceTextPrompt")) $("aliceTextPrompt").placeholder = `Написать «${clean}» текстом (ответит голосом)...`;
-    if ($("aliceEmptyHint")) $("aliceEmptyHint").textContent = `Скажите «${clean}...» или нажмите «Разбудить (${clean})».`;
-    if ($("wizWakeLabel")) $("wizWakeLabel").textContent = `Откликаться на слово «${clean}»`;
-    if ($("tmVoiceHint")) $("tmVoiceHint").textContent = `Или голосом: «${clean}, разбуди меня в 7:30 по будням».`;
-    if ($("haVoiceHint")) $("haVoiceHint").textContent = `Устройства синхронизируются с Home Assistant. Можно сказать: «${clean}, выключи свет в гостиной».`;
-    if ($("astNameHint")) $("astNameHint").textContent = `Ассистент откликается на имя «${clean}» и автоматически подбирает стиль и голос.`;
+    if ($("aliceEmptyHint")) $("aliceEmptyHint").textContent = `Скажите «${phraseName}...» или нажмите «Разбудить (${clean})».`;
+    if ($("wizWakeLabel")) {
+      $("wizWakeLabel").textContent = stockActive
+        ? `Откликаться на «${phraseName}» (штатный Yandex-споттер)`
+        : (stockFallback
+          ? `Откликаться на слово «${clean}» (резерв OpenStation KWS)`
+          : `Откликаться на слово «${clean}»`);
+    }
+    if ($("tmVoiceHint")) $("tmVoiceHint").textContent = `Или голосом: «${phraseName}, разбуди меня в 7:30 по будням».`;
+    if ($("haVoiceHint")) $("haVoiceHint").textContent = `Устройства синхронизируются с Home Assistant. Можно сказать: «${phraseName}, выключи свет в гостиной».`;
+    if ($("astNameHint")) {
+      const engNote = stockActive
+        ? `Используется штатный Yandex-споттер («${phraseName}»).`
+        : (stockFallback
+          ? "Штатный споттер недоступен — включён резервный OpenStation KWS."
+          : "Используется OpenStation KWS.");
+      $("astNameHint").textContent = `Ассистент откликается на имя «${clean}» и автоматически подбирает стиль и голос. ${engNote}`;
+    }
     document.querySelectorAll("#astNamePresets .seg, #wizNamePresets .seg").forEach((b) => {
       b.classList.toggle("active", (b.dataset.aname || "").toLowerCase() === clean.toLowerCase());
     });
@@ -631,18 +674,33 @@
 
   function applyAliceBanner(astState, ast, cfgAst) {
     const cleanName = (cfgAst?.name || "").trim() || "Алиса";
-    syncAssistantNameLabels(cleanName);
+    const ww = ast?.wakeWord || {};
+    lastWakeWordStatus = ww;
+    syncWakePhraseUI(cfgAst?.wakePhrase || "alisa");
+    syncAssistantNameLabels(cleanName, ww);
+    const isAlisa = cleanName.toLowerCase() === "алиса" || cleanName.toLowerCase() === "alisa";
+    const stockActive = isAlisa && ww.engine === "stock";
+    const phraseName = (stockActive && (ww.phrase === "яндекс" || getWakePhrase() === "yandex")) ? "Яндекс" : cleanName;
     const stRu = ALICE_STATE_RU[astState] || astState;
     const qb = $("btnQuickAlice");
     if (qb) {
       qb.textContent = `${cleanName}: ${stRu}`;
       qb.classList.toggle("active", !!(ast?.active));
     }
-    const ww = ast?.wakeWord || {};
+    const avail = Array.isArray(ww.availablePhrases) ? ww.availablePhrases : null;
+    document.querySelectorAll("#astWakePhrasePresets .seg, #wizWakePhrasePresets .seg").forEach((b) => {
+      const key = (b.dataset.wphrase === "yandex") ? "яндекс" : "алиса";
+      const ok = !avail || avail.includes(key);
+      b.disabled = !ok;
+      b.style.opacity = ok ? "" : "0.45";
+      b.title = ok ? "" : "Модель этого слова не установлена";
+    });
     const bww = $("badgeWakeWord");
     if (bww) {
-      bww.textContent = ww.ready ? "Голосовой запуск: ВКЛ" : "Голосовой запуск: выкл";
-      bww.className = "badge " + (ww.ready ? "ok" : "warn");
+      bww.textContent = ww.ready
+        ? (ww.stockFallback ? "Голосовой запуск: ВКЛ (резерв KWS)" : "Голосовой запуск: ВКЛ")
+        : "Голосовой запуск: выкл";
+      bww.className = "badge " + (ww.ready ? (ww.stockFallback ? "warn" : "ok") : "warn");
     }
     const agentOn = (ast && typeof ast.agentMode === "boolean") ? ast.agentMode : !!cfgAst?.agentMode;
     const bag = $("badgeAgentMode");
@@ -663,8 +721,8 @@
         ban.className = "status-banner live";
       } else {
         ban.textContent = ww.ready
-          ? `Готова — скажите «${cleanName}» или нажмите кнопку ниже`
-          : `Готова к запуску кнопкой (отклик на фразу «${cleanName}» выключен)`;
+          ? `Готова — скажите «${phraseName}» или нажмите кнопку ниже`
+          : `Готова к запуску кнопкой (отклик на фразу «${phraseName}» выключен)`;
         ban.className = "status-banner " + (ww.ready ? "ok" : "");
       }
     }
@@ -929,6 +987,7 @@
         if ($("astPrompt")) $("astPrompt").value = cfg.assistant.systemPrompt || "";
         syncPromptPresetButtons(cfg.assistant.systemPrompt || "");
         if ($("astWakeEn")) $("astWakeEn").checked = cfg.assistant.wakeWordEnabled !== false;
+        syncWakePhraseUI(cfg.assistant.wakePhrase || "alisa");
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
@@ -2545,11 +2604,26 @@
       $("wizDiagHw").textContent = hw.fb5Present ? "Активен" : "Отключён";
     }
     const cleanAstName = (cfg.assistant?.name || "").trim() || "Алиса";
+    const isAlisaWizard = cleanAstName.toLowerCase() === "алиса" || cleanAstName.toLowerCase() === "alisa";
+    const wizAvail = Array.isArray(ww.availablePhrases) ? ww.availablePhrases : null;
+    const wizHasStock = isAlisaWizard && (!wizAvail || wizAvail.length > 0);
+    const wizStockActive = isAlisaWizard && ww.engine === "stock";
+    const activePhrase = (ww.phrase === "яндекс" || cfg.assistant?.wakePhrase === "yandex") ? "яндекс" : "алиса";
+    const activePhraseName = wizStockActive && activePhrase === "яндекс" ? "Яндекс" : cleanAstName;
+    lastWakeWordStatus = ww;
+    syncWakePhraseUI(cfg.assistant?.wakePhrase || "alisa");
+    syncWakePhraseVisibility(wizHasStock);
     if ($("wizDiagMic")) {
-      $("wizDiagMic").textContent = ww.ready ? `Фраза «${cleanAstName}» активна` : (ww.status || "Выкл");
+      $("wizDiagMic").textContent = ww.ready
+        ? (ww.stockFallback ? `Фраза «${cleanAstName}» (резерв KWS)` : `Фраза «${activePhraseName}» активна`)
+        : (ww.status || "Выкл");
     }
     if ($("wizWakeLabel")) {
-      $("wizWakeLabel").textContent = `Откликаться на слово «${cleanAstName}»`;
+      $("wizWakeLabel").textContent = wizStockActive
+        ? `Откликаться на «${activePhraseName}» (штатный Yandex-споттер)`
+        : (ww.stockFallback
+          ? `Откликаться на слово «${cleanAstName}» (резерв OpenStation KWS)`
+          : `Откликаться на слово «${cleanAstName}»`);
     }
     document.querySelectorAll("#wizNamePresets .seg").forEach((b) => {
       b.classList.toggle("active", (b.dataset.aname || "").toLowerCase() === cleanAstName.toLowerCase());
@@ -2823,6 +2897,7 @@
       enabled: true,
       mode: "gemini",
       name: ($("wizName")?.value.trim()) || "Алиса",
+      wakePhrase: getWakePhrase(),
       geminiProxyHost: $("wizProxyHost")?.value.trim() ?? "smart-auto",
       voiceName: $("wizVoice")?.value || "Aoede",
       wakeWordEnabled: $("wizWakeEn") ? $("wizWakeEn").checked : true,
@@ -3176,6 +3251,18 @@
   }
   document.querySelectorAll("#astNamePresets .seg, #wizNamePresets .seg").forEach((b) => {
     b.addEventListener("click", () => applyAssistantNameChoice(b.dataset.aname, b.dataset.gender));
+  });
+  document.querySelectorAll("#astWakePhrasePresets .seg, #wizWakePhrasePresets .seg").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (b.disabled) return;
+      const phrase = b.dataset.wphrase === "yandex" ? "yandex" : "alisa";
+      syncWakePhraseUI(phrase);
+      syncAssistantNameLabels($("astName")?.value || "Алиса");
+      await pushPartialConfig(
+        { assistant: { wakePhrase: phrase } },
+        `Слово активации: «${phrase === "yandex" ? "Яндекс" : "Алиса"}»`
+      );
+    });
   });
 
   // ===================== Таймеры и будильники =====================
