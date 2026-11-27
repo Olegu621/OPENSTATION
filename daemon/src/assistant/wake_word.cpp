@@ -1,4 +1,5 @@
 #include "assistant/wake_word.hpp"
+#include "assistant/wake_word_policy.hpp"
 #include "assistant/wake_word_tokens.hpp"
 #include "hw/voice_gain_policy.hpp"
 #include "sherpa_onnx/c-api.h"
@@ -432,12 +433,14 @@ void WakeWordEngine::worker_loop() {
     bool kws_active = false;
     bool vad_had_speech = false;
     bool speaker_playing = false;
+    bool prev_speaker_playing = false;
     int hangover_wins = 0;
     int active_energy_wins = 0;
     int music_cont_wins = 0;
     float avg_music_sq = 1.0e-4f;
     uint32_t vad_clr_cnt = 0;
     uint32_t pb_poll_cnt = 0;
+    WakeIdleGate idle_gate;
     auto last_trigger_tp = std::chrono::steady_clock::now() - std::chrono::seconds(10);
     // Preserve the start of quiet words, then finish once the capture has a
     // continuous pause. Silero confirms speech without controlling this timer.
@@ -525,9 +528,11 @@ void WakeWordEngine::worker_loop() {
             lead_count = 0;
             kws_active = false;
             vad_had_speech = false;
+            prev_speaker_playing = false;
             hangover_wins = 0;
             active_energy_wins = 0;
             music_cont_wins = 0;
+            idle_gate.reset();
             create_engines(cur_cfg);
             reset_playback_state();
         }
@@ -540,9 +545,11 @@ void WakeWordEngine::worker_loop() {
             lead_count = 0;
             kws_active = false;
             vad_had_speech = false;
+            prev_speaker_playing = false;
             hangover_wins = 0;
             active_energy_wins = 0;
             music_cont_wins = 0;
+            idle_gate.reset();
             if (vad) g_sherpa.vadReset(vad);
             if (kws && kws_stream) g_sherpa.resetKwsStream(kws, kws_stream);
             reset_playback_state();
@@ -593,16 +600,31 @@ void WakeWordEngine::worker_loop() {
                 speaker_playing = is_speaker_playback_running();
             }
 
-            float sum_sq = 0.0f;
-            for (size_t i = 0; i < kVadWin; ++i) {
-                sum_sq += win[i] * win[i];
+            if (prev_speaker_playing && !speaker_playing) {
+                idle_gate.reset();
+                if (vad_had_speech) {
+                    g_sherpa.vadReset(vad);
+                    vad_had_speech = false;
+                }
+            } else if (!prev_speaker_playing && speaker_playing && command_open) {
+                reset_command();
             }
-            const float mean_sq = sum_sq / static_cast<float>(kVadWin);
+            prev_speaker_playing = speaker_playing;
 
+            float rms_i16 = 0.0f;
+            float peak_i16 = 0.0f;
+            compute_window_rms_and_peak_i16(win, kVadWin, rms_i16, peak_i16);
+            constexpr float kInvI16 = 1.0f / 32768.0f;
+            const float mean_sq = (rms_i16 * kInvI16) * (rms_i16 * kInvI16);
+            const float cur_noise_rms = noise_rms_.load(std::memory_order_relaxed);
             const bool collect_commands = cur_cfg.quick_commands && quick_cb_;
-            // Fast dead-silence energy gate before invoking ONNX when idle & quiet.
-            if (!collect_commands && !speaker_playing && !kws_active && hangover_wins == 0 &&
-                mean_sq < 2.0e-7f) {
+
+            // Adaptive idle energy gate: bypass Silero VAD ONNX on stationary room noise
+            // while keeping 512ms wake + quick-command pre-roll rings continuously filled.
+            if (idle_gate.should_bypass_vad(rms_i16, peak_i16, cur_noise_rms,
+                                            cur_cfg.mic_sensitivity,
+                                            speaker_playing, kws_active,
+                                            hangover_wins, command_open)) {
                 if (vad_had_speech) {
                     g_sherpa.vadReset(vad);
                     vad_had_speech = false;
@@ -611,6 +633,13 @@ void WakeWordEngine::worker_loop() {
                 music_cont_wins = 0;
                 vad_speech_active_.store(false);
                 push_lead_win(win);
+                if (collect_commands && !paused_ && !speaker_playing) {
+                    for (size_t i = 0; i < kVadWin; ++i) {
+                        command_lead[lead_write] = to_pcm(win[i]);
+                        lead_write = (lead_write + 1) % kCommandLead;
+                    }
+                    lead_size = std::min(kCommandLead, lead_size + kVadWin);
+                }
                 acc_head += kVadWin;
                 continue;
             }
@@ -618,17 +647,18 @@ void WakeWordEngine::worker_loop() {
             bool speech = false;
             bool continuous_audio = false;
             bool voiced = false;
-            if (!speaker_playing || collect_commands) {
+            if (!speaker_playing) {
                 g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
                 voiced = g_sherpa.vadDetected(vad) != 0;
             }
             if (speaker_playing) {
                 // During active speaker playback, never let Silero VAD suppress wake words
                 // (music residuals/harmonics pull Silero below threshold even at loud SNRs).
-                if (!collect_commands && vad_had_speech) g_sherpa.vadReset(vad);
-                vad_had_speech = voiced;
-                vad_speech_active_.store(voiced);
-                if (collect_commands) g_sherpa.vadClear(vad);
+                if (vad_had_speech) {
+                    g_sherpa.vadReset(vad);
+                    vad_had_speech = false;
+                }
+                vad_speech_active_.store(false);
                 speech = true;
                 continuous_audio = true;
             } else {
@@ -640,7 +670,8 @@ void WakeWordEngine::worker_loop() {
                 }
 
                 // Fallback acoustic energy gate in case external TV/BT room sound confuses Silero.
-                if (mean_sq > 1.2e-4f) {
+                const float fallback_rms = idle_gate.fallback_energy_rms(cur_cfg.mic_sensitivity, cur_noise_rms);
+                if (rms_i16 > fallback_rms) {
                     if (++active_energy_wins >= 3) {
                         speech = true;
                         continuous_audio = true;
@@ -728,7 +759,7 @@ void WakeWordEngine::worker_loop() {
                 }
             }
 
-            if (collect_commands && !paused_) {
+            if (collect_commands && !paused_ && !speaker_playing) {
                 const float floor = dialogue_activity_threshold(noise_rms_.load(std::memory_order_relaxed)) / 32768.0f;
                 const bool audible = mean_sq >= floor * floor;
                 if (!command_open && audible) {

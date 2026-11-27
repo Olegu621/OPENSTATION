@@ -518,6 +518,20 @@ class StationAudioService : Service() {
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                     if (showOsd) showCurrentVolumeOverlay()
                 }
+                "audio_route" -> {
+                    val route = obj.optString("route", "auto")
+                    val params = when (route) {
+                        "hdmi" -> "Audio hdmi-out mute=0;speaker_mute=1"
+                        "headphones" -> "Audio hdmi-out mute=1;speaker_mute=1"
+                        else -> "Audio hdmi-out mute=1;speaker_mute=0"
+                    }
+                    try {
+                        audioManager.setParameters(params)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Audio route parameters failed: ${t.message}")
+                    }
+                    Log.i(TAG, "Synced Android audio HAL parameters for route=$route")
+                }
                 "volume_set" -> {
                     val pct = obj.optInt("percent", 50).coerceIn(0, 100)
                     val showUi = obj.optBoolean("showUi", false)

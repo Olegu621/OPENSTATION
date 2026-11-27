@@ -7,6 +7,7 @@
 #include "config.hpp"
 #include "hw/alsa_mixer.hpp"
 #include "hw/audio_engine.hpp"
+#include "hw/hdmi_route_worker.hpp"
 #include "hw/sy6045s_eq.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
@@ -57,7 +58,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.34";
+constexpr const char* kFirmwareVersion = "1.6.35";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1135,7 +1136,9 @@ void probe_android_stream_music(const std::string& route, bool hp_plugged, int& 
     out_pct = 10;
 
     std::vector<const char*> keys;
-    if (route == "headphones" || (route == "auto" && hp_plugged)) {
+    if (route == "hdmi") {
+        keys = {"volume_music_hdmi", "volume_music_speaker", "volume_music"};
+    } else if (route == "headphones" || (route == "auto" && hp_plugged)) {
         keys = {"volume_music_headset", "volume_music_headphone", "volume_music_speaker", "volume_music"};
     } else {
         keys = {"volume_music_speaker", "volume_music", "volume_music_headset"};
@@ -1619,6 +1622,105 @@ int main(int argc, char** argv) {
     bool has_last_mute_state = false;
     bool last_applied_muted = false;
     std::atomic<bool> first_vol_state_seen{false};
+    std::atomic<int> hdmi_policy_state{-1};
+    std::atomic<int> hdmi_requested_state{-1};
+    std::atomic<bool> hdmi_policy_failed{false};
+    std::string cached_audioserver_pid;
+
+    auto push_hdmi_route_to_launcher = [&](const std::string& route, int pct, bool sync_vol = true) {
+        if (!is_udp_port_bound(8086)) return;
+        const int clamped = std::clamp(pct, 0, 100);
+        json::Value rcmd = json::Value::make_obj();
+        rcmd["cmd"] = json::Value::make_str("audio_route");
+        rcmd["route"] = json::Value::make_str(route);
+        rcmd["percent"] = json::Value::make_int(clamped);
+        send_udp_json(8086, rcmd.dump(-1));
+
+        if (sync_vol) {
+            json::Value vcmd = json::Value::make_obj();
+            vcmd["cmd"] = json::Value::make_str("volume_set");
+            vcmd["percent"] = json::Value::make_int(clamped);
+            vcmd["muted"] = json::Value::make_bool(clamped <= 0);
+            vcmd["showUi"] = json::Value::make_bool(false);
+            vcmd["showOsd"] = json::Value::make_bool(false);
+            send_udp_json(8086, vcmd.dump(-1));
+        }
+    };
+
+    // Android 9 AudioPolicy only opens the HDMI tunnel_pcm output (subMixers[1] -> hw:0,3)
+    // after a wired-device connection event for AUDIO_DEVICE_OUT_AUX_DIGITAL (0x400 = 1024).
+    // Keep Binder calls serialized off the audio thread and reapply if audioserver restarts.
+    HdmiRouteWorker hdmi_route_worker(
+        [&](bool enabled) {
+            char sdk[PROP_VALUE_MAX]{};
+            __system_property_get("ro.build.version.sdk", sdk);
+            if (std::string(sdk) != "28") {
+                LOGW("Audio", "HDMI AudioPolicy route requires Android 9 (SDK 28, got '%s')", sdk);
+                hdmi_policy_failed.store(true);
+                return false;
+            }
+            ShellResult result = run_argv_with_timeout({
+                "/system/bin/service", "call", "audio", "52",
+                "i32", "1024", "i32", enabled ? "1" : "0",
+                "s16", "", "s16", "hdmi", "s16", "openstationd"
+            }, 5, 512);
+            const bool ok = !result.timed_out && result.exit_code == 0 &&
+                            result.output.find("Parcel(00000000") != std::string::npos;
+            hdmi_policy_failed.store(!ok);
+            if (ok) {
+                hdmi_policy_state.store(enabled ? 1 : 0);
+                LOGI("Audio", "Android AudioPolicy HDMI out (0x400) -> %s", enabled ? "connected" : "disconnected");
+            } else {
+                LOGW("Audio", "Android HDMI routing failed (rc=%d): %s",
+                     result.exit_code, result.output.c_str());
+            }
+            return ok;
+        },
+        [&]() {
+            if (!cached_audioserver_pid.empty()) {
+                std::string comm_path = "/proc/" + cached_audioserver_pid + "/comm";
+                if (read_first_line(comm_path.c_str()) == "audioserver") {
+                    return cached_audioserver_pid;
+                }
+                cached_audioserver_pid.clear();
+            }
+            ShellResult result = run_argv_with_timeout({"/system/bin/pidof", "audioserver"}, 2, 128);
+            if (result.exit_code == 0) {
+                std::string out = trim_ws_copy(result.output);
+                auto sp = out.find(' ');
+                if (sp != std::string::npos) out.resize(sp);
+                if (!out.empty()) {
+                    cached_audioserver_pid = out;
+                    return cached_audioserver_pid;
+                }
+            }
+            return std::string();
+        },
+        [&](bool enabled) {
+            for (int i = 0; i < 8 && !g_stop.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (g_stop.load()) return;
+            std::string route_now;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                if ((cfg.audio.output_route == "hdmi") != enabled) return;
+                route_now = cfg.audio.output_route;
+            }
+            push_hdmi_route_to_launcher(route_now, volume_osd_pct.load(), true);
+        });
+
+    auto request_hdmi_route = [&](bool enabled) {
+        const int desired = enabled ? 1 : 0;
+        if (hdmi_requested_state.exchange(desired) != desired) {
+            hdmi_policy_failed.store(false);
+        }
+        hdmi_route_worker.request(enabled);
+    };
+    {
+        std::lock_guard<std::mutex> lk(cfg_mu);
+        request_hdmi_route(cfg.audio.output_route == "hdmi");
+    }
 
     // Must hold vol_apply_mu; preserves lock order vol_apply_mu -> cfg_mu -> mixer::mu_.
     auto apply_curve_unlocked = [&](int pct,
@@ -1639,6 +1741,7 @@ int main(int argc, char** argv) {
             cfg.audio.headphone_volume = hp;
             route_snap = cfg.audio.output_route;
         }
+        request_hdmi_route(route_snap == "hdmi");
         bool hp_plugged = inputs.headphone_plugged();
         bool want_muted = (p <= 0);
         if (want_muted) {
@@ -1650,6 +1753,10 @@ int main(int argc, char** argv) {
                 mixer.set_bool("Woofer Master Playback Switch", false);
                 mixer.set_bool("Tweeters Master Playback Switch", false);
                 mixer.set_bool("Headphone Headphone Switch", false);
+                bool hdmi_mute_cur = false;
+                if (route_snap == "hdmi" && mixer.get_bool("Audio hdmi-out mute", hdmi_mute_cur)) {
+                    mixer.set_bool("Audio hdmi-out mute", true);
+                }
                 last_applied_muted = true;
                 has_last_mute_state = true;
             } else if (!manage_route_switches) {
@@ -1702,9 +1809,22 @@ int main(int argc, char** argv) {
     };
 
     auto reapply_current_volume_and_route = [&](bool force_vol = true, bool apply_route_now = true) {
-        std::lock_guard<std::mutex> lk(vol_apply_mu);
-        int cur_pct = volume_osd_pct.load();
-        apply_curve_unlocked(cur_pct, force_vol, apply_route_now, apply_route_now);
+        int cur_pct = 0;
+        {
+            std::lock_guard<std::mutex> lk(vol_apply_mu);
+            cur_pct = volume_osd_pct.load();
+            apply_curve_unlocked(cur_pct, force_vol, apply_route_now, apply_route_now);
+        }
+        if (apply_route_now) {
+            std::string route_now;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                route_now = cfg.audio.output_route;
+            }
+            if (route_now != "hdmi") {
+                push_hdmi_route_to_launcher(route_now, cur_pct, false);
+            }
+        }
     };
 
     auto reconcile_unlocked = [&]() {
@@ -1722,6 +1842,8 @@ int main(int argc, char** argv) {
             cfg.audio.headphone_volume = exp_hp;
             route_snap = cfg.audio.output_route;
         }
+        const bool want_hdmi = (route_snap == "hdmi");
+        request_hdmi_route(want_hdmi);
         bool hp_plugged = inputs.headphone_plugged();
         bool want_muted = (cur_pct <= 0);
         bool want_spk = !want_muted &&
@@ -1740,12 +1862,19 @@ int main(int argc, char** argv) {
         mixer.get_bool("Woofer Master Playback Switch", sw_w);
         mixer.get_bool("Tweeters Master Playback Switch", sw_t);
         mixer.get_bool("Headphone Headphone Switch", sw_h);
+        bool hdmi_mute = !want_hdmi || want_muted;
+        const bool has_hdmi_mute = mixer.get_bool("Audio hdmi-out mute", hdmi_mute);
+        std::string loopback_source;
+        const bool has_loopback = mixer.get_enum("Loopback tmdin lb source", loopback_source);
+        const bool route_drift = (has_hdmi_mute && hdmi_mute != (!want_hdmi || want_muted)) ||
+                                 (has_loopback && loopback_source != (want_hdmi ? "TDMOUT_C" : "TDMOUT_A"));
         if (hw_w != exp_woo || hw_t != exp_twe || hw_h != exp_hp ||
-            sw_w != want_spk || sw_t != want_spk || sw_h != want_hp) {
-            LOGW("Audio", "Reconciling external ALSA drift (vol %ld/%ld/%ld -> %d/%d/%d, sw %d/%d/%d -> %d/%d/%d)",
+            sw_w != want_spk || sw_t != want_spk || sw_h != want_hp || route_drift) {
+            LOGW("Audio", "Reconciling external ALSA drift (vol %ld/%ld/%ld -> %d/%d/%d, sw %d/%d/%d -> %d/%d/%d, route_drift=%d)",
                  hw_w, hw_t, hw_h, exp_woo, exp_twe, exp_hp,
                  sw_w ? 1 : 0, sw_t ? 1 : 0, sw_h ? 1 : 0,
-                 want_spk ? 1 : 0, want_spk ? 1 : 0, want_hp ? 1 : 0);
+                 want_spk ? 1 : 0, want_spk ? 1 : 0, want_hp ? 1 : 0,
+                 route_drift ? 1 : 0);
             mixer.set_int("Woofer Master Playback Volume", exp_woo, -1);
             mixer.set_int("Tweeters Master Playback Volume", exp_twe, -1);
             mixer.set_int("Headphone DAC Playback Volume", exp_hp, -1);
@@ -4416,6 +4545,11 @@ int main(int argc, char** argv) {
         au["engine"] = audio.get_status_json();
         au["volumePercent"] = Value::make_int(volume_osd_pct.load());
         au["volumeMaxSteps"] = Value::make_int(android_vol_max.load());
+        const int wanted_hdmi = (c.audio.output_route == "hdmi") ? 1 : 0;
+        const char* hdmi_state = (hdmi_policy_state.load() == wanted_hdmi)
+                                     ? "ready"
+                                     : (hdmi_policy_failed.load() ? "error" : "pending");
+        au["hdmiRouteState"] = Value::make_str(hdmi_state);
         root["audio"] = std::move(au);
 
         root["assistant"] = assistant.get_status_json();
@@ -6484,6 +6618,7 @@ int main(int argc, char** argv) {
             }
             push_eq_to_launcher(c_init);
             push_style_sync_to_launcher(c_init);
+            push_hdmi_route_to_launcher(c_init.audio.output_route, volume_osd_pct.load(), c_init.audio.output_route == "hdmi");
             if (!c_init.setup_completed && !initial_startup_show_played && !is_startup_shown_flag()) {
                 initial_startup_show_played = true;
                 mark_startup_shown_flag();
@@ -6631,6 +6766,7 @@ int main(int argc, char** argv) {
     if (spec_udp_fd >= 0) ::close(spec_udp_fd);
     Logger::instance().set_sink(nullptr);
     ota.stop();
+    hdmi_route_worker.stop();
     if (geo_thread.joinable()) geo_thread.join();
     if (timezone_thread.joinable()) timezone_thread.join();
     timers.stop();

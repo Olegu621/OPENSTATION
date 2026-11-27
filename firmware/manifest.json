@@ -1,46 +1,46 @@
 {
-  "name": "OpenStation Max",
-  "device": "yandexstation_2",
-  "version": "1.6.34",
-  "autonomous": true,
-  "changelog": "Штатный Яндекс-споттер (переключение «Алиса»/«Яндекс») с резервом OpenStation KWS, адаптивный конец речи (audioStreamEnd), приглушение плееров через FocusHelper, root SSH в deploy.ps1 и диагностика пароля BootROM.",
-  "buildTimeUtc": "2026-11-25T08:55:05Z",
-  "files": {
-    "daemon": {
-      "fileName": "openstationd",
-      "size": 3472640,
-      "sha256": "f79df5fc75ef14b450324242e807a410c12b311d261f838f94609b2172a225c8",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.34/openstationd"
-    },
-    "bootlogod": {
-      "fileName": "bootlogod",
-      "size": 657728,
-      "sha256": "4f199c8445c271c52bc4f5fbf27e1a9d8c29adf8c2786e284813b7c825f6e0d9",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.34/bootlogod"
-    },
-    "launcher": {
-      "fileName": "OpenStationLauncher.apk",
-      "size": 28429379,
-      "sha256": "511139c7dd2e874230e9bf6d516810653c5e5f56c4c4889f64bc03ddc67cc899",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.34/OpenStationLauncher.apk"
-    },
-    "ime": {
-      "fileName": "OpenStationIME.apk",
-      "size": 808866,
-      "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.34/OpenStationIME.apk"
-    },
-    "bootanimation": {
-      "fileName": "bootanimation.zip",
-      "size": 6725707,
-      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.34/bootanimation.zip"
-    },
-    "bootlogo": {
-      "fileName": "logo.img",
-      "size": 2252608,
-      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.34/logo.img"
-    }
-  }
+    "name":  "OpenStation Max",
+    "device":  "yandexstation_2",
+    "version":  "1.6.35",
+    "autonomous":  true,
+    "changelog":  "Исправлен вывод звука по HDMI на ТВ с отключением встроенных динамиков и синхронизацией AEC/VQE (TDMOUT_C/A), устранён фоновый перегрев CPU и лаги заставки (SurfaceView HWC + адаптивный idle-гейт Silero VAD).",
+    "buildTimeUtc":  "2026-11-27T13:30:31Z",
+    "files":  {
+                  "daemon":  {
+                                 "fileName":  "openstationd",
+                                 "size":  3444448,
+                                 "sha256":  "16becf9a7ef1badf88e764aa4b4d0f12ceb7ada6eb84024e10c110814edf6c15",
+                                 "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.35/openstationd"
+                             },
+                  "bootlogod":  {
+                                    "fileName":  "bootlogod",
+                                    "size":  657728,
+                                    "sha256":  "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14",
+                                    "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.35/bootlogod"
+                                },
+                  "launcher":  {
+                                   "fileName":  "OpenStationLauncher.apk",
+                                   "size":  28431259,
+                                   "sha256":  "69d1cb30bc7843cab4739b8deb8eca2bc20a72ff08180db03d6fb4f0f3d71ed3",
+                                   "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.35/OpenStationLauncher.apk"
+                               },
+                  "ime":  {
+                              "fileName":  "OpenStationIME.apk",
+                              "size":  808866,
+                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03",
+                              "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.35/OpenStationIME.apk"
+                          },
+                  "bootanimation":  {
+                                        "fileName":  "bootanimation.zip",
+                                        "size":  6725707,
+                                        "sha256":  "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598",
+                                        "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.35/bootanimation.zip"
+                                    },
+                  "bootlogo":  {
+                                   "fileName":  "logo.img",
+                                   "size":  2252608,
+                                   "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9",
+                                   "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.35/logo.img"
+                               }
+              }
 }

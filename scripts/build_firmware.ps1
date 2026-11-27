@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.34",
-    [string]$Changelog = "Штатный Яндекс-споттер (переключение «Алиса»/«Яндекс») с резервом OpenStation KWS, адаптивный конец речи (audioStreamEnd), приглушение плееров через FocusHelper, root SSH в deploy.ps1 и диагностика пароля BootROM.",
+    [string]$Version = "1.6.35",
+    [string]$Changelog = "Исправлен вывод звука по HDMI на ТВ с отключением встроенных динамиков и синхронизацией AEC/VQE (TDMOUT_C/A), устранён фоновый перегрев CPU и лаги заставки (SurfaceView HWC + адаптивный idle-гейт Silero VAD).",
     [switch]$Clean,
     [switch]$RebuildIme
 )
@@ -187,6 +187,7 @@ foreach ($s in $sources) {
         fileName = $s.FileName
         size     = [int64]$item.Length
         sha256   = $hash
+        url      = "https://github.com/Olegu621/OPENSTATION/releases/download/v$Version/$($s.FileName)"
     }
     Write-Host ("  + {0,-26} {1,8:N0} байт  sha256:{2}..." -f $s.FileName, $item.Length, $hash.Substring(0, 16)) -ForegroundColor Gray
 }

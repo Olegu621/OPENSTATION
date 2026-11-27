@@ -1242,23 +1242,37 @@ void AudioEngine::play_test_tone(int freq_hz, int duration_ms, bool sweep) {
 }
 
 void AudioEngine::playback_loop() {
+    // Keep the current chunk across AAudio reopen attempts so a route switch
+    // (e.g. Speaker <-> HDMI Out) resumes seamlessly instead of truncating TTS.
+    PlayChunk chunk;
+    bool has_chunk = false;
+    size_t chunk_off = 0;
+    int chunk_reopens = 0;
+
     while (running_.load()) {
-        PlayChunk chunk;
-        {
+        if (!has_chunk) {
             std::unique_lock<std::mutex> lk(play_mu_);
             play_cv_.wait(lk, [&] { return !running_.load() || !play_q_.empty(); });
             if (!running_.load()) break;
             chunk = std::move(play_q_.front());
             play_q_.pop();
+            chunk_off = 0;
+            chunk_reopens = 0;
+            has_chunk = !chunk.samples_48k_stereo.empty();
         }
+        if (!has_chunk) continue;
 
         uint64_t active_epoch = chunk.epoch;
         if (active_epoch != playback_epoch_.load()) {
+            has_chunk = false;
             continue;
         }
 
         AAudioStreamBuilder* b = nullptr;
-        if (g_aa.createStreamBuilder(&b) != AAUDIO_OK || !b) continue;
+        if (g_aa.createStreamBuilder(&b) != AAUDIO_OK || !b) {
+            has_chunk = false;
+            continue;
+        }
         g_aa.builder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
         g_aa.builder_setSampleRate(b, 48000);
         g_aa.builder_setChannelCount(b, 2);
@@ -1271,10 +1285,20 @@ void AudioEngine::playback_loop() {
         g_aa.builder_delete(b);
         if (r != AAUDIO_OK || !out_s) {
             LOGW("AudioEngine", "Failed to open playback AAudio stream: %s", g_aa.err_str(r));
+            if (++chunk_reopens >= 3) {
+                has_chunk = false;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            }
             continue;
         }
         if (g_aa.stream_requestStart(out_s) != AAUDIO_OK) {
             g_aa.stream_close(out_s);
+            if (++chunk_reopens >= 3) {
+                has_chunk = false;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            }
             continue;
         }
 
@@ -1285,9 +1309,9 @@ void AudioEngine::playback_loop() {
         playback_reference.reserve(342);
         int reference_sum = 0;
         int reference_samples = 0;
-        auto write_chunk = [&](const std::vector<int16_t>& buf, uint64_t ep) -> bool {
+        auto write_chunk = [&](const std::vector<int16_t>& buf, size_t& off, uint64_t ep, bool& disconnected) -> bool {
+            disconnected = false;
             size_t total_frames = buf.size() / 2;
-            size_t off = 0;
             bool need_spec = static_cast<bool>(spec_cb_);
             if (need_spec) {
                 std::lock_guard<std::mutex> lk(spec_needed_mu_);
@@ -1318,7 +1342,10 @@ void AudioEngine::playback_loop() {
                 }
 
                 aaudio_result_t wr = g_aa.stream_write(out_s, buf.data() + off * 2, to_write, 1000000000LL);
-                if (wr <= 0) break;
+                if (wr <= 0) {
+                    disconnected = true;
+                    return false;
+                }
                 if (playback_reference_cb_) {
                     playback_reference.clear();
                     for (int32_t i = 0; i < wr; ++i) {
@@ -1339,7 +1366,13 @@ void AudioEngine::playback_loop() {
             return running_.load() && playback_epoch_.load() == ep;
         };
 
-        bool ok_stream = write_chunk(chunk.samples_48k_stereo, active_epoch);
+        bool disconnected = false;
+        bool ok_stream = write_chunk(chunk.samples_48k_stereo, chunk_off, active_epoch, disconnected);
+        if (ok_stream) {
+            has_chunk = false;
+            chunk_off = 0;
+            chunk_reopens = 0;
+        }
         // Drain contiguous queued TTS chunks without reopening stream
         while (ok_stream && running_.load() && playback_epoch_.load() == active_epoch) {
             PlayChunk next_c;
@@ -1358,7 +1391,23 @@ void AudioEngine::playback_loop() {
                 play_q_.pop();
             }
             if (next_c.epoch != active_epoch) break;
-            ok_stream = write_chunk(next_c.samples_48k_stereo, active_epoch);
+            chunk = std::move(next_c);
+            chunk_off = 0;
+            chunk_reopens = 0;
+            has_chunk = !chunk.samples_48k_stereo.empty();
+            if (!has_chunk) continue;
+            ok_stream = write_chunk(chunk.samples_48k_stereo, chunk_off, active_epoch, disconnected);
+            if (ok_stream) {
+                has_chunk = false;
+                chunk_off = 0;
+            }
+        }
+
+        if (disconnected && has_chunk && chunk_off < (chunk.samples_48k_stereo.size() / 2) &&
+            running_.load() && playback_epoch_.load() == active_epoch && ++chunk_reopens < 3) {
+            LOGI("AudioEngine", "Playback AAudio stream disconnected on route change; reopening (%d/3)", chunk_reopens);
+        } else {
+            has_chunk = false;
         }
 
         playback_rms_.store(0.0f);
@@ -1366,6 +1415,9 @@ void AudioEngine::playback_loop() {
         playing_active_.store(false);
         g_aa.stream_requestStop(out_s);
         g_aa.stream_close(out_s);
+        if (has_chunk && running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
     }
 }
 

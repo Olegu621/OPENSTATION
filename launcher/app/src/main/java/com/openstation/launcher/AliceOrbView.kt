@@ -376,6 +376,7 @@ class AliceOrbView @JvmOverloads constructor(
     private var totalTime = 0f
     private var rotDeg = 0f
     private var lastNs = 0L
+    private var lastDrawNs = 0L
     private var running = false
     private var animationEnabled = true
     private val powerManager: PowerManager? by lazy(LazyThreadSafetyMode.NONE) {
@@ -538,8 +539,23 @@ class AliceOrbView @JvmOverloads constructor(
             return
         }
 
+        val st = LiveOrbState.assistantState
+        val pureIdle = (st == "idle" &&
+            !LiveOrbState.musicPlaying &&
+            LiveOrbState.musicOverall <= 0.045f &&
+            morphProgress < 0.01f &&
+            compactGlowBoost < 0.01f &&
+            System.currentTimeMillis() >= LiveOrbState.previewUntilMs)
+        // Native sprite sheet cadence is 15 fps; step pure idle at ~30 fps to halve
+        // Mali-G31 / RenderThread fillrate while keeping 60 fps instant when active.
+        if (pureIdle && lastDrawNs != 0L && (frameTimeNanos - lastDrawNs) < 28_000_000L) {
+            Choreographer.getInstance().postFrameCallback(this)
+            return
+        }
+
         val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.14f)
         lastNs = frameTimeNanos
+        lastDrawNs = frameTimeNanos
         stepPhysics(dt)
         invalidate()
         Choreographer.getInstance().postFrameCallback(this)

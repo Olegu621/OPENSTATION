@@ -33,6 +33,7 @@ class SpatialScreensaverOverlay(
         private set
 
     private lateinit var videoBackground: VideoBackdropView
+    private lateinit var fadeCurtain: View
     private lateinit var tvBigClock: TextView
     private lateinit var tvBigDateWeather: TextView
     private lateinit var musicCard: LinearLayout
@@ -68,11 +69,37 @@ class SpatialScreensaverOverlay(
             }
         }
 
-        videoBackground = VideoBackdropView(context)
+        videoBackground = VideoBackdropView(context).apply {
+            visibility = View.GONE
+        }
         root.addView(videoBackground, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
+
+        fadeCurtain = View(context).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+            alpha = 1f
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        root.addView(fadeCurtain)
+
+        videoBackground.onFirstFrameReady = {
+            if (isOpen && fadeCurtain.visibility == View.VISIBLE) {
+                fadeCurtain.animate()
+                    .alpha(0f)
+                    .setDuration(MotionPrefs.dur(context, 340L))
+                    .setInterpolator(MotionPrefs.easeOutCurve)
+                    .withEndAction {
+                        if (isOpen) fadeCurtain.visibility = View.GONE
+                    }
+                    .start()
+            }
+        }
 
         // Soft filmic vignette (top keeps clock crisp, bottom supports Now Playing card, center stays luminous)
         val vignette = View(context).apply {
@@ -266,22 +293,38 @@ class SpatialScreensaverOverlay(
         if (isOpen) return
         isOpen = true
 
+        AnimatedSpriteHelper.setExclusiveVisibleRoot(rootOverlay)
         rootOverlay.animate().cancel()
+        fadeCurtain.animate().cancel()
+        fadeCurtain.visibility = View.GONE
+        fadeCurtain.alpha = 1f
+        videoBackground.visibility = View.GONE
+        rootOverlay.setBackgroundColor(Color.BLACK)
         rootOverlay.visibility = View.VISIBLE
-        videoBackground.setRunning(true)
         rootOverlay.alpha = 0f
-        rootOverlay.scaleX = 1.042f
-        rootOverlay.scaleY = 1.042f
-        rootOverlay.translationY = -dp(36).toFloat()
+        rootOverlay.scaleX = 1.035f
+        rootOverlay.scaleY = 1.035f
+        rootOverlay.translationY = -dp(28).toFloat()
         rootOverlay.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
             .translationY(0f)
-            .setDuration(MotionPrefs.dur(context, 520L))
+            .setDuration(MotionPrefs.dur(context, 280L))
             .setInterpolator(MotionPrefs.easeOutCurve)
             .withEndAction {
-                if (isOpen) AnimatedSpriteHelper.syncAll()
+                if (isOpen) {
+                    fadeCurtain.alpha = 1f
+                    fadeCurtain.visibility = View.VISIBLE
+                    rootOverlay.setBackgroundColor(Color.TRANSPARENT)
+                    videoBackground.setRunning(true)
+                    AnimatedSpriteHelper.syncAll()
+                    fadeCurtain.postDelayed({
+                        if (isOpen && fadeCurtain.visibility == View.VISIBLE) {
+                            videoBackground.onFirstFrameReady?.invoke()
+                        }
+                    }, 450L)
+                }
             }
             .start()
 
@@ -293,10 +336,13 @@ class SpatialScreensaverOverlay(
     fun close(immediate: Boolean = false) {
         if (!isOpen && rootOverlay.visibility != View.VISIBLE) return
         isOpen = false
+        AnimatedSpriteHelper.setExclusiveVisibleRoot(null)
         rootOverlay.animate().cancel()
+        fadeCurtain.animate().cancel()
+        fadeCurtain.visibility = View.GONE
+        videoBackground.setRunning(false)
 
         if (immediate) {
-            videoBackground.setRunning(false)
             rootOverlay.visibility = View.GONE
             rootOverlay.alpha = 0f
             rootOverlay.translationY = 0f
@@ -305,17 +351,18 @@ class SpatialScreensaverOverlay(
             return
         }
 
+        rootOverlay.setBackgroundColor(Color.parseColor("#E002050D"))
         rootOverlay.animate()
             .alpha(0f)
-            .scaleX(1.035f)
-            .scaleY(1.035f)
-            .translationY(-dp(30).toFloat())
-            .setDuration(MotionPrefs.dur(context, 420L))
+            .scaleX(1.03f)
+            .scaleY(1.03f)
+            .translationY(-dp(24).toFloat())
+            .setDuration(MotionPrefs.dur(context, 280L))
             .setInterpolator(MotionPrefs.easeOutCurve)
             .withEndAction {
                 if (!isOpen) {
-                    videoBackground.setRunning(false)
                     rootOverlay.visibility = View.GONE
+                    rootOverlay.setBackgroundColor(Color.BLACK)
                     rootOverlay.translationY = 0f
                     rootOverlay.scaleX = 1f
                     rootOverlay.scaleY = 1f

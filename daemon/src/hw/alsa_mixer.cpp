@@ -206,6 +206,7 @@ bool AlsaMixer::set_enum(const std::string& name, const std::string& choice) {
 }
 
 bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bool muted) {
+    const bool hdmi_on = (route == "hdmi");
     bool spk_on = true;
     bool hp_on = false;
     if (route == "speakers") {
@@ -217,7 +218,7 @@ bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bo
     } else if (route == "both") {
         spk_on = true;
         hp_on = true;
-    } else if (route == "hdmi") {
+    } else if (hdmi_on) {
         spk_on = false;
         hp_on = false;
     } else {
@@ -232,8 +233,22 @@ bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bo
     set_bool("Woofer Master Playback Switch", spk_on && !muted);
     set_bool("Tweeters Master Playback Switch", spk_on && !muted);
     set_bool("Headphone Headphone Switch", hp_on && !muted);
-    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d)",
-         route.c_str(), hp_plugged ? 1 : 0, muted ? 1 : 0, spk_on ? 1 : 0, hp_on ? 1 : 0);
+
+    // Some vendor builds expose an ALSA HDMI mute switch; others route HDMI
+    // strictly through Android AudioPolicy. Never address by numeric index.
+    bool hdmi_mute_cur = false;
+    if (get_bool("Audio hdmi-out mute", hdmi_mute_cur)) {
+        set_bool("Audio hdmi-out mute", !hdmi_on || muted);
+    }
+    // Keep hardware VQE/AEC loopback reference aligned with active TDM output bus:
+    // TDMOUT_C = i2s2hdmi (pcmC0D3p), TDMOUT_A = speaker/headphone (pcmC0D0p).
+    if (!set_enum("Loopback tmdin lb source", hdmi_on ? "TDMOUT_C" : "TDMOUT_A")) {
+        LOGW("AlsaMixer", "Unable to select %s loopback reference", hdmi_on ? "TDMOUT_C" : "TDMOUT_A");
+    }
+
+    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d hdmi=%d)",
+         route.c_str(), hp_plugged ? 1 : 0, muted ? 1 : 0,
+         spk_on ? 1 : 0, hp_on ? 1 : 0, hdmi_on ? 1 : 0);
     return true;
 }
 
