@@ -4520,6 +4520,41 @@ class MainActivity : Activity() {
         }
         body.addView(saverDelay)
 
+        val saverControlsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+        val saverThemeBtn = makeTextIconPill(R.drawable.ic_wave, "Тема заставки", gold = false) { }
+        fun updateSaverThemeLabel() {
+            val prefs = getSharedPreferences("openstation_ui", MODE_PRIVATE)
+            val curId = prefs.getString(ScreensaverScenes.PREF_KEY_SCENE, ScreensaverScenes.SCENE_AUTO)
+            (saverThemeBtn.getChildAt(1) as TextView).text = "Мир заставки: ${ScreensaverScenes.preferenceLabel(curId)}"
+        }
+        updateSaverThemeLabel()
+        saverThemeBtn.setOnClickListener {
+            val prefs = getSharedPreferences("openstation_ui", MODE_PRIVATE)
+            val curId = prefs.getString(ScreensaverScenes.PREF_KEY_SCENE, ScreensaverScenes.SCENE_AUTO)
+            val nextId = ScreensaverScenes.nextPreference(curId)
+            prefs.edit().putString(ScreensaverScenes.PREF_KEY_SCENE, nextId).apply()
+            updateSaverThemeLabel()
+        }
+        saverThemeBtn.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginEnd = dp(8)
+        }
+        val saverPreviewBtn = makeTextIconPill(R.drawable.ic_play, "Включить сейчас", gold = true) {
+            closeHomeCustomizationMenu()
+            handler.postDelayed({ openScreensaver() }, 180L)
+        }
+        saverControlsRow.addView(saverThemeBtn)
+        saverControlsRow.addView(saverPreviewBtn)
+        body.addView(saverControlsRow)
+
         body.addView(makeSectionTitle("Обои рабочего стола", R.drawable.ic_wave))
 
         val wallGrid = GridLayout(this).apply {
