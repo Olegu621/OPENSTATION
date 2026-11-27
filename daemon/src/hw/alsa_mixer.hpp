@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "hw/alsa_mixer_policy.hpp"
 #include "utils/json_min.hpp"
 
 namespace openstation {
@@ -26,6 +27,8 @@ public:
 
     bool init(int card = 0);
     void close();
+    bool is_open() const;
+    int hw_revision() const;
 
     bool set_int(const std::string& name, long value, int idx = 0);
     bool get_int(const std::string& name, long& out, int idx = 0);
@@ -43,7 +46,8 @@ public:
 private:
     bool refresh_controls();
     int fd_ = -1;
-    std::mutex mu_;
+    int hw_revision_ = 0;
+    mutable std::mutex mu_;
     std::unordered_map<std::string, MixerControlMeta> controls_;
 };
 

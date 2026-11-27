@@ -1845,7 +1845,7 @@ if (-not $manifestPushed) {
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.6.43"
+        version      = "1.6.44"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = $genFiles
@@ -1942,7 +1942,7 @@ if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "  OpenStation Max v1.6.43 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.6.44 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
 Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
 Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
 Write-Host "  Wi-Fi ADB: adb connect ${stationIp}:5555" -ForegroundColor Cyan

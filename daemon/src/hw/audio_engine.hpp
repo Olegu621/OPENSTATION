@@ -2,6 +2,7 @@
 
 #include "config.hpp"
 #include "hw/aec_filter.hpp"
+#include "hw/audio_recovery_policy.hpp"
 #include "utils/json_min.hpp"
 
 #include <array>
@@ -26,12 +27,14 @@ public:
     using SpectrumCallback = std::function<void(const std::array<float, 24>& bands)>;
     using SpectrumNeededCallback = std::function<bool()>;
     using InputRetryAllowedCallback = std::function<bool()>;
+    using HalRecoverCallback = std::function<void()>;
 
     AudioEngine() = default;
     ~AudioEngine();
 
     bool start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumCallback spec_cb,
-               InputRetryAllowedCallback input_retry_allowed = {});
+               InputRetryAllowedCallback input_retry_allowed = {},
+               HalRecoverCallback hal_recover_cb = {});
     void stop();
 
     void update_config(const AudioConfig& cfg);
@@ -70,9 +73,14 @@ private:
     };
 
     void capture_loop();
-    void run_alsa_capture_session(int retry_after_seconds);
+    bool run_alsa_capture_session(int retry_after_seconds, int* out_errno = nullptr);
     bool input_retry_allowed() const;
     void playback_loop();
+    void emit_playback_metrics_and_ref(const int16_t* stereo_48k, size_t frames, bool need_spec,
+                                       int& reference_sum, int& reference_samples,
+                                       std::vector<int16_t>& mono16k,
+                                       std::vector<int16_t>& playback_reference);
+    bool play_alsa_fallback(PlayChunk& chunk, bool& has_chunk, size_t& chunk_off, uint64_t active_epoch);
     void process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate,
                        bool vqe_input);
 
@@ -82,6 +90,7 @@ private:
     Pcm16kCallback pcm_cb_;
     SpectrumCallback spec_cb_;
     InputRetryAllowedCallback input_retry_allowed_;
+    HalRecoverCallback hal_recover_cb_;
     SpectrumNeededCallback spec_needed_cb_;
     std::mutex spec_needed_mu_;
     WsAudioCallback ws_audio_cb_;
@@ -99,7 +108,11 @@ private:
     std::atomic<bool> aaudio_loaded_{false};
     std::atomic<int> active_channels_{0};
     std::atomic<int> active_sample_rate_{0};
+    std::atomic<int> hal_recoveries_{0};
     std::string capture_backend_ = "initializing";
+    std::string capture_error_;
+    std::string playback_error_;
+    bool pcm_card_present_ = true;
 
     std::thread cap_thread_;
     std::thread play_thread_;

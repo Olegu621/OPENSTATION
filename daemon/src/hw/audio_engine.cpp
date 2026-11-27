@@ -12,6 +12,9 @@
 #include <fcntl.h>
 #include <sound/asound.h>
 #include <sys/ioctl.h>
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
 #include <unistd.h>
 
 namespace openstation {
@@ -20,6 +23,19 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kVqeRetrySeconds = 30;
+
+bool is_android_boot_completed() {
+#if defined(__ANDROID__)
+    char buf[PROP_VALUE_MAX] {};
+    return __system_property_get("sys.boot_completed", buf) > 0 && std::strcmp(buf, "1") == 0;
+#else
+    return true;
+#endif
+}
+
+bool check_pcm_card_present() {
+    return (access("/dev/snd/pcmC0D1c", F_OK) == 0) || (access("/dev/snd/pcmC0D0p", F_OK) == 0);
+}
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -226,7 +242,8 @@ AudioEngine::~AudioEngine() {
 }
 
 bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumCallback spec_cb,
-                        InputRetryAllowedCallback input_retry_allowed) {
+                        InputRetryAllowedCallback input_retry_allowed,
+                        HalRecoverCallback hal_recover_cb) {
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
         cfg_ = cfg;
@@ -235,6 +252,15 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
     pcm_cb_ = std::move(pcm_cb);
     spec_cb_ = std::move(spec_cb);
     input_retry_allowed_ = std::move(input_retry_allowed);
+    hal_recover_cb_ = std::move(hal_recover_cb);
+    hal_recoveries_.store(0);
+    {
+        std::lock_guard<std::mutex> lk(stat_mu_);
+        capture_backend_ = "initializing";
+        capture_error_.clear();
+        playback_error_.clear();
+        pcm_card_present_ = true;
+    }
     wav_ring_.assign(kWavRingMax, 0);
     aec_.reset(true);
     aec_x_clean_ = true;
@@ -636,12 +662,12 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
     out16k_head_ = 0;
 }
 
-static int open_alsa_pcm_capture(const char* dev, unsigned int rate, unsigned int channels,
-                                 unsigned int period_frames, unsigned int periods,
-                                 unsigned int* out_period_frames = nullptr) {
+static int open_alsa_pcm(const char* dev, bool is_capture, unsigned int rate, unsigned int channels,
+                         unsigned int period_frames, unsigned int periods,
+                         unsigned int* out_period_frames = nullptr) {
     // Must pass O_NONBLOCK so snd_pcm_open returns -EBUSY immediately if audioserver holds the substream.
     int fd = open(dev, O_RDWR | O_NONBLOCK);
-    if (fd < 0 && errno != EBUSY && errno != EAGAIN) {
+    if (fd < 0 && is_capture && errno != EBUSY && errno != EAGAIN) {
         fd = open(dev, O_RDONLY | O_NONBLOCK);
     }
     if (fd < 0) return -1;
@@ -738,7 +764,7 @@ static int open_alsa_pcm_capture(const char* dev, unsigned int rate, unsigned in
         errno = e;
         return -1;
     }
-    if (ioctl(fd, SNDRV_PCM_IOCTL_START) < 0) {
+    if (is_capture && ioctl(fd, SNDRV_PCM_IOCTL_START) < 0) {
         int e = errno;
         ::close(fd);
         errno = e;
@@ -751,20 +777,26 @@ bool AudioEngine::input_retry_allowed() const {
     return !input_retry_allowed_ || input_retry_allowed_();
 }
 
-void AudioEngine::run_alsa_capture_session(int retry_after_seconds) {
+bool AudioEngine::run_alsa_capture_session(int retry_after_seconds, int* out_errno) {
     const unsigned int rate = 48000;
     const unsigned int ch = 16;
     unsigned int period = 1024; // ~21.3 ms, power-of-2 for Amlogic AXG PDM DMA
-    int fd = open_alsa_pcm_capture("/dev/snd/pcmC0D1c", rate, ch, period, 4, &period);
+    int fd = open_alsa_pcm("/dev/snd/pcmC0D1c", true, rate, ch, period, 4, &period);
     if (fd < 0) {
+        const int err = errno;
+        if (out_errno) *out_errno = err;
+        const bool card_present = check_pcm_card_present();
         {
             std::lock_guard<std::mutex> lk(stat_mu_);
             capture_backend_ = "alsa_unavailable";
+            capture_error_ = capture_error_code(err);
+            pcm_card_present_ = card_present;
         }
-        LOGW("AudioEngine", "Direct /dev/snd/pcmC0D1c busy/unavailable (%s), retrying", strerror(errno));
+        LOGW("AudioEngine", "Direct /dev/snd/pcmC0D1c busy/unavailable (%s), retrying", strerror(err));
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        return;
+        return false;
     }
+    if (out_errno) *out_errno = 0;
 
     f48_rem_.clear();
     ref48_rem_.clear();
@@ -789,6 +821,8 @@ void AudioEngine::run_alsa_capture_session(int retry_after_seconds) {
     {
         std::lock_guard<std::mutex> lk(stat_mu_);
         capture_backend_ = "alsa_16ch_48k";
+        capture_error_.clear();
+        pcm_card_present_ = true;
     }
     active_sample_rate_.store(rate);
     active_channels_.store(ch);
@@ -824,11 +858,27 @@ void AudioEngine::run_alsa_capture_session(int retry_after_seconds) {
     ioctl(fd, SNDRV_PCM_IOCTL_DROP);
     ::close(fd);
     active_channels_.store(0);
+    return true;
 }
 
 void AudioEngine::capture_loop() {
     bool prefer_alsa_after_silence = false;
     int alsa_short_retries = 0;
+    AudioRecoveryTracker recovery_tracker;
+
+    auto trigger_hal_recovery_if_needed = [&](CaptureFailureKind kind) {
+        if (recovery_tracker.record_failure(
+                kind, check_pcm_card_present(), capture_enabled_.load(),
+                mic_muted_.load(), is_android_boot_completed(), steady_now_ms())) {
+            hal_recoveries_.fetch_add(1);
+            LOGW("AudioEngine", "Android audio HAL/audioserver wedged on pcmC0D1c; triggering clean recovery (#%d)",
+                 hal_recoveries_.load());
+            if (hal_recover_cb_) {
+                hal_recover_cb_();
+            }
+        }
+    };
+
     while (running_.load()) {
         if (reopen_capture_.exchange(false)) {
             prefer_alsa_after_silence = false;
@@ -856,7 +906,11 @@ void AudioEngine::capture_loop() {
 
         if (prefer_alsa_after_silence) {
             const auto started = std::chrono::steady_clock::now();
-            run_alsa_capture_session(kVqeRetrySeconds);
+            int alsa_err = 0;
+            const bool alsa_ok = run_alsa_capture_session(kVqeRetrySeconds, &alsa_err);
+            if (alsa_ok) {
+                recovery_tracker.on_healthy_audio();
+            }
             if (!running_.load() || !capture_enabled_.load() || reopen_capture_.load()) continue;
             if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(kVqeRetrySeconds - 2)) {
                 // Recovery window finished; return to AAudio GENERIC (YandexVQE).
@@ -870,6 +924,12 @@ void AudioEngine::capture_loop() {
             }
             prefer_alsa_after_silence = false;
             alsa_short_retries = 0;
+            if (!alsa_ok && alsa_err != 0) {
+                const CaptureFailureKind fk = (classify_capture_errno(alsa_err) == CaptureFailureKind::Busy)
+                                                  ? CaptureFailureKind::DigitalSilenceBusy
+                                                  : classify_capture_errno(alsa_err);
+                trigger_hal_recovery_if_needed(fk);
+            }
         }
 
         AAudioStream* stream = nullptr;
@@ -910,7 +970,13 @@ void AudioEngine::capture_loop() {
                 capture_backend_ = "alsa_fallback";
             }
             LOGW("AudioEngine", "Cannot open AAudio capture stream, trying direct ALSA fallback...");
-            run_alsa_capture_session(kVqeRetrySeconds);
+            int alsa_err = 0;
+            const bool alsa_ok = run_alsa_capture_session(kVqeRetrySeconds, &alsa_err);
+            if (alsa_ok) {
+                recovery_tracker.on_healthy_audio();
+            } else {
+                trigger_hal_recovery_if_needed(classify_capture_errno(alsa_err));
+            }
             if (!capture_enabled_.load() || reopen_capture_.load() || !running_.load()) continue;
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             continue;
@@ -945,6 +1011,7 @@ void AudioEngine::capture_loop() {
         int32_t chunk_frames = std::max<int32_t>(160, rate / 50); // 20 ms
         std::vector<int16_t> buf(static_cast<size_t>(chunk_frames) * ch);
         int consecutive_zero_chunks = 0;
+        int consecutive_nonzero_chunks = 0;
         bool try_alsa_on_silence = false;
         const auto retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(kVqeRetrySeconds);
 
@@ -966,6 +1033,7 @@ void AudioEngine::capture_loop() {
                     }
                 }
                 if (max_abs == 0 && !mic_muted_.load()) {
+                    consecutive_nonzero_chunks = 0;
                     ++consecutive_zero_chunks;
                     if (consecutive_zero_chunks >= 75) {
                         LOGW("AudioEngine", "Capture stream %s digitally silenced by Android AudioFlinger (75 zero chunks); recovering via ALSA/reopen", opened_tag);
@@ -974,6 +1042,12 @@ void AudioEngine::capture_loop() {
                     }
                 } else {
                     consecutive_zero_chunks = 0;
+                    if (max_abs > 0 && ++consecutive_nonzero_chunks == 5) {
+                        recovery_tracker.on_healthy_audio();
+                        std::lock_guard<std::mutex> lk(stat_mu_);
+                        capture_error_.clear();
+                        pcm_card_present_ = true;
+                    }
                 }
                 process_frame(buf.data(), static_cast<size_t>(n), ch, rate, preferred_input);
             } else if (n < 0) {
@@ -1241,6 +1315,164 @@ void AudioEngine::play_test_tone(int freq_hz, int duration_ms, bool sweep) {
     play_pcm(pcm.data(), total, sr, 2);
 }
 
+void AudioEngine::emit_playback_metrics_and_ref(const int16_t* stereo_48k, size_t frames, bool need_spec,
+                                              int& reference_sum, int& reference_samples,
+                                              std::vector<int16_t>& mono16k,
+                                              std::vector<int16_t>& playback_reference) {
+    if (!stereo_48k || frames == 0) return;
+    double sq = 0.0;
+    mono16k.clear();
+    for (size_t k = 0; k < frames; ++k) {
+        int32_t m = (static_cast<int32_t>(stereo_48k[k * 2]) + stereo_48k[k * 2 + 1]) / 2;
+        sq += static_cast<double>(m) * m;
+        if (need_spec && (k % 3) == 0) {
+            mono16k.push_back(static_cast<int16_t>(m));
+        }
+    }
+    float rms = static_cast<float>(std::sqrt(sq / static_cast<double>(std::max<size_t>(1, frames))));
+    playback_rms_.store(std::clamp(rms / 9000.0f, 0.0f, 1.0f));
+    if (need_spec && mono16k.size() >= 64) {
+        bool ext_fresh = false;
+        {
+            std::lock_guard<std::mutex> lk(stat_mu_);
+            ext_fresh = (std::chrono::steady_clock::now() - ext_spec_tp_) <= std::chrono::milliseconds(350);
+        }
+        if (!ext_fresh) {
+            spec_cb_(compute_spectrum_16k(mono16k.data(), mono16k.size()));
+        }
+    }
+    if (playback_reference_cb_) {
+        playback_reference.clear();
+        for (size_t i = 0; i < frames; ++i) {
+            reference_sum += stereo_48k[i * 2] + stereo_48k[i * 2 + 1];
+            if (++reference_samples == 3) {
+                playback_reference.push_back(static_cast<int16_t>(reference_sum / 6));
+                reference_sum = reference_samples = 0;
+            }
+        }
+        if (!playback_reference.empty()) {
+            playback_reference_cb_(playback_reference.data(), playback_reference.size());
+        }
+    }
+}
+
+bool AudioEngine::play_alsa_fallback(PlayChunk& chunk, bool& has_chunk, size_t& chunk_off, uint64_t active_epoch) {
+    unsigned int period = 512;
+    int fd = open_alsa_pcm("/dev/snd/pcmC0D0p", false, 48000, 2, period, 4, &period);
+    if (fd < 0) {
+        const int err = errno;
+        const bool card_present = check_pcm_card_present();
+        {
+            std::lock_guard<std::mutex> lk(stat_mu_);
+            playback_error_ = capture_error_code(err);
+            pcm_card_present_ = card_present;
+        }
+        LOGW("AudioEngine", "Fallback ALSA /dev/snd/pcmC0D0p unavailable (%s)", strerror(err));
+        has_chunk = false;
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(stat_mu_);
+        playback_error_.clear();
+        pcm_card_present_ = true;
+    }
+    LOGI("AudioEngine", "Playback switched to direct ALSA /dev/snd/pcmC0D0p (48000 Hz, 2 ch, period=%u)", period);
+    playing_active_.store(true);
+
+    std::vector<int16_t> mono16k;
+    mono16k.reserve(512);
+    std::vector<int16_t> playback_reference;
+    playback_reference.reserve(342);
+    std::vector<int16_t> pad_buf(static_cast<size_t>(period) * 2, 0);
+    int reference_sum = 0;
+    int reference_samples = 0;
+
+    auto write_chunk_alsa = [&](const std::vector<int16_t>& buf, size_t& off, uint64_t ep) -> bool {
+        size_t total_frames = buf.size() / 2;
+        bool need_spec = static_cast<bool>(spec_cb_);
+        if (need_spec) {
+            std::lock_guard<std::mutex> lk(spec_needed_mu_);
+            if (spec_needed_cb_) need_spec = spec_needed_cb_();
+        }
+        while (off < total_frames && running_.load() && playback_epoch_.load() == ep) {
+            size_t avail = total_frames - off;
+            size_t to_send = std::min<size_t>(period, avail);
+            const int16_t* ptr = buf.data() + off * 2;
+            if (to_send < period) {
+                std::fill(pad_buf.begin(), pad_buf.end(), 0);
+                std::memcpy(pad_buf.data(), ptr, to_send * 2 * sizeof(int16_t));
+                ptr = pad_buf.data();
+            }
+            struct snd_xferi xfer {};
+            xfer.buf = const_cast<int16_t*>(ptr);
+            xfer.frames = period;
+            if (ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xfer) < 0) {
+                if (errno == EPIPE) {
+                    ioctl(fd, SNDRV_PCM_IOCTL_PREPARE);
+                    if (ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xfer) < 0) {
+                        LOGW("AudioEngine", "ALSA playback write error: %s", strerror(errno));
+                        return false;
+                    }
+                } else {
+                    LOGW("AudioEngine", "ALSA playback write error: %s", strerror(errno));
+                    return false;
+                }
+            }
+            emit_playback_metrics_and_ref(buf.data() + off * 2, to_send, need_spec,
+                                          reference_sum, reference_samples, mono16k, playback_reference);
+            off += to_send;
+            last_playback_end_ms_.store(steady_now_ms());
+        }
+        return running_.load() && playback_epoch_.load() == ep;
+    };
+
+    bool ok_stream = write_chunk_alsa(chunk.samples_48k_stereo, chunk_off, active_epoch);
+    if (ok_stream) {
+        has_chunk = false;
+        chunk_off = 0;
+    }
+    while (ok_stream && running_.load() && playback_epoch_.load() == active_epoch) {
+        PlayChunk next_c;
+        {
+            std::unique_lock<std::mutex> lk(play_mu_);
+            if (play_q_.empty()) {
+                play_cv_.wait_for(lk, std::chrono::milliseconds(80),
+                                  [&] {
+                                      return !running_.load() ||
+                                             !play_q_.empty() ||
+                                             playback_epoch_.load() != active_epoch;
+                                  });
+            }
+            if (play_q_.empty() || !running_.load() || playback_epoch_.load() != active_epoch) break;
+            next_c = std::move(play_q_.front());
+            play_q_.pop();
+        }
+        if (next_c.epoch != active_epoch) break;
+        chunk = std::move(next_c);
+        chunk_off = 0;
+        has_chunk = !chunk.samples_48k_stereo.empty();
+        if (!has_chunk) continue;
+        ok_stream = write_chunk_alsa(chunk.samples_48k_stereo, chunk_off, active_epoch);
+        if (ok_stream) {
+            has_chunk = false;
+            chunk_off = 0;
+        }
+    }
+
+    if (running_.load() && playback_epoch_.load() == active_epoch) {
+        ioctl(fd, SNDRV_PCM_IOCTL_DRAIN);
+    } else {
+        ioctl(fd, SNDRV_PCM_IOCTL_DROP);
+    }
+    ::close(fd);
+    playback_rms_.store(0.0f);
+    last_playback_end_ms_.store(steady_now_ms());
+    playing_active_.store(false);
+    has_chunk = false;
+    return true;
+}
+
 void AudioEngine::playback_loop() {
     // Keep the current chunk across AAudio reopen attempts so a route switch
     // (e.g. Speaker <-> HDMI Out) resumes seamlessly instead of truncating TTS.
@@ -1286,22 +1518,28 @@ void AudioEngine::playback_loop() {
         if (r != AAUDIO_OK || !out_s) {
             LOGW("AudioEngine", "Failed to open playback AAudio stream: %s", g_aa.err_str(r));
             if (++chunk_reopens >= 3) {
-                has_chunk = false;
+                play_alsa_fallback(chunk, has_chunk, chunk_off, active_epoch);
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(40));
             }
             continue;
         }
-        if (g_aa.stream_requestStart(out_s) != AAUDIO_OK) {
+        aaudio_result_t start_r = g_aa.stream_requestStart(out_s);
+        if (start_r != AAUDIO_OK) {
+            LOGW("AudioEngine", "Failed to start playback AAudio stream: %s", g_aa.err_str(start_r));
             g_aa.stream_close(out_s);
             if (++chunk_reopens >= 3) {
-                has_chunk = false;
+                play_alsa_fallback(chunk, has_chunk, chunk_off, active_epoch);
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(40));
             }
             continue;
         }
 
+        {
+            std::lock_guard<std::mutex> lk(stat_mu_);
+            playback_error_.clear();
+        }
         playing_active_.store(true);
         std::vector<int16_t> mono16k;
         mono16k.reserve(512);
@@ -1319,47 +1557,13 @@ void AudioEngine::playback_loop() {
             }
             while (off < total_frames && running_.load() && playback_epoch_.load() == ep) {
                 int32_t to_write = static_cast<int32_t>(std::min<size_t>(1024, total_frames - off));
-                double sq = 0.0;
-                mono16k.clear();
-                for (int32_t k = 0; k < to_write; ++k) {
-                    int32_t m = (static_cast<int32_t>(buf[(off + k) * 2]) + buf[(off + k) * 2 + 1]) / 2;
-                    sq += static_cast<double>(m) * m;
-                    if (need_spec && (k % 3) == 0) {
-                        mono16k.push_back(static_cast<int16_t>(m));
-                    }
-                }
-                float rms = static_cast<float>(std::sqrt(sq / std::max(1, to_write)));
-                playback_rms_.store(std::clamp(rms / 9000.0f, 0.0f, 1.0f));
-                if (need_spec && mono16k.size() >= 64) {
-                    bool ext_fresh = false;
-                    {
-                        std::lock_guard<std::mutex> lk(stat_mu_);
-                        ext_fresh = (std::chrono::steady_clock::now() - ext_spec_tp_) <= std::chrono::milliseconds(350);
-                    }
-                    if (!ext_fresh) {
-                        spec_cb_(compute_spectrum_16k(mono16k.data(), mono16k.size()));
-                    }
-                }
-
                 aaudio_result_t wr = g_aa.stream_write(out_s, buf.data() + off * 2, to_write, 1000000000LL);
                 if (wr <= 0) {
                     disconnected = true;
                     return false;
                 }
-                if (playback_reference_cb_) {
-                    playback_reference.clear();
-                    for (int32_t i = 0; i < wr; ++i) {
-                        const auto index = (off + static_cast<size_t>(i)) * 2;
-                        reference_sum += buf[index] + buf[index + 1];
-                        if (++reference_samples == 3) {
-                            playback_reference.push_back(static_cast<int16_t>(reference_sum / 6));
-                            reference_sum = reference_samples = 0;
-                        }
-                    }
-                    if (!playback_reference.empty()) {
-                        playback_reference_cb_(playback_reference.data(), playback_reference.size());
-                    }
-                }
+                emit_playback_metrics_and_ref(buf.data() + off * 2, static_cast<size_t>(wr), need_spec,
+                                              reference_sum, reference_samples, mono16k, playback_reference);
                 off += static_cast<size_t>(wr);
                 last_playback_end_ms_.store(steady_now_ms());
             }
@@ -1403,20 +1607,25 @@ void AudioEngine::playback_loop() {
             }
         }
 
-        if (disconnected && has_chunk && chunk_off < (chunk.samples_48k_stereo.size() / 2) &&
-            running_.load() && playback_epoch_.load() == active_epoch && ++chunk_reopens < 3) {
-            LOGI("AudioEngine", "Playback AAudio stream disconnected on route change; reopening (%d/3)", chunk_reopens);
-        } else {
-            has_chunk = false;
-        }
+        const bool should_retry_aaudio =
+            disconnected && has_chunk && chunk_off < (chunk.samples_48k_stereo.size() / 2) &&
+            running_.load() && playback_epoch_.load() == active_epoch;
 
         playback_rms_.store(0.0f);
         last_playback_end_ms_.store(steady_now_ms());
         playing_active_.store(false);
         g_aa.stream_requestStop(out_s);
         g_aa.stream_close(out_s);
-        if (has_chunk && running_.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+
+        if (should_retry_aaudio) {
+            if (++chunk_reopens < 3) {
+                LOGI("AudioEngine", "Playback AAudio stream disconnected on route change; reopening (%d/3)", chunk_reopens);
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            } else {
+                play_alsa_fallback(chunk, has_chunk, chunk_off, active_epoch);
+            }
+        } else {
+            has_chunk = false;
         }
     }
 }
@@ -1470,11 +1679,15 @@ json::Value AudioEngine::get_status_json() {
     {
         std::lock_guard<std::mutex> lk(stat_mu_);
         obj["backend"] = Value::make_str(capture_backend_);
+        obj["captureError"] = Value::make_str(capture_error_);
+        obj["playbackError"] = Value::make_str(playback_error_);
+        obj["pcmCardPresent"] = Value::make_bool(pcm_card_present_);
         obj["monoRms"] = Value::make_num(mono_rms_);
         for (float v : ch_rms_) {
             meters.push(Value::make_num(std::round(v)));
         }
     }
+    obj["halRecoveries"] = Value::make_int(hal_recoveries_.load());
     obj["channelRms"] = std::move(meters);
     return obj;
 }
@@ -1534,7 +1747,7 @@ void AudioEngine::run_cli_probe() {
 
     errno = 0;
     unsigned int probe_per = 1024;
-    int pcm_fd = open_alsa_pcm_capture("/dev/snd/pcmC0D1c", 48000, 16, 1024, 4, &probe_per);
+    int pcm_fd = open_alsa_pcm("/dev/snd/pcmC0D1c", true, 48000, 16, 1024, 4, &probe_per);
     int alsa_err = errno;
     printf("Raw ALSA 16ch /dev/snd/pcmC0D1c (period=%u): %s\n", probe_per, pcm_fd >= 0 ? "OPENED & CONFIGURED" : strerror(alsa_err));
     if (pcm_fd >= 0) {

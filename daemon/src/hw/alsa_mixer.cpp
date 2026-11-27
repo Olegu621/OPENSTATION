@@ -4,10 +4,14 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <sound/asound.h>
 #include <sys/ioctl.h>
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
 #include <unistd.h>
 
 namespace openstation {
@@ -19,6 +23,16 @@ bool write_sysfs(const char* path, const char* val) {
     ssize_t n = write(fd, val, strlen(val));
     close(fd);
     return n > 0;
+}
+
+int read_hardware_revision() {
+#if defined(__ANDROID__)
+    char buf[PROP_VALUE_MAX] {};
+    if (__system_property_get("ro.boot.hardware.revision", buf) > 0) {
+        return std::atoi(buf);
+    }
+#endif
+    return 0;
 }
 } // namespace
 
@@ -40,6 +54,7 @@ bool AlsaMixer::init(int card) {
         ::close(fd_);
         fd_ = -1;
     }
+    hw_revision_ = read_hardware_revision();
     char dev[64];
     snprintf(dev, sizeof(dev), "/dev/snd/controlC%d", card);
     fd_ = open(dev, O_RDWR);
@@ -53,8 +68,18 @@ bool AlsaMixer::init(int card) {
         fd_ = -1;
         return false;
     }
-    LOGI("AlsaMixer", "Opened %s with %zu controls", dev, controls_.size());
+    LOGI("AlsaMixer", "Opened %s with %zu controls (hw_revision=%d)", dev, controls_.size(), hw_revision_);
     return true;
+}
+
+bool AlsaMixer::is_open() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return fd_ >= 0;
+}
+
+int AlsaMixer::hw_revision() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return hw_revision_;
 }
 
 bool AlsaMixer::refresh_controls() {
@@ -233,6 +258,11 @@ bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bo
     set_bool("Woofer Master Playback Switch", spk_on && !muted);
     set_bool("Tweeters Master Playback Switch", spk_on && !muted);
     set_bool("Headphone Headphone Switch", hp_on && !muted);
+    // Early TI PCM1774 boards (rev <= 2) invert mute polarity: 0 = unmuted, 1 = muted.
+    bool hpa_mute_cur = false;
+    if (get_bool("Headphone HPA Mute Switch", hpa_mute_cur)) {
+        set_bool("Headphone HPA Mute Switch", !(hp_on && !muted));
+    }
 
     // Some vendor builds expose an ALSA HDMI mute switch; others route HDMI
     // strictly through Android AudioPolicy. Never address by numeric index.
@@ -240,15 +270,14 @@ bool AlsaMixer::apply_output_route(const std::string& route, bool hp_plugged, bo
     if (get_bool("Audio hdmi-out mute", hdmi_mute_cur)) {
         set_bool("Audio hdmi-out mute", !hdmi_on || muted);
     }
-    // Keep hardware VQE/AEC loopback reference aligned with active TDM output bus:
-    // TDMOUT_C = i2s2hdmi (pcmC0D3p), TDMOUT_A = speaker/headphone (pcmC0D0p).
-    if (!set_enum("Loopback tmdin lb source", hdmi_on ? "TDMOUT_C" : "TDMOUT_A")) {
-        LOGW("AlsaMixer", "Unable to select %s loopback reference", hdmi_on ? "TDMOUT_C" : "TDMOUT_A");
+    const char* lb_src = loopback_source_for_revision(hdmi_on, hw_revision());
+    if (!set_enum("Loopback tmdin lb source", lb_src)) {
+        LOGW("AlsaMixer", "Unable to select %s loopback reference", lb_src);
     }
 
-    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d hdmi=%d)",
+    LOGI("AlsaMixer", "Applied route '%s' (hp_plugged=%d, muted=%d -> spk=%d hp=%d hdmi=%d lb=%s)",
          route.c_str(), hp_plugged ? 1 : 0, muted ? 1 : 0,
-         spk_on ? 1 : 0, hp_on ? 1 : 0, hdmi_on ? 1 : 0);
+         spk_on ? 1 : 0, hp_on ? 1 : 0, hdmi_on ? 1 : 0, lb_src);
     return true;
 }
 
@@ -266,6 +295,8 @@ json::Value AlsaMixer::get_status_json() {
     bool b = false;
     std::string e;
 
+    obj["cardReady"] = Value::make_bool(is_open());
+    obj["hwRevision"] = Value::make_int(hw_revision());
     if (get_int("Woofer Master Playback Volume", v)) obj["wooferVolume"] = Value::make_int(v);
     if (get_int("Tweeters Master Playback Volume", v)) obj["tweetersVolume"] = Value::make_int(v);
     if (get_int("Headphone DAC Playback Volume", v)) obj["headphoneVolume"] = Value::make_int(v);

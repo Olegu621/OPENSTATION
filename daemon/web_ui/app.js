@@ -839,6 +839,22 @@
         $("vuMeterPeak").style.left = `${pct}%`;
       }
     }
+    if ($("micDiagHint")) {
+      const mixer = au.mixer || {};
+      const capErr = eng.captureError || "";
+      const playErr = eng.playbackError || "";
+      const noCard = mixer.cardReady === false || eng.pcmCardPresent === false || capErr === "no_pcm_device";
+      let diagMsg = "";
+      if (noCard) {
+        diagMsg = "Нет звуковой карты AML-AUGESOUND (/dev/snd/pcmC0* отсутствует): проверьте ревизию misc/DTB (YNDX-0008 rev1/2 TI vs SY6045S rev3/4/5) или шлейф/питание платы микрофонов и усилителей.";
+      } else if (eng.backend === "alsa_unavailable" && capErr === "device_busy") {
+        diagMsg = "Микрофон занят зависшей аудиослужбой Android (EBUSY). Выполняется автовосстановление audio-hal/audioserver...";
+      } else if (playErr) {
+        diagMsg = `Ошибка аудиовыхода (${playErr}): AAudio и резервный ALSA-выход недоступны.`;
+      }
+      $("micDiagHint").textContent = diagMsg;
+      $("micDiagHint").style.display = diagMsg ? "" : "none";
+    }
 
     // Update 24 SVG LEDs
     const px = hw.ringPixels || [];

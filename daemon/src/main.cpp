@@ -58,7 +58,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.43";
+constexpr const char* kFirmwareVersion = "1.6.44";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1695,9 +1695,12 @@ int main(int argc, char** argv) {
         });
     };
 
-    for (int attempt = 0; attempt < 5 && !g_stop.load(); ++attempt) {
+    for (int attempt = 0; attempt < 25 && !g_stop.load(); ++attempt) {
         if (mixer.init(0)) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    }
+    if (!mixer.is_open()) {
+        LOGW("AlsaMixer", "Card 0 (/dev/snd/controlC0) unavailable after boot wait; audio hardware or DTB/misc may be mismatched");
     }
     ensure_hardvol_passthrough_active(mixer);
     bool hp_init = false;
@@ -1856,6 +1859,10 @@ int main(int argc, char** argv) {
                 mixer.set_bool("Woofer Master Playback Switch", false);
                 mixer.set_bool("Tweeters Master Playback Switch", false);
                 mixer.set_bool("Headphone Headphone Switch", false);
+                bool hpa_mute_cur = false;
+                if (mixer.get_bool("Headphone HPA Mute Switch", hpa_mute_cur)) {
+                    mixer.set_bool("Headphone HPA Mute Switch", true);
+                }
                 bool hdmi_mute_cur = false;
                 if (route_snap == "hdmi" && mixer.get_bool("Audio hdmi-out mute", hdmi_mute_cur)) {
                     mixer.set_bool("Audio hdmi-out mute", true);
@@ -1969,8 +1976,9 @@ int main(int argc, char** argv) {
         const bool has_hdmi_mute = mixer.get_bool("Audio hdmi-out mute", hdmi_mute);
         std::string loopback_source;
         const bool has_loopback = mixer.get_enum("Loopback tmdin lb source", loopback_source);
+        const char* want_lb = openstation::loopback_source_for_revision(want_hdmi, mixer.hw_revision());
         const bool route_drift = (has_hdmi_mute && hdmi_mute != (!want_hdmi || want_muted)) ||
-                                 (has_loopback && loopback_source != (want_hdmi ? "TDMOUT_C" : "TDMOUT_A"));
+                                 (has_loopback && loopback_source != want_lb);
         if (hw_w != exp_woo || hw_t != exp_twe || hw_h != exp_hp ||
             sw_w != want_spk || sw_t != want_spk || sw_h != want_hp || route_drift) {
             LOGW("Audio", "Reconciling external ALSA drift (vol %ld/%ld/%ld -> %d/%d/%d, sw %d/%d/%d -> %d/%d/%d, route_drift=%d)",
@@ -4507,6 +4515,44 @@ int main(int argc, char** argv) {
         assistant.feed_playback_16k(pcm, count);
     });
 
+    std::mutex audio_recover_mu;
+    auto recover_android_audio_services = [&]() {
+        std::lock_guard<std::mutex> lk(audio_recover_mu);
+        if (g_stop.load()) return;
+        const std::string cmd = R"SH(
+h_st=$(getprop init.svc.vendor.audio-hal-2-0 2>/dev/null | tr -d '\r\n')
+a_st=$(getprop init.svc.audioserver 2>/dev/null | tr -d '\r\n')
+if [ -n "$h_st" ] || [ -n "$a_st" ]; then
+    stop audioserver 2>/dev/null || true
+    stop vendor.audio-hal-2-0 2>/dev/null || true
+    sleep 1
+    start vendor.audio-hal-2-0 2>/dev/null || true
+    sleep 1
+    start audioserver 2>/dev/null || true
+    i=0
+    while [ $i -lt 12 ]; do
+        h=$(getprop init.svc.vendor.audio-hal-2-0 2>/dev/null | tr -d '\r\n')
+        a=$(getprop init.svc.audioserver 2>/dev/null | tr -d '\r\n')
+        [ "$h" = "running" ] && [ "$a" = "running" ] && break
+        i=$((i+1))
+        sleep 1
+    done
+    echo "AUDIO_RECOVER_OK:$h:$a"
+fi
+)SH";
+        ShellResult sr = run_shell_with_timeout(cmd, 20, 1024);
+        LOGW("Audio", "Android audio service recovery finished (rc=%d, out=%s)",
+             sr.exit_code, trim_ws_copy(sr.output).c_str());
+        if (!g_stop.load()) {
+            if (!mixer.is_open()) {
+                mixer.init(0);
+            }
+            if (mixer.is_open()) {
+                reapply_current_volume_and_route(true, true);
+            }
+        }
+    };
+
     audio.start(
         start_cfg.audio,
         [&](const int16_t* pcm, size_t count, float rms, bool vqe_input) {
@@ -4527,7 +4573,8 @@ int main(int argc, char** argv) {
         },
         [&]() {
             return !assistant.is_active() && !wyoming.is_streaming();
-        });
+        },
+        recover_android_audio_services);
 
     audio.set_ws_audio_sink([&](const int16_t* pcm, size_t samples) {
         http.broadcast_ws_audio(pcm, samples);
