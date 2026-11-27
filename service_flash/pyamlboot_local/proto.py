@@ -506,8 +506,28 @@ class AmlogicSoC(object):
 
     def start_download(self, target, name, image_format, size, timeout):
         command = self._burn_command_payload(f"download {target} {name} {image_format} 0x{size:X}")
-        self.dev.ctrl_transfer(0x40, REQ_TPL_CMD, 0, 1, command, timeout)
-        return bytes(self.dev.ctrl_transfer(0xc0, REQ_TPL_STAT, 0, 0, 64, timeout)).split(b'\0', 1)[0]
+        cmd_timeout = max(int(timeout), 50000)
+        stat_timeout = max(int(timeout), 60000)
+        deadline = time.monotonic() + stat_timeout / 1000.0
+        self.dev.ctrl_transfer(0x40, REQ_TPL_CMD, 0, 1, command, cmd_timeout)
+
+        empty_polls = 0
+        re_armed = False
+        while True:
+            remaining = max(1000, int((deadline - time.monotonic()) * 1000))
+            reply = bytes(self.dev.ctrl_transfer(0xc0, REQ_TPL_STAT, 0, 0, 64, remaining)).split(b'\0', 1)[0]
+            if reply and not reply.startswith(b"Continue"):
+                return reply
+            if time.monotonic() >= deadline:
+                return reply
+            if not reply:
+                empty_polls += 1
+                if not re_armed and empty_polls >= 15:
+                    re_armed = True
+                    self.dev.ctrl_transfer(0x40, REQ_TPL_CMD, 0, 1, command, cmd_timeout)
+            else:
+                empty_polls = 0
+            time.sleep(0.1)
 
     def write_download_block(self, seq, data, timeout):
         padded = data + b'\0' * (-len(data) % 4)

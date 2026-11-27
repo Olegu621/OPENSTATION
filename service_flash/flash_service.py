@@ -1135,6 +1135,26 @@ def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) 
     return extract_dir
 
 
+def _download_via_update_exe(target, name, img_path, image_format="normal"):
+    update_exe = get_update_exe()
+    emit(f"[USB] Повторная отправка {name} через нативный update.exe mwrite...")
+    p = subprocess.run(
+        [update_exe, "mwrite", img_path, target, name, image_format],
+        cwd=SCRIPT_DIR,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=1800,
+        **hidden_subprocess_kwargs(),
+    )
+    out = safe_decode((p.stdout or b"") + (p.stderr or b"")).strip()
+    for ln in out.splitlines():
+        s = ln.strip()
+        if s:
+            emit(f"  [update] {s}")
+    if _update_output_failed(out, p.returncode):
+        raise RuntimeError(f"WorldCup отклонил загрузку {name} через update.exe (код {p.returncode}): {out[:240]}")
+
+
 def download_image(target, name, img_path, image_format="normal", progress=None):
     size = os.path.getsize(img_path)
     if size == 0:
@@ -1143,26 +1163,36 @@ def download_image(target, name, img_path, image_format="normal", progress=None)
     with open(img_path, "rb") as image, open_worldcup() as soc:
         reply = soc.start_download(target, name, image_format, size, timeout=30000)
         if not reply.startswith(b"success"):
-            raise RuntimeError(f"WorldCup отклонил загрузку {name}: {reply!r}")
+            if not reply and os.name == "nt":
+                try:
+                    get_update_exe()
+                except FileNotFoundError:
+                    raise RuntimeError(f"WorldCup отклонил загрузку {name}: {reply!r}")
+            else:
+                raise RuntimeError(f"WorldCup отклонил загрузку {name}: {reply!r}")
 
-        written = 0
-        for seq, data in enumerate(iter(lambda: image.read(65536), b"")):
-            try:
-                soc.write_download_block(seq, data, timeout=50000)
-            except Exception as ex:
-                raise RuntimeError(
-                    f"Запись {name} прервана на блоке {seq}, смещение {written}: {ex}. "
-                    "Состояние раздела неизвестно."
-                ) from ex
-            written += len(data)
-            if progress:
-                progress(written * 100 // size)
+        if reply.startswith(b"success"):
+            written = 0
+            for seq, data in enumerate(iter(lambda: image.read(65536), b"")):
+                try:
+                    soc.write_download_block(seq, data, timeout=50000)
+                except Exception as ex:
+                    raise RuntimeError(
+                        f"Запись {name} прервана на блоке {seq}, смещение {written}: {ex}. "
+                        "Состояние раздела неизвестно."
+                    ) from ex
+                written += len(data)
+                if progress:
+                    progress(written * 100 // size)
 
-        if written != size:
-            raise RuntimeError(f"Размер образа изменился во время записи: {img_path}")
-        reply = soc.bulkCmd("download get_status", timeout=120000)
-        if not reply.startswith(b"success"):
-            raise RuntimeError(f"WorldCup не подтвердил запись {name}: {reply!r}")
+            if written != size:
+                raise RuntimeError(f"Размер образа изменился во время записи: {img_path}")
+            reply = soc.bulkCmd("download get_status", timeout=120000)
+            if not reply.startswith(b"success"):
+                raise RuntimeError(f"WorldCup не подтвердил запись {name}: {reply!r}")
+            return
+
+    _download_via_update_exe(target, name, img_path, image_format)
 
 
 def flash_partition(name: str, img_path: str, pct_start: int, pct_end: int) -> None:
@@ -1501,6 +1531,7 @@ def run_flash(args):
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
+    aml_bulkcmd("store disprotect key", ignore_error=True)
 
     flash_partition("boot", base["boot.img"], 35, 37)
     flash_partition("dtbo", base["dtbo.img"], 37, 38)

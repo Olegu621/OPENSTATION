@@ -51,7 +51,7 @@ class FlashWorkflowTests(unittest.TestCase):
                  patch.object(engine, "aml_bulkcmd", side_effect=lambda cmd, **kw: events.append(cmd)), \
                  patch.object(engine, "flash_partition", side_effect=lambda name, *a: events.append(name)):
                 engine.run_flash(args)
-            self.assertEqual(events, ["mmc dev 1", "boot", "dtbo", "odm", "product", "vbmeta", "vendor", "system", "misc", "after_ubt.bat"])
+            self.assertEqual(events, ["mmc dev 1", "store disprotect key", "boot", "dtbo", "odm", "product", "vbmeta", "vendor", "system", "misc", "after_ubt.bat"])
 
             events_auto = []
             args_auto = types.SimpleNamespace(rom_dir=path, download_latest=False,
@@ -63,7 +63,7 @@ class FlashWorkflowTests(unittest.TestCase):
                  patch.object(engine, "aml_bulkcmd", side_effect=lambda cmd, **kw: events_auto.append(cmd)), \
                  patch.object(engine, "flash_partition", side_effect=lambda name, *a: events_auto.append(name)):
                 engine.run_flash(args_auto)
-            self.assertEqual(events_auto, ["mmc dev 1", "boot", "dtbo", "odm", "product", "vbmeta", "vendor", "system", "after_ubt.bat"])
+            self.assertEqual(events_auto, ["mmc dev 1", "store disprotect key", "boot", "dtbo", "odm", "product", "vbmeta", "vendor", "system", "after_ubt.bat"])
 
     def test_after_ubt_code_one_is_warning_but_other_errors_remain_errors(self):
         for code, expect_warning in ((0, False), (1, True)):

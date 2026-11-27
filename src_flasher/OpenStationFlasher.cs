@@ -864,8 +864,15 @@ namespace OpenStationFlasher
             {
                 try
                 {
-                    foreach (string sub in Directory.GetDirectories(appDataRomCache, "rom_v*_verified"))
-                        romDirs.Add(sub);
+                    var cachedDirs = new List<string>(Directory.GetDirectories(appDataRomCache, "rom_v*_verified"));
+                    cachedDirs.Sort((a, b) =>
+                    {
+                        string va = Path.GetFileName(a).Replace("rom_v", "").Replace("_verified", "");
+                        string vb = Path.GetFileName(b).Replace("rom_v", "").Replace("_verified", "");
+                        try { return new Version(vb.TrimStart('v', 'V')).CompareTo(new Version(va.TrimStart('v', 'V'))); }
+                        catch { return string.Compare(vb, va, StringComparison.OrdinalIgnoreCase); }
+                    });
+                    romDirs.AddRange(cachedDirs);
                 }
                 catch { }
             }
@@ -877,8 +884,11 @@ namespace OpenStationFlasher
                     File.Exists(Path.Combine(rd, "system.img")))
                 {
                     string romVer = ReadRomManifestVersion(rd);
+                    bool inRepo = rd.StartsWith(_repoRoot, StringComparison.OrdinalIgnoreCase);
+                    if (!inRepo && !string.IsNullOrEmpty(romVer) && !IsVersionAtLeast(romVer, FW_VERSION))
+                        continue;
                     snap.LocalRomVer = string.IsNullOrEmpty(romVer) ? "Готов (локальный)" : ("Готов (v" + romVer.TrimStart('v', 'V') + ")");
-                    if (rd.StartsWith(_repoRoot, StringComparison.OrdinalIgnoreCase))
+                    if (inRepo)
                         snap.LocalRomDir = rd;
                     break;
                 }

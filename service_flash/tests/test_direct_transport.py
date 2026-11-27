@@ -411,4 +411,77 @@ class TransportTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_start_download_polls_empty_and_continue_status_until_success(self):
+        from pyamlboot_local.proto import AmlogicSoC, REQ_TPL_CMD, REQ_TPL_STAT
+
+        class Usb:
+            def __init__(self, replies):
+                self.replies = iter(replies)
+                self.reqs = []
+
+            def ctrl_transfer(self, bmRequestType, bRequest, wValue, wIndex, data_or_wLength, timeout=None):
+                self.reqs.append((bmRequestType, bRequest, wValue, wIndex))
+                if bRequest == REQ_TPL_CMD:
+                    return 64
+                if bRequest == REQ_TPL_STAT:
+                    return next(self.replies)
+                raise AssertionError(f'Unexpected request {bRequest}')
+
+        soc = AmlogicSoC.__new__(AmlogicSoC)
+        soc.dev = Usb([b'\x00' * 64, b'Continue:32\x00', b'success\x00'])
+        with patch('pyamlboot_local.proto.time.sleep'):
+            reply = soc.start_download('store', 'odm', 'normal', 134217728, 30000)
+        self.assertEqual(reply, b'success')
+        self.assertEqual(sum(1 for r in soc.dev.reqs if r[1] == REQ_TPL_CMD), 1)
+        self.assertEqual(sum(1 for r in soc.dev.reqs if r[1] == REQ_TPL_STAT), 3)
+
+    def test_start_download_retries_tpl_cmd_after_repeated_empty_status(self):
+        from pyamlboot_local.proto import AmlogicSoC, REQ_TPL_CMD, REQ_TPL_STAT
+
+        class Usb:
+            def __init__(self):
+                self.cmds = 0
+                self.stats = 0
+
+            def ctrl_transfer(self, bmRequestType, bRequest, wValue, wIndex, data_or_wLength, timeout=None):
+                if bRequest == REQ_TPL_CMD:
+                    self.cmds += 1
+                    return 64
+                if bRequest == REQ_TPL_STAT:
+                    self.stats += 1
+                    return b'success\x00' if self.stats >= 17 else b'\x00' * 64
+                raise AssertionError(f'Unexpected request {bRequest}')
+
+        soc = AmlogicSoC.__new__(AmlogicSoC)
+        soc.dev = Usb()
+        with patch('pyamlboot_local.proto.time.sleep'):
+            reply = soc.start_download('store', 'odm', 'normal', 134217728, 30000)
+        self.assertEqual(reply, b'success')
+        self.assertEqual(soc.dev.cmds, 2)
+        self.assertEqual(soc.dev.stats, 17)
+
+    def test_download_image_falls_back_to_update_mwrite_on_empty_start_reply(self):
+        class Device:
+            def start_download(self, target, name, fmt, size, timeout):
+                return b''
+
+        device = Device()
+
+        @contextmanager
+        def opened():
+            yield device
+
+        with tempfile.NamedTemporaryFile(delete=False) as image:
+            image.write(b'x' * 4096)
+            path = image.name
+        try:
+            with patch.object(f, 'open_worldcup', opened), \
+                 patch.object(f.os, 'name', 'nt'), \
+                 patch.object(f, 'get_update_exe', return_value='update.exe'), \
+                 patch.object(f, '_download_via_update_exe') as mwrite:
+                f.download_image('store', 'odm', path)
+            mwrite.assert_called_once_with('store', 'odm', path, 'normal')
+        finally:
+            os.unlink(path)
+
 if __name__ == '__main__': unittest.main()
