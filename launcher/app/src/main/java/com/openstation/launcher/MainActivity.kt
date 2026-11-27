@@ -899,16 +899,15 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 11.5f
             maxLines = 1
-            isFocusable = true
-            isClickable = true
+            SpatialUiKit.disableSystemHighlight(this)
             setPadding(dp(10), dp(3), dp(10), dp(3))
             LiquidGlassKit.applyGlass(
                 this,
                 radiusDp = 999f,
                 baseTint = Color.parseColor("#2A0A101C"),
-                focusTint = Color.parseColor("#66203048"),
+                focusTint = Color.parseColor("#2A0A101C"),
                 normalStroke = Color.parseColor("#14FFFFFF"),
-                focusStroke = Color.parseColor("#8C7DB8D6"),
+                focusStroke = Color.parseColor("#14FFFFFF"),
                 refractStrength = 0.7f
             )
             visibility = View.GONE
@@ -922,6 +921,9 @@ class MainActivity : Activity() {
                     )
                 }
             }
+            isFocusable = false
+            isFocusableInTouchMode = false
+            isClickable = true
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(10)
             }
