@@ -890,12 +890,14 @@ inline MiscRepairReport auto_repair_misc_if_needed(
         return report;
     }
 
-    if (!force && report.wifi_ok && report.bt_ok && report.dt_matches) {
-        if (!paths.guard_state_path.empty()) {
+    if (!force && report.dt_matches) {
+        if (!paths.guard_state_path.empty() && report.wifi_ok && report.bt_ok) {
             ::unlink(paths.guard_state_path.c_str());
         }
         report.action = MiscRepairAction::NoOp;
-        report.detail = "Wi-Fi, Bluetooth, and kernel DTB match detected hardware";
+        report.detail = (report.wifi_ok && report.bt_ok)
+                            ? "Wi-Fi, Bluetooth, and kernel DTB match detected hardware"
+                            : "Kernel DTB already matches detected hardware; misc untouched";
         return report;
     }
 

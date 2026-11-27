@@ -324,6 +324,25 @@ int main() {
         assert(diag.needs_repair);
     }
 
+    // 13. Matched DTB with early-boot missing wlan0/BT and blank stock misc -> MUST NEVER overwrite misc or reboot
+    {
+        auto p = make_base_paths(root + "/t_early_boot_safe");
+        write_file(p.sys_pci + "/0000:01:00.0/vendor", "0x8086\n");
+        write_file(p.proc_cmdline_path, "androidboot.hardware.amlogic_dt_id=g12a_s905x2_rev35f\n");
+        std::vector<uint8_t> zeros(kMiscImageSize, 0x00u);
+        write_bytes(p.misc_block_by_name, zeros);
+
+        int reboots = 0;
+        auto rep = auto_repair_misc_if_needed(p, true, false, [&]() { ++reboots; });
+        assert(rep.chip == WirelessChip::Intel);
+        assert(rep.dt_matches);
+        assert(!rep.wifi_ok && !rep.bt_ok);
+        assert(rep.action == MiscRepairAction::NoOp);
+        assert(!rep.wrote_flash);
+        assert(reboots == 0);
+        assert(read_bytes(p.misc_block_by_name) == zeros);
+    }
+
     std::printf("ALL_MISC_REPAIR_TESTS_PASSED\n");
     return 0;
 }

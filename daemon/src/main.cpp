@@ -58,7 +58,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.41";
+constexpr const char* kFirmwareVersion = "1.6.42";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -525,6 +525,22 @@ openstation::json::Value build_misc_repair_json(int64_t uptime_sec) {
 }
 
 void startup_misc_and_wireless_hardware() {
+    // Wait until Android boot completes and any detached OTA install script finishes
+    // so we never race WifiService/BT HAL init or trigger false early-boot hardware checks.
+    for (int wait_i = 0; wait_i < 90 && !g_stop.load(); ++wait_i) {
+        const bool ota_busy = file_exists_plain("/data/local/openstation/ota_apply.sh");
+        char boot[PROP_VALUE_MAX] {};
+        __system_property_get("sys.boot_completed", boot);
+        if (!ota_busy && strcmp(boot, "1") == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    for (int settle_i = 0; settle_i < 10 && !g_stop.load(); ++settle_i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    if (g_stop.load()) return;
+
     refresh_misc_repair_status(/*allow_power_up=*/true);
     repair_wireless_hardware_if_needed();
     auto rep = refresh_misc_repair_status(/*allow_power_up=*/false);
@@ -532,51 +548,13 @@ void startup_misc_and_wireless_hardware() {
         return;
     }
 
+    // Never auto-flash /dev/block/.../misc or trigger unattended reboots during startup:
+    // flashing misc from daemon startup can corrupt working stations into U-Boot loops.
+    // Surface the mismatch diagnostics cleanly in TV/Web UI for explicit confirmation.
     LOGW("Hardware",
-         "Wireless hardware check flagged mismatch/failure (wifi=%d bt=%d dt_match=%d chip=%s cur_dt=%s rec_rev=%s)",
+         "Wireless hardware check flagged mismatch/failure (wifi=%d bt=%d dt_match=%d chip=%s cur_dt=%s rec_rev=%s); auto-flash disabled, awaiting UI/manual action if needed",
          rep.wifi_ok ? 1 : 0, rep.bt_ok ? 1 : 0, rep.dt_matches ? 1 : 0,
          openstation::hw::chip_name(rep.chip), rep.current_dt_id.c_str(), rep.recommended_revision.c_str());
-
-    if (rep.chip == openstation::hw::WirelessChip::Unknown) {
-        LOGW("Hardware", "Chip could not be probed automatically; surfacing manual revision selector");
-        return;
-    }
-
-    bool should_reboot = false;
-    auto fix = openstation::hw::auto_repair_misc_if_needed(
-        openstation::hw::MiscPaths{},
-        /*allow_reboot=*/true,
-        /*force=*/false,
-        [&]() { should_reboot = true; });
-
-    {
-        std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
-        if (!g_misc_repair_state.flashing) {
-            g_misc_repair_state.report = fix;
-            g_misc_repair_state.initialized = true;
-            if (should_reboot && fix.action == openstation::hw::MiscRepairAction::UpdatedAndReboot) {
-                g_misc_repair_state.flash_status = "flashed_rebooting";
-            } else if (fix.action == openstation::hw::MiscRepairAction::Failed) {
-                g_misc_repair_state.flash_status = "failed";
-                g_misc_repair_state.flash_error = fix.detail;
-            }
-        }
-    }
-
-    if (should_reboot && fix.action == openstation::hw::MiscRepairAction::UpdatedAndReboot) {
-        LOGW("Hardware", "Auto-repaired misc (%s -> %s); rebooting to apply matching DTB...",
-             openstation::hw::chip_name(fix.chip), fix.target_dt_id.c_str());
-        ::sync();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-        ::sync();
-        const int rc = std::system("/system/bin/reboot >/dev/null 2>&1");
-        (void)rc;
-    } else if (fix.reboot_suppressed_by_guard) {
-        LOGW("Hardware", "Auto-repair reboot suppressed by loop guard (%s); user confirmation enabled",
-             fix.detail.c_str());
-    } else if (fix.action == openstation::hw::MiscRepairAction::Failed) {
-        LOGW("Hardware", "Auto-repair misc failed: %s", fix.detail.c_str());
-    }
 }
 
 std::string normalize_cec_action(const std::string& raw) {
