@@ -2059,6 +2059,9 @@ class MainActivity : Activity() {
             SysItem(R.drawable.ic_hw_bluetooth, false, "Bluetooth") {
                 openTvAccessories()
             },
+            SysItem(R.drawable.ic_hw_wifi, false, "Чип Wi-Fi/BT") {
+                miscRepairHelper.showManual()
+            },
             SysItem(R.drawable.ic_hw_eq, false, "Звук и аудио") {
                 openTvSoundSettings()
             },

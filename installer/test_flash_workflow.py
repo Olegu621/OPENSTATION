@@ -42,7 +42,7 @@ class FlashWorkflowTests(unittest.TestCase):
             for filename in engine.ROM_FILES:
                 open(os.path.join(path, filename), "wb").close()
             args = types.SimpleNamespace(rom_dir=path, download_latest=False,
-                                         revision="auto", keep_data=True)
+                                         revision="00053", keep_data=True)
             events = []
             with patch.object(engine, "check_worldcup_driver", return_value=True), \
                  patch.object(engine, "verify_rom"), \
@@ -52,6 +52,18 @@ class FlashWorkflowTests(unittest.TestCase):
                  patch.object(engine, "flash_partition", side_effect=lambda name, *a: events.append(name)):
                 engine.run_flash(args)
             self.assertEqual(events, ["mmc dev 1", "boot", "dtbo", "odm", "product", "vbmeta", "vendor", "system", "misc", "after_ubt.bat"])
+
+            events_auto = []
+            args_auto = types.SimpleNamespace(rom_dir=path, download_latest=False,
+                                              revision="auto", keep_data=True)
+            with patch.object(engine, "check_worldcup_driver", return_value=True), \
+                 patch.object(engine, "verify_rom"), \
+                 patch.object(engine, "ensure_burn_mode", return_value=True), \
+                 patch.object(engine, "run_after_ubt", side_effect=lambda: events_auto.append("after_ubt.bat")), \
+                 patch.object(engine, "aml_bulkcmd", side_effect=lambda cmd, **kw: events_auto.append(cmd)), \
+                 patch.object(engine, "flash_partition", side_effect=lambda name, *a: events_auto.append(name)):
+                engine.run_flash(args_auto)
+            self.assertEqual(events_auto, ["mmc dev 1", "boot", "dtbo", "odm", "product", "vbmeta", "vendor", "system", "after_ubt.bat"])
 
     def test_after_ubt_code_one_is_warning_but_other_errors_remain_errors(self):
         for code, expect_warning in ((0, False), (1, True)):

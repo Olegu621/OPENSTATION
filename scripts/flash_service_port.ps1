@@ -545,12 +545,16 @@ $vbmetaPath = Join-Path $ResolvedRomDir "vbmeta.img"
 $vendorPath = Join-Path $ResolvedRomDir "vendor.img"
 $systemPath = Join-Path $ResolvedRomDir "system.img"
 
-$miscCandidates = if ($Revision -eq "00053") {
-    @(Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img", Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img")
+$miscPath = $null
+if ($Revision -eq "00053") {
+    $miscCandidates = @(Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img")
+    $miscPath = $miscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+} elseif ($Revision -in @("0008", "00052")) {
+    $miscCandidates = @(Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img")
+    $miscPath = $miscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 } else {
-    @(Join-Path $ResolvedRomDir "misc.img", Join-Path $ServiceFlashDir "misc.img", Join-Path $ResolvedRomDir "misc_00053.img", Join-Path $ServiceFlashDir "misc_00053.img")
+    Write-Host "  -> Ревизия не выбрана ($Revision): раздел misc не перезаписывается (автоопределение при первом запуске)." -ForegroundColor Cyan
 }
-$miscPath = $miscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 Invoke-UpdateExe @("bulkcmd", "mmc dev 1") "Выбор eMMC (mmc dev 1)"
 Invoke-UpdateExe @("bulkcmd", "store disprotect key") "Снятие защиты разделов (store disprotect key)"
@@ -558,7 +562,7 @@ Invoke-UpdateExe @("mwrite", $vbmetaPath, "store", "vbmeta", "normal") "Запи
 Invoke-UpdateExe @("mwrite", $vendorPath, "store", "vendor", "normal") "Запись vendor (512 МБ)"
 Invoke-UpdateExe @("mwrite", $systemPath, "store", "system", "normal") "Запись system (~1.44 ГБ, подождите 1-2 минуты)"
 if ($miscPath -and (Test-Path $miscPath)) {
-    Invoke-UpdateExe @("mwrite", $miscPath, "store", "misc", "normal") "Запись misc (uboot-command: обход AVB / permissive bootargs)"
+    Invoke-UpdateExe @("mwrite", $miscPath, "store", "misc", "normal") "Запись misc (ревизия $Revision)"
 }
 
 if ($DoWipeData) {

@@ -3592,7 +3592,7 @@
 
     const diag = $("miscDiagBanner");
     if (diag) {
-      const chipLabel = mr.chip === "intel" ? "Intel" : (mr.chip === "realtek" ? "Realtek/Unisoc" : "не определён");
+      const chipLabel = mr.chip === "intel" ? "Intel 7265" : (mr.chip === "realtek" ? "Realtek 8822ES" : (mr.chip === "unisoc" ? "Unisoc UWE5621" : "не определён"));
       diag.textContent =
         `Wi-Fi: ${mr.wifiOk ? "OK" : "не работает"} · Bluetooth: ${mr.btOk ? "OK" : "не работает"} · ` +
         `DT: ${mr.currentDtId || "?"} (${formatMiscRevLabel(mr.currentRevision)}) · Чип: ${chipLabel}` +
@@ -3630,7 +3630,7 @@
   function handleMiscRepairState(mr) {
     if (!mr) return;
     if ($("miscStatusHint")) {
-      const chipLabel = mr.chip === "intel" ? "Intel" : (mr.chip === "realtek" ? "Realtek/Unisoc" : "unknown");
+      const chipLabel = mr.chip === "intel" ? "Intel" : (mr.chip === "realtek" ? "Realtek" : (mr.chip === "unisoc" ? "Unisoc" : "не определён"));
       $("miscStatusHint").textContent =
         `DT: ${mr.currentDtId || "?"} · чип: ${chipLabel} · Wi-Fi: ${mr.wifiOk ? "OK" : "Нет"} · BT: ${mr.btOk ? "OK" : "Нет"}`;
     }

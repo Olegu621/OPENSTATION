@@ -670,8 +670,11 @@ class SetupWizardActivity : Activity() {
         btnWifiDnsToggle = makeActionPill("🛡 DNS: Авто") {
             val useComss = curDnsMode != "hostname" || curDnsHost != "dns.comss.one"
             applyPrivateDns(if (useComss) "hostname" else "opportunistic", if (useComss) "dns.comss.one" else "")
-        }
+        }.apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(10) }
         btnRow.addView(btnWifiDnsToggle)
+        btnRow.addView(makeActionPill("🔧 Чип Wi-Fi/BT") {
+            miscRepairHelper.showManual()
+        })
         rightCol.addView(btnRow)
 
         val qrTuple = makeCompactQrBox("Мастер в телефоне — удобно вставить API-ключ")

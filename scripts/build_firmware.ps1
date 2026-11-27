@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.35",
-    [string]$Changelog = "Исправлен вывод звука по HDMI на ТВ с отключением встроенных динамиков и синхронизацией AEC/VQE (TDMOUT_C/A), устранён фоновый перегрев CPU и лаги заставки (SurfaceView HWC + адаптивный idle-гейт Silero VAD).",
+    [string]$Version = "1.6.36",
+    [string]$Changelog = "Исправлен Wi-Fi и Bluetooth на всех ревизиях OpenStation Max (0008/00052 Intel и 00053 Realtek/Unisoc): явный выбор ревизии в OpenStationFlasher (USB 1.3.9) без слепой перезаписи misc, корректная диагностика BT для Realtek/Unisoc, мультичиповый runtime-ремонт и авто-восстановление misc в демоне, кнопка диагностики в мастере и настройках ТВ.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

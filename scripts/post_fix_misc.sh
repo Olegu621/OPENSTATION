@@ -237,6 +237,14 @@ CUR_DT=$(read_dt_id)
 WIFI_OK=0
 [ -d /sys/class/net/wlan0 ] && WIFI_OK=1
 
+DT_MATCH=1
+if [ "$TARGET" != "none" ] && ! dt_matches_target "$TARGET" "$CUR_DT"; then
+  DT_MATCH=0
+fi
+
+BT_HAL_RTL=$(getprop init.svc.vendor.bluetooth-1-0 2>/dev/null | tr -d '\r\n')
+BT_HAL_LIN=$(getprop init.svc.btlinux-1.0 2>/dev/null | tr -d '\r\n')
+
 BT_OK=0
 for h in /sys/class/bluetooth/hci*; do
   if [ -e "$h" ]; then
@@ -244,11 +252,21 @@ for h in /sys/class/bluetooth/hci*; do
     break
   fi
 done
-
-DT_MATCH=1
-if [ "$TARGET" != "none" ] && ! dt_matches_target "$TARGET" "$CUR_DT"; then
-  DT_MATCH=0
-fi
+case "$CHIP" in
+  intel)
+    [ "$BT_HAL_RTL" = "running" ] && BT_OK=0
+    ;;
+  unisoc)
+    [ -e /dev/ttyBT0 ] && BT_OK=1
+    [ "$BT_HAL_LIN" = "running" ] && BT_OK=0
+    ;;
+  realtek)
+    if [ "$DT_MATCH" -eq 1 ] && [ -e /dev/ttyS1 ]; then
+      BT_OK=1
+    fi
+    [ "$BT_HAL_LIN" = "running" ] && BT_OK=0
+    ;;
+esac
 
 MISC_DEV=$(resolve_misc_dev || true)
 

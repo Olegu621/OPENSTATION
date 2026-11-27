@@ -1445,18 +1445,25 @@ MISC_SHA256 = {
 
 
 def resolve_misc_image(revision="auto"):
-    """Выбирает и проверяет образ misc в зависимости от ревизии платы."""
-    rev = (revision or "auto").strip()
-    candidates = ("misc.img", "misc_00053.img") if rev in ("0008", "00052") else ("misc_00053.img", "misc.img")
-    for name in candidates:
-        path = os.path.join(SCRIPT_DIR, name)
-        if os.path.isfile(path):
-            expected = MISC_SHA256[name]
-            with open(path, "rb") as misc_file:
-                if hashlib.sha256(misc_file.read()).hexdigest() != expected:
-                    raise RuntimeError(f"Контрольная сумма {name} не совпала; запись не начата")
-            return path
-    raise RuntimeError("Отсутствует завершающий образ misc; запись не начата")
+    """Выбирает и проверяет образ misc по явно указанной ревизии платы."""
+    rev = (revision or "auto").strip().lower()
+    if rev in ("auto", "skip", "none", ""):
+        return None
+    if rev in ("0008", "00052"):
+        name = "misc.img"
+    elif rev == "00053":
+        name = "misc_00053.img"
+    else:
+        raise RuntimeError(f"Неизвестная ревизия платы '{revision}'; допустимы 0008, 00052, 00053 или auto")
+
+    path = os.path.join(SCRIPT_DIR, name)
+    if os.path.isfile(path):
+        expected = MISC_SHA256[name]
+        with open(path, "rb") as misc_file:
+            if hashlib.sha256(misc_file.read()).hexdigest() != expected:
+                raise RuntimeError(f"Контрольная сумма {name} не совпала; запись не начата")
+        return path
+    raise RuntimeError(f"Отсутствует образ {name}; запись не начата")
 
 
 def run_flash(args):
@@ -1504,11 +1511,15 @@ def run_flash(args):
     flash_partition("system", os.path.join(rom_dir, "system.img"), 55, 92)
 
     misc_error = None
-    try:
-        flash_partition("misc", misc_path, 92, 95)
-    except Exception as ex:
-        misc_error = ex
-        emit("[ERROR] Не удалось записать misc: %s; выполняю оставшиеся команды after_ubt." % ex)
+    if misc_path:
+        try:
+            flash_partition("misc", misc_path, 92, 95)
+        except Exception as ex:
+            misc_error = ex
+            emit("[ERROR] Не удалось записать misc: %s; выполняю оставшиеся команды after_ubt." % ex)
+    else:
+        emit("[MISC] Ревизия платы не указана (auto): раздел misc оставлен без изменений (автонастройка при первом запуске).")
+        emit_progress(95, "Подготовка к завершению...")
 
     emit_progress(95, "Обязательный завершающий этап after_ubt...")
     after_error = None
@@ -1542,7 +1553,7 @@ def main():
     parser.add_argument("--rom-dir", default="", help="Путь к локальной папке с vbmeta.img/vendor.img/system.img")
     parser.add_argument("--download-latest", action="store_true", help="Принудительно скачать свежий ROM с GitHub")
     parser.add_argument("--keep-data", action="store_true", help="Не стирать пользовательские данные (data/cache)")
-    parser.add_argument("--revision", default="auto", choices=["auto", "0008", "00052", "00053"])
+    parser.add_argument("--revision", default="auto", choices=["auto", "skip", "0008", "00052", "00053"])
     parser.add_argument("--usb-boot-step", default="", help=argparse.SUPPRESS)
     parser.add_argument("--usb-service", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()

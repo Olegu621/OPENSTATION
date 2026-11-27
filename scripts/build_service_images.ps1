@@ -576,47 +576,105 @@ try {
   }
 
   repair_wireless_hardware() {
-    intel_pci=0
-    for vf in /sys/bus/pci/devices/*/vendor; do
-      [ -r "$vf" ] || continue
-      v=$(cat "$vf" 2>/dev/null | tr -d '\r\n ')
-      case "$v" in
-        0x8086|8086) intel_pci=1; break ;;
+    chip="unknown"
+    for sdev in /sys/bus/sdio/devices/*; do
+      [ -r "$sdev/vendor" ] || continue
+      sv=$(cat "$sdev/vendor" 2>/dev/null | tr -d '\r\n ')
+      sd=$(cat "$sdev/device" 2>/dev/null | tr -d '\r\n ')
+      case "$sv:$sd" in
+        0x024c:0xa822|024c:a822) chip="realtek"; break ;;
+        0x0000:0x0000|0000:0000) chip="unisoc"; break ;;
       esac
     done
-    [ "$intel_pci" -eq 1 ] || return 0
-    bt_svc=$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')
-    if [ -d /sys/class/net/wlan0 ] && [ -e /sys/class/bluetooth/hci0 ] && [ "$bt_svc" = "running" ]; then
-      return 0
+    if [ "$chip" = "unknown" ]; then
+      for vf in /sys/bus/pci/devices/*/vendor; do
+        [ -r "$vf" ] || continue
+        v=$(cat "$vf" 2>/dev/null | tr -d '\r\n ')
+        case "$v" in
+          0x8086|8086) chip="intel"; break ;;
+        esac
+      done
     fi
-    for g in 482 493; do
-      [ -d "/sys/class/gpio/gpio$g" ] || echo "$g" > /sys/class/gpio/export 2>/dev/null || true
-      [ -w "/sys/class/gpio/gpio$g/direction" ] && echo high > "/sys/class/gpio/gpio$g/direction" 2>/dev/null || true
-    done
-    for mod in \
-      /vendor/lib/modules/btintel.ko \
-      /vendor/lib/modules/btusb.ko \
-      /vendor/lib/backported_iwlwifi/compat.ko \
-      /vendor/lib/backported_iwlwifi/cfg80211.ko \
-      /vendor/lib/backported_iwlwifi/mac80211.ko \
-      /vendor/lib/backported_iwlwifi/iwlwifi.ko \
-      /vendor/lib/backported_iwlwifi/iwlmvm.ko; do
-      mbase=$(basename "$mod" .ko)
-      if [ -f "$mod" ] && ! grep -q "^${mbase} " /proc/modules 2>/dev/null; then
-        insmod "$mod" 2>/dev/null || true
-      fi
-    done
-    hw=0
-    while [ $hw -lt 10 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do
-      hw=$((hw+1))
-      sleep 0.1
-    done
-    if [ "$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')" = "running" ]; then
-      stop vendor.bluetooth-1-0 2>/dev/null || true
+    if [ "$chip" = "unknown" ]; then
+      for udev in /sys/bus/usb/devices/*; do
+        [ -r "$udev/idVendor" ] || continue
+        uv=$(cat "$udev/idVendor" 2>/dev/null | tr -d '\r\n ')
+        up=$(cat "$udev/idProduct" 2>/dev/null | tr -d '\r\n ')
+        case "$uv:$up" in
+          8087:0a2a|0x8087:0x0a2a) chip="intel"; break ;;
+        esac
+      done
     fi
-    if [ "$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')" != "running" ]; then
-      start btlinux-1.0 2>/dev/null || true
-    fi
+
+    case "$chip" in
+      intel)
+        bt_svc=$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')
+        vbt_svc=$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')
+        if [ -d /sys/class/net/wlan0 ] && [ -e /sys/class/bluetooth/hci0 ] && [ "$bt_svc" = "running" ] && [ "$vbt_svc" != "running" ]; then
+          return 0
+        fi
+        [ "$vbt_svc" = "running" ] && stop vendor.bluetooth-1-0 2>/dev/null || true
+        for g in 482 493; do
+          [ -d "/sys/class/gpio/gpio$g" ] || echo "$g" > /sys/class/gpio/export 2>/dev/null || true
+          [ -w "/sys/class/gpio/gpio$g/direction" ] && echo high > "/sys/class/gpio/gpio$g/direction" 2>/dev/null || true
+        done
+        for mod in \
+          /vendor/lib/modules/btintel.ko \
+          /vendor/lib/modules/btusb.ko \
+          /vendor/lib/backported_iwlwifi/compat.ko \
+          /vendor/lib/backported_iwlwifi/cfg80211.ko \
+          /vendor/lib/backported_iwlwifi/mac80211.ko \
+          /vendor/lib/backported_iwlwifi/iwlwifi.ko \
+          /vendor/lib/backported_iwlwifi/iwlmvm.ko; do
+          mbase=$(basename "$mod" .ko)
+          if [ -f "$mod" ] && ! grep -q "^${mbase} " /proc/modules 2>/dev/null; then
+            insmod "$mod" 2>/dev/null || true
+          fi
+        done
+        hw=0
+        while [ $hw -lt 20 ] && { [ ! -e /sys/class/bluetooth/hci0 ] || [ ! -d /sys/class/net/wlan0 ]; }; do
+          hw=$((hw+1))
+          sleep 0.1
+        done
+        [ "$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')" = "running" ] && stop vendor.bluetooth-1-0 2>/dev/null || true
+        if [ "$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')" != "running" ]; then
+          start btlinux-1.0 2>/dev/null || true
+        fi
+        ;;
+      realtek)
+        bt_svc=$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')
+        vbt_svc=$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')
+        [ "$bt_svc" = "running" ] && stop btlinux-1.0 2>/dev/null || true
+        [ -x /vendor/bin/wifi_power ] && /vendor/bin/wifi_power 1 >/dev/null 2>&1 || true
+        for mod in /vendor/lib/modules/cfg80211.ko /vendor/lib/modules/mac80211.ko /vendor/lib/modules/88x2es.ko; do
+          mbase=$(basename "$mod" .ko)
+          [ -f "$mod" ] && ! grep -q "^${mbase} " /proc/modules 2>/dev/null && insmod "$mod" 2>/dev/null || true
+        done
+        [ -e /dev/ttyS1 ] && chown bluetooth:bluetooth /dev/ttyS1 2>/dev/null && chmod 0660 /dev/ttyS1 2>/dev/null || true
+        if [ "$vbt_svc" != "running" ]; then
+          start vendor.bluetooth-1-0 2>/dev/null || true
+        fi
+        ;;
+      unisoc)
+        bt_svc=$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')
+        vbt_svc=$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')
+        [ "$bt_svc" = "running" ] && stop btlinux-1.0 2>/dev/null || true
+        [ -x /vendor/bin/wifi_power ] && /vendor/bin/wifi_power 1 >/dev/null 2>&1 || true
+        for mod in \
+          /vendor/lib/modules/cfg80211.ko \
+          /vendor/lib/modules/mac80211.ko \
+          /vendor/lib/modules/uwe5621_bsp_sdio.ko \
+          /vendor/lib/modules/sprdwl_ng.ko \
+          /vendor/lib/modules/sprdbt_tty.ko; do
+          mbase=$(basename "$mod" .ko)
+          [ -f "$mod" ] && ! grep -q "^${mbase} " /proc/modules 2>/dev/null && insmod "$mod" 2>/dev/null || true
+        done
+        chown bluetooth:bluetooth /dev/ttyBT0 /dev/ttyBT1 /sys/class/rfkill/rfkill1/state /sys/class/rfkill/rfkill1/type /proc/bluetooth/sleep/btwrite 2>/dev/null || true
+        if [ "$vbt_svc" != "running" ]; then
+          start vendor.bluetooth-1-0 2>/dev/null || true
+        fi
+        ;;
+    esac
   }
 
   repair_wireless_hardware
@@ -940,6 +998,17 @@ detect_chip_type() {
           ;;
       esac
     done
+    for udev in /sys/bus/usb/devices/*; do
+      [ -r "$udev/idVendor" ] || continue
+      USB_VENDOR=$(cat "$udev/idVendor" 2>/dev/null | tr -d '\r\n ')
+      USB_PRODUCT=$(cat "$udev/idProduct" 2>/dev/null | tr -d '\r\n ')
+      case "$USB_VENDOR:$USB_PRODUCT" in
+        8087:0a2a|0x8087:0x0a2a)
+          CHIP_TYPE="Intel"
+          return 0
+          ;;
+      esac
+    done
     attempt=$((attempt + 1))
     sleep 0.1
   done
@@ -958,21 +1027,28 @@ detect_chip_type
 
 case "$CHIP_TYPE" in
 "Unisoc")
-    echo Starting Unisoc Wi-Fi
+    echo Starting Unisoc Wi-Fi/BT
+    stop btlinux-1.0 2>/dev/null || true
     load_ko /vendor/lib/modules/cfg80211.ko
     load_ko /vendor/lib/modules/mac80211.ko
     load_ko /vendor/lib/modules/uwe5621_bsp_sdio.ko
     load_ko /vendor/lib/modules/sprdwl_ng.ko
     load_ko /vendor/lib/modules/sprdbt_tty.ko
+    chown bluetooth:bluetooth /dev/ttyBT0 /dev/ttyBT1 /sys/class/rfkill/rfkill1/state /sys/class/rfkill/rfkill1/type /proc/bluetooth/sleep/btwrite 2>/dev/null || true
+    start vendor.bluetooth-1-0 2>/dev/null || true
     ;;
 "Realtek")
-    echo Starting Realtek Wi-Fi
+    echo Starting Realtek Wi-Fi/BT
+    stop btlinux-1.0 2>/dev/null || true
     load_ko /vendor/lib/modules/cfg80211.ko
     load_ko /vendor/lib/modules/mac80211.ko
     load_ko /vendor/lib/modules/88x2es.ko
+    [ -e /dev/ttyS1 ] && chown bluetooth:bluetooth /dev/ttyS1 2>/dev/null && chmod 0660 /dev/ttyS1 2>/dev/null || true
+    start vendor.bluetooth-1-0 2>/dev/null || true
     ;;
 "Intel")
     echo Starting Intel Wi-Fi/BT
+    stop vendor.bluetooth-1-0 2>/dev/null || true
     for g in 482 493; do
       [ -d "/sys/class/gpio/gpio$g" ] || echo "$g" > /sys/class/gpio/export 2>/dev/null || true
       [ -w "/sys/class/gpio/gpio$g/direction" ] && echo high > "/sys/class/gpio/gpio$g/direction" 2>/dev/null || true
@@ -985,7 +1061,7 @@ case "$CHIP_TYPE" in
     load_ko /vendor/lib/backported_iwlwifi/iwlwifi.ko
     load_ko /vendor/lib/backported_iwlwifi/iwlmvm.ko
     hw=0
-    while [ $hw -lt 10 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do
+    while [ $hw -lt 20 ] && { [ ! -e /sys/class/bluetooth/hci0 ] || [ ! -d /sys/class/net/wlan0 ]; }; do
       hw=$((hw + 1))
       sleep 0.1
     done

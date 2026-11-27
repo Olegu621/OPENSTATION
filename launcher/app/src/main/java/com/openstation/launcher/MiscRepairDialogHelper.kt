@@ -38,9 +38,11 @@ internal class MiscRepairDialogHelper(
     private var selectedRev: String = "0008_00052"
     private var flashing: Boolean = false
     private var dismissedInSession: Boolean = false
+    private var lastState: JSONObject? = null
 
     fun handleDaemonState(mr: JSONObject?) {
         if (mr == null) return
+        lastState = mr
         val showPopup = mr.optBoolean("showPopup", false)
         val serverFlashing = mr.optBoolean("flashing", false)
         val serverDismissed = mr.optBoolean("dismissed", false)
@@ -60,6 +62,40 @@ internal class MiscRepairDialogHelper(
                 else -> "0008_00052"
             }
             showDialog(mr)
+        }
+    }
+
+    fun showManual() {
+        if (activity.isFinishing || activity.isDestroyed) return
+        if (dialog?.isShowing == true) return
+        thread(isDaemon = true) {
+            var fetched: JSONObject? = null
+            try {
+                val conn = (URL("http://127.0.0.1:8080/api/misc/status").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 1500
+                    readTimeout = 2000
+                }
+                if (conn.responseCode in 200..299) {
+                    val raw = conn.inputStream.bufferedReader().use { it.readText() }
+                    fetched = JSONObject(raw)
+                }
+                conn.disconnect()
+            } catch (_: Throwable) {}
+
+            val mr = fetched ?: lastState ?: JSONObject()
+            handler.post {
+                if (activity.isFinishing || activity.isDestroyed || dialog?.isShowing == true) return@post
+                lastState = mr
+                val rec = mr.optString("recommendedRevision", "").trim()
+                val cur = mr.optString("currentRevision", "").trim()
+                selectedRev = when {
+                    rec == "0008_00052" || rec == "00053" -> rec
+                    cur == "0008_00052" || cur == "00053" -> cur
+                    else -> "0008_00052"
+                }
+                showDialog(mr)
+            }
         }
     }
 
@@ -296,8 +332,9 @@ internal class MiscRepairDialogHelper(
         val btOk = mr.optBoolean("btOk", false)
         val dt = mr.optString("currentDtId", "?").ifBlank { "?" }
         val chip = when (mr.optString("chip", "unknown")) {
-            "intel" -> "Intel"
-            "realtek" -> "Realtek/Unisoc"
+            "intel" -> "Intel 7265"
+            "realtek" -> "Realtek 8822ES"
+            "unisoc" -> "Unisoc UWE5621"
             else -> "не определён"
         }
         val rec = mr.optString("recommendedRevision", "")

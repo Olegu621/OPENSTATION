@@ -68,6 +68,8 @@ openstation::hw::MiscPaths make_base_paths(const std::string& root) {
     p.sys_usb = root + "/sys/bus/usb/devices";
     p.sys_net = root + "/sys/class/net";
     p.sys_bluetooth = root + "/sys/class/bluetooth";
+    p.dev_tty_bt0 = root + "/dev/ttyBT0";
+    p.dev_tty_s1 = root + "/dev/ttyS1";
     p.misc_block_by_name = root + "/dev/block/misc";
     p.misc_block_fallback = root + "/dev/block/misc_fb";
     p.backup_path = root + "/data/misc_backup.img";
@@ -75,6 +77,7 @@ openstation::hw::MiscPaths make_base_paths(const std::string& root) {
     p.lock_dir_path = root + "/data/.misc_autofix.lock";
     p.wifi_power_bin = "";
     p.proc_cmdline_path = root + "/proc/cmdline";
+    p.check_hal_services = false;
     mkdir_p(p.sys_pci);
     mkdir_p(p.sys_sdio);
     mkdir_p(p.sys_usb);
@@ -252,6 +255,73 @@ int main() {
         assert(rep.current_misc_revision == "00053");
         assert(reboots == 1);
         assert(read_bytes(p.misc_block_by_name) == mod53_img);
+    }
+
+    // 9. Healthy 00053 Realtek (wlan0 + /dev/ttyS1 + rev375f, NO /sys/class/bluetooth/hci*) -> healthy NoOp
+    {
+        auto p = make_base_paths(root + "/t_healthy_rtl");
+        write_file(p.sys_sdio + "/mmc2:0001:1/vendor", "0x024c\n");
+        write_file(p.sys_sdio + "/mmc2:0001:1/device", "0xa822\n");
+        write_file(p.sys_net + "/wlan0/operstate", "up\n");
+        write_file(p.dev_tty_s1, "");
+        write_file(p.proc_cmdline_path, "androidboot.hardware.amlogic_dt_id=g12a_s905x2_rev375f\n");
+        write_bytes(p.misc_block_by_name, mod53_img);
+
+        auto diag = diagnose_misc_status(p, false);
+        assert(diag.chip == WirelessChip::Realtek);
+        assert(diag.wifi_ok && diag.bt_ok && diag.dt_matches);
+        assert(!diag.needs_repair);
+
+        auto rep = auto_repair_misc_if_needed(p, true, false);
+        assert(rep.action == MiscRepairAction::NoOp);
+        assert(!rep.wrote_flash);
+    }
+
+    // 10. Healthy 00053 Unisoc (wlan0 + /dev/ttyBT0 + rev375f, NO /sys/class/bluetooth/hci*) -> healthy NoOp
+    {
+        auto p = make_base_paths(root + "/t_healthy_uwe");
+        write_file(p.sys_sdio + "/mmc2:0001:1/vendor", "0x0000\n");
+        write_file(p.sys_sdio + "/mmc2:0001:1/device", "0x0000\n");
+        write_file(p.sys_net + "/wlan0/operstate", "up\n");
+        write_file(p.dev_tty_bt0, "");
+        write_file(p.proc_cmdline_path, "androidboot.hardware.amlogic_dt_id=g12a_s905x2_rev375f\n");
+        write_bytes(p.misc_block_by_name, mod53_img);
+
+        auto diag = diagnose_misc_status(p, false);
+        assert(diag.chip == WirelessChip::Unisoc);
+        assert(diag.wifi_ok && diag.bt_ok && diag.dt_matches);
+        assert(!diag.needs_repair);
+    }
+
+    // 11. Realtek 00053 with conflicting btlinux-1.0 HAL -> flagged as broken BT needing repair
+    {
+        auto p = make_base_paths(root + "/t_rtl_hal_conflict");
+        write_file(p.sys_sdio + "/mmc2:0001:1/vendor", "0x024c\n");
+        write_file(p.sys_sdio + "/mmc2:0001:1/device", "0xa822\n");
+        write_file(p.sys_net + "/wlan0/operstate", "up\n");
+        write_file(p.dev_tty_s1, "");
+        write_file(p.proc_cmdline_path, "androidboot.hardware.amlogic_dt_id=g12a_s905x2_rev375f\n");
+        p.service_state_hook = [](const std::string& svc) -> std::string {
+            return (svc == "btlinux-1.0") ? "running" : "stopped";
+        };
+        auto diag = diagnose_misc_status(p, false);
+        assert(!diag.bt_ok);
+        assert(diag.needs_repair);
+    }
+
+    // 12. Intel with hci0 present but conflicting vendor.bluetooth-1-0 running -> flagged as broken BT
+    {
+        auto p = make_base_paths(root + "/t_intel_hal_conflict");
+        write_file(p.sys_pci + "/0000:01:00.0/vendor", "0x8086\n");
+        write_file(p.sys_net + "/wlan0/operstate", "up\n");
+        write_file(p.sys_bluetooth + "/hci0/type", "1\n");
+        write_file(p.proc_cmdline_path, "androidboot.hardware.amlogic_dt_id=g12a_s905x2_rev35f\n");
+        p.service_state_hook = [](const std::string& svc) -> std::string {
+            return (svc == "vendor.bluetooth-1-0") ? "running" : "stopped";
+        };
+        auto diag = diagnose_misc_status(p, false);
+        assert(!diag.bt_ok);
+        assert(diag.needs_repair);
     }
 
     std::printf("ALL_MISC_REPAIR_TESTS_PASSED\n");

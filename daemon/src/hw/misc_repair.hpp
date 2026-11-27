@@ -51,6 +51,8 @@ struct MiscPaths {
     std::string sys_usb = "/sys/bus/usb/devices";
     std::string sys_net = "/sys/class/net";
     std::string sys_bluetooth = "/sys/class/bluetooth";
+    std::string dev_tty_bt0 = "/dev/ttyBT0";
+    std::string dev_tty_s1 = "/dev/ttyS1";
     std::string misc_block_by_name = "/dev/block/platform/ffe07000.emmc/by-name/misc";
     std::string misc_block_fallback = "/dev/block/misc";
     std::string backup_path = "/data/local/openstation/misc_backup.img";
@@ -60,6 +62,8 @@ struct MiscPaths {
     std::string proc_cmdline_path = "/proc/cmdline";
     std::string override_dt_id;
     std::function<bool()> wifi_power_hook;
+    std::function<std::string(const std::string&)> service_state_hook;
+    bool check_hal_services = true;
 };
 
 struct MiscRepairReport {
@@ -545,6 +549,57 @@ inline bool is_bt_hci_present(const MiscPaths& paths) {
     return found;
 }
 
+inline std::string query_bt_service_state(const MiscPaths& paths, const char* service_name) {
+    if (!service_name) return "";
+    if (paths.service_state_hook) {
+        return detail::trim_ascii(paths.service_state_hook(service_name));
+    }
+    if (!paths.check_hal_services) return "";
+#if defined(__ANDROID__)
+    char buf[PROP_VALUE_MAX] = {0};
+    const std::string prop = std::string("init.svc.") + service_name;
+    if (__system_property_get(prop.c_str(), buf) > 0) {
+        return detail::trim_ascii(buf);
+    }
+#else
+    (void)paths;
+#endif
+    return "";
+}
+
+/**
+ * Checks whether Bluetooth hardware is present for the detected wireless chip.
+ * Realtek (UART H5 on /dev/ttyS1) and Unisoc (char device /dev/ttyBT0 via sprdbt_tty)
+ * use Android vendor BT HALs in userspace and never create /sys/class/bluetooth/hci*.
+ */
+inline bool is_bt_hardware_present(const MiscPaths& paths, WirelessChip chip, bool dt_matches) {
+    const bool has_hci = is_bt_hci_present(paths);
+    const std::string btlinux_state = query_bt_service_state(paths, "btlinux-1.0");
+    const std::string vendor_bt_state = query_bt_service_state(paths, "vendor.bluetooth-1-0");
+
+    switch (chip) {
+        case WirelessChip::Intel:
+            if (!has_hci) return false;
+            if (vendor_bt_state == "running") return false;
+            return true;
+        case WirelessChip::Unisoc: {
+            const bool has_tty_bt0 = detail::path_exists_plain(paths.dev_tty_bt0);
+            if (!has_hci && !has_tty_bt0) return false;
+            if (btlinux_state == "running") return false;
+            return true;
+        }
+        case WirelessChip::Realtek: {
+            const bool has_uart_h5 = dt_matches && detail::path_exists_plain(paths.dev_tty_s1);
+            if (!has_hci && !has_uart_h5) return false;
+            if (btlinux_state == "running") return false;
+            return true;
+        }
+        case WirelessChip::Unknown:
+        default:
+            return has_hci;
+    }
+}
+
 inline bool dt_id_matches_target(MiscTarget target, const std::string& dt_id) {
     if (dt_id.empty() || target == MiscTarget::None) return true;
     const bool is_00053_dt =
@@ -585,16 +640,20 @@ inline std::string identify_misc_revision_from_bytes(const uint8_t* data, size_t
 inline MiscRepairReport diagnose_misc_status(const MiscPaths& paths = MiscPaths{}, bool allow_power_up = false) {
     MiscRepairReport report;
     report.wifi_ok = detail::path_exists_plain(paths.sys_net + "/wlan0");
-    report.bt_ok = is_bt_hci_present(paths);
     report.current_dt_id = read_current_dt_id(paths);
     report.current_revision = revision_for_dt_id(report.current_dt_id);
 
-    const bool probe_bus = allow_power_up && (!report.wifi_ok || !report.bt_ok);
-    report.chip = detect_wireless_chip(paths, probe_bus);
+    const WirelessChip initial_chip = detail::scan_buses_once(paths);
+    const bool initial_dt_matches = dt_id_matches_target(target_for_chip(initial_chip), report.current_dt_id);
+    const bool initial_bt_ok = is_bt_hardware_present(paths, initial_chip, initial_dt_matches);
+    const bool probe_bus = allow_power_up && (initial_chip == WirelessChip::Unknown) &&
+                           (!report.wifi_ok || !initial_bt_ok);
+    report.chip = probe_bus ? detect_wireless_chip(paths, true) : initial_chip;
     report.target = target_for_chip(report.chip);
     report.target_dt_id = target_dt_id(report.target);
     report.recommended_revision = revision_id_for_target(report.target);
     report.dt_matches = dt_id_matches_target(report.target, report.current_dt_id);
+    report.bt_ok = is_bt_hardware_present(paths, report.chip, report.dt_matches);
     report.block_device = resolve_misc_block_device(paths);
 
     report.current_misc_revision = "unknown";
@@ -619,7 +678,7 @@ inline MiscRepairReport diagnose_misc_status(const MiscPaths& paths = MiscPaths{
     } else if (!report.wifi_ok) {
         report.detail = "Wi-Fi адаптер (wlan0) не найден";
     } else if (!report.bt_ok) {
-        report.detail = "Bluetooth адаптер (hci0) не найден";
+        report.detail = "Bluetooth адаптер не обнаружен или конфликт BT HAL";
     } else if (!report.dt_matches) {
         report.detail = "Текущий DTB не совпадает с обнаруженным беспроводным чипом";
     } else {
@@ -788,8 +847,9 @@ inline MiscRepairReport flash_verified_misc_target(
     report.current_dt_id = read_current_dt_id(paths);
     report.current_revision = revision_for_dt_id(report.current_dt_id);
     report.wifi_ok = detail::path_exists_plain(paths.sys_net + "/wlan0");
-    report.bt_ok = is_bt_hci_present(paths);
     report.dt_matches = dt_id_matches_target(explicit_target, report.current_dt_id);
+    const bool chip_dt_matches = dt_id_matches_target(target_for_chip(report.chip), report.current_dt_id);
+    report.bt_ok = is_bt_hardware_present(paths, report.chip, chip_dt_matches);
     report.needs_repair = (!report.wifi_ok || !report.bt_ok || !report.dt_matches);
 
     detail::write_verified_misc_image_internal(
@@ -820,8 +880,8 @@ inline MiscRepairReport auto_repair_misc_if_needed(
     report.current_dt_id = read_current_dt_id(paths);
     report.current_revision = revision_for_dt_id(report.current_dt_id);
     report.wifi_ok = detail::path_exists_plain(paths.sys_net + "/wlan0");
-    report.bt_ok = is_bt_hci_present(paths);
     report.dt_matches = dt_id_matches_target(report.target, report.current_dt_id);
+    report.bt_ok = is_bt_hardware_present(paths, report.chip, report.dt_matches);
     report.needs_repair = (!report.wifi_ok || !report.bt_ok || !report.dt_matches);
 
     if (report.chip == WirelessChip::Unknown || report.target == MiscTarget::None) {

@@ -58,7 +58,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.35";
+constexpr const char* kFirmwareVersion = "1.6.36";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -338,70 +338,120 @@ void repair_wireless_hardware_if_needed() {
         struct stat st {};
         return ::stat(p, &st) == 0;
     };
-    auto trim_token = [](std::string s) {
-        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
-        return s;
-    };
-    bool has_intel_pci = false;
-    if (DIR* d = ::opendir("/sys/bus/pci/devices")) {
-        struct dirent* ent = nullptr;
-        while ((ent = ::readdir(d)) != nullptr) {
-            if (ent->d_name[0] == '.') continue;
-            std::string vp = std::string("/sys/bus/pci/devices/") + ent->d_name + "/vendor";
-            std::string v;
-            if (FILE* f = fopen(vp.c_str(), "r")) {
-                char buf[32] = {0};
-                if (fgets(buf, sizeof(buf), f)) v = trim_token(buf);
-                fclose(f);
-            }
-            if (v == "0x8086" || v == "8086") {
-                has_intel_pci = true;
-                break;
-            }
-        }
-        ::closedir(d);
-    }
-    if (!has_intel_pci) return;
-
     auto svc_state = [](const char* name) {
         char buf[PROP_VALUE_MAX] = {0};
         __system_property_get(name, buf);
-        return std::string(buf);
+        std::string s(buf);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+        return s;
     };
+
+    const auto chip = openstation::hw::detect_wireless_chip(openstation::hw::MiscPaths{}, /*try_wifi_power=*/true);
+    if (chip == openstation::hw::WirelessChip::Unknown) return;
+
     const bool had_wlan0 = path_exists("/sys/class/net/wlan0");
     const bool had_hci0 = path_exists("/sys/class/bluetooth/hci0");
+    const bool had_tty_bt0 = path_exists("/dev/ttyBT0");
+    const bool had_tty_s1 = path_exists("/dev/ttyS1");
     const bool had_btlinux = (svc_state("init.svc.btlinux-1.0") == "running");
-    if (had_wlan0 && had_hci0 && had_btlinux) return;
+    const bool had_vendor_bt = (svc_state("init.svc.vendor.bluetooth-1-0") == "running");
 
-    LOGW("Hardware", "Detected Intel PCIe card without active Wi-Fi/BT (wlan0=%d hci0=%d btlinux=%d); repairing",
-         had_wlan0 ? 1 : 0, had_hci0 ? 1 : 0, had_btlinux ? 1 : 0);
+    if (chip == openstation::hw::WirelessChip::Intel) {
+        if (had_wlan0 && had_hci0 && had_btlinux && !had_vendor_bt) return;
 
-    const char* repair_sh =
-        "for g in 482 493; do "
-        "  [ -d /sys/class/gpio/gpio$g ] || echo $g > /sys/class/gpio/export 2>/dev/null || true; "
-        "  [ -w /sys/class/gpio/gpio$g/direction ] && echo high > /sys/class/gpio/gpio$g/direction 2>/dev/null || true; "
-        "done; "
-        "for m in /vendor/lib/modules/btintel.ko /vendor/lib/modules/btusb.ko "
-        "  /vendor/lib/backported_iwlwifi/compat.ko /vendor/lib/backported_iwlwifi/cfg80211.ko "
-        "  /vendor/lib/backported_iwlwifi/mac80211.ko /vendor/lib/backported_iwlwifi/iwlwifi.ko "
-        "  /vendor/lib/backported_iwlwifi/iwlmvm.ko; do "
-        "  b=$(basename \"$m\" .ko); "
-        "  [ -f \"$m\" ] && ! grep -q \"^${b} \" /proc/modules 2>/dev/null && insmod \"$m\" 2>/dev/null || true; "
-        "done; "
-        "i=0; while [ $i -lt 15 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do i=$((i+1)); sleep 0.1; done; "
-        "if [ \"$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\\r\\n')\" = \"running\" ]; then stop vendor.bluetooth-1-0 2>/dev/null || true; fi; "
-        "if [ \"$(getprop init.svc.btlinux-1.0 | tr -d '\\r\\n')\" != \"running\" ]; then start btlinux-1.0 2>/dev/null || true; fi";
+        LOGW("Hardware", "Repairing Intel wireless stack (wlan0=%d hci0=%d btlinux=%d vendor_bt=%d)",
+             had_wlan0 ? 1 : 0, had_hci0 ? 1 : 0, had_btlinux ? 1 : 0, had_vendor_bt ? 1 : 0);
 
-    int status = std::system(repair_sh);
-    (void)status;
+        const char* repair_sh =
+            "if [ \"$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\\r\\n')\" = \"running\" ]; then stop vendor.bluetooth-1-0 2>/dev/null || true; fi; "
+            "for g in 482 493; do "
+            "  [ -d /sys/class/gpio/gpio$g ] || echo $g > /sys/class/gpio/export 2>/dev/null || true; "
+            "  [ -w /sys/class/gpio/gpio$g/direction ] && echo high > /sys/class/gpio/gpio$g/direction 2>/dev/null || true; "
+            "done; "
+            "for m in /vendor/lib/modules/btintel.ko /vendor/lib/modules/btusb.ko "
+            "  /vendor/lib/backported_iwlwifi/compat.ko /vendor/lib/backported_iwlwifi/cfg80211.ko "
+            "  /vendor/lib/backported_iwlwifi/mac80211.ko /vendor/lib/backported_iwlwifi/iwlwifi.ko "
+            "  /vendor/lib/backported_iwlwifi/iwlmvm.ko; do "
+            "  b=$(basename \"$m\" .ko); "
+            "  [ -f \"$m\" ] && ! grep -q \"^${b} \" /proc/modules 2>/dev/null && insmod \"$m\" 2>/dev/null || true; "
+            "done; "
+            "i=0; while [ $i -lt 20 ] && { [ ! -e /sys/class/bluetooth/hci0 ] || [ ! -d /sys/class/net/wlan0 ]; }; do i=$((i+1)); sleep 0.1; done; "
+            "if [ \"$(getprop init.svc.btlinux-1.0 | tr -d '\\r\\n')\" != \"running\" ]; then start btlinux-1.0 2>/dev/null || true; fi";
 
-    if (!had_wlan0 && path_exists("/sys/class/net/wlan0")) {
-        std::system("/system/bin/svc wifi disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc wifi enable >/dev/null 2>&1");
-        LOGI("Hardware", "Intel wlan0 restored and Wi-Fi service refreshed");
+        int status = std::system(repair_sh);
+        (void)status;
+
+        if (!had_wlan0 && path_exists("/sys/class/net/wlan0")) {
+            std::system("/system/bin/svc wifi disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc wifi enable >/dev/null 2>&1");
+            LOGI("Hardware", "Intel wlan0 restored and Wi-Fi service refreshed");
+        }
+        if ((!had_btlinux || had_vendor_bt || !had_hci0) && path_exists("/sys/class/bluetooth/hci0")) {
+            std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
+            LOGI("Hardware", "Intel BT HAL (btlinux-1.0) restored and Bluetooth service refreshed");
+        }
+        return;
     }
-    if (!had_btlinux && path_exists("/sys/class/bluetooth/hci0")) {
-        std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
-        LOGI("Hardware", "Intel BT HAL (btlinux-1.0) restored and Bluetooth service refreshed");
+
+    if (chip == openstation::hw::WirelessChip::Realtek) {
+        if (had_wlan0 && !had_btlinux && had_vendor_bt && had_tty_s1) return;
+
+        LOGW("Hardware", "Repairing Realtek RTL8822ES wireless stack (wlan0=%d ttyS1=%d btlinux=%d vendor_bt=%d)",
+             had_wlan0 ? 1 : 0, had_tty_s1 ? 1 : 0, had_btlinux ? 1 : 0, had_vendor_bt ? 1 : 0);
+
+        const char* repair_sh =
+            "if [ \"$(getprop init.svc.btlinux-1.0 | tr -d '\\r\\n')\" = \"running\" ]; then stop btlinux-1.0 2>/dev/null || true; fi; "
+            "[ -x /vendor/bin/wifi_power ] && /vendor/bin/wifi_power 1 >/dev/null 2>&1 || true; "
+            "for m in /vendor/lib/modules/cfg80211.ko /vendor/lib/modules/mac80211.ko /vendor/lib/modules/88x2es.ko; do "
+            "  b=$(basename \"$m\" .ko); "
+            "  [ -f \"$m\" ] && ! grep -q \"^${b} \" /proc/modules 2>/dev/null && insmod \"$m\" 2>/dev/null || true; "
+            "done; "
+            "i=0; while [ $i -lt 15 ] && [ ! -d /sys/class/net/wlan0 ]; do i=$((i+1)); sleep 0.1; done; "
+            "[ -e /dev/ttyS1 ] && chown bluetooth:bluetooth /dev/ttyS1 2>/dev/null && chmod 0660 /dev/ttyS1 2>/dev/null || true; "
+            "if [ \"$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\\r\\n')\" != \"running\" ]; then start vendor.bluetooth-1-0 2>/dev/null || true; fi";
+
+        int status = std::system(repair_sh);
+        (void)status;
+
+        if (!had_wlan0 && path_exists("/sys/class/net/wlan0")) {
+            std::system("/system/bin/svc wifi disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc wifi enable >/dev/null 2>&1");
+            LOGI("Hardware", "Realtek wlan0 restored and Wi-Fi service refreshed");
+        }
+        if ((had_btlinux || !had_vendor_bt) && path_exists("/dev/ttyS1")) {
+            std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
+            LOGI("Hardware", "Realtek BT HAL (vendor.bluetooth-1-0) restored and Bluetooth service refreshed");
+        }
+        return;
+    }
+
+    if (chip == openstation::hw::WirelessChip::Unisoc) {
+        if (had_wlan0 && had_tty_bt0 && !had_btlinux && had_vendor_bt) return;
+
+        LOGW("Hardware", "Repairing Unisoc UWE5621 wireless stack (wlan0=%d ttyBT0=%d btlinux=%d vendor_bt=%d)",
+             had_wlan0 ? 1 : 0, had_tty_bt0 ? 1 : 0, had_btlinux ? 1 : 0, had_vendor_bt ? 1 : 0);
+
+        const char* repair_sh =
+            "if [ \"$(getprop init.svc.btlinux-1.0 | tr -d '\\r\\n')\" = \"running\" ]; then stop btlinux-1.0 2>/dev/null || true; fi; "
+            "[ -x /vendor/bin/wifi_power ] && /vendor/bin/wifi_power 1 >/dev/null 2>&1 || true; "
+            "for m in /vendor/lib/modules/cfg80211.ko /vendor/lib/modules/mac80211.ko "
+            "  /vendor/lib/modules/uwe5621_bsp_sdio.ko /vendor/lib/modules/sprdwl_ng.ko /vendor/lib/modules/sprdbt_tty.ko; do "
+            "  b=$(basename \"$m\" .ko); "
+            "  [ -f \"$m\" ] && ! grep -q \"^${b} \" /proc/modules 2>/dev/null && insmod \"$m\" 2>/dev/null || true; "
+            "done; "
+            "i=0; while [ $i -lt 15 ] && { [ ! -d /sys/class/net/wlan0 ] || [ ! -e /dev/ttyBT0 ]; }; do i=$((i+1)); sleep 0.1; done; "
+            "chown bluetooth:bluetooth /dev/ttyBT0 /dev/ttyBT1 /sys/class/rfkill/rfkill1/state /sys/class/rfkill/rfkill1/type /proc/bluetooth/sleep/btwrite 2>/dev/null || true; "
+            "if [ \"$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\\r\\n')\" != \"running\" ]; then start vendor.bluetooth-1-0 2>/dev/null || true; fi";
+
+        int status = std::system(repair_sh);
+        (void)status;
+
+        if (!had_wlan0 && path_exists("/sys/class/net/wlan0")) {
+            std::system("/system/bin/svc wifi disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc wifi enable >/dev/null 2>&1");
+            LOGI("Hardware", "Unisoc wlan0 restored and Wi-Fi service refreshed");
+        }
+        if ((had_btlinux || !had_tty_bt0 || !had_vendor_bt) && path_exists("/dev/ttyBT0")) {
+            std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
+            LOGI("Hardware", "Unisoc BT HAL (vendor.bluetooth-1-0) restored and Bluetooth service refreshed");
+        }
     }
 }
 
@@ -427,7 +477,7 @@ openstation::hw::MiscRepairReport refresh_misc_repair_status(bool allow_power_up
     return g_misc_repair_state.report;
 }
 
-openstation::json::Value build_misc_repair_json(int64_t /*uptime_sec*/) {
+openstation::json::Value build_misc_repair_json(int64_t uptime_sec) {
     using openstation::json::Value;
     openstation::hw::MiscRepairReport rep;
     bool init = false;
@@ -444,14 +494,20 @@ openstation::json::Value build_misc_repair_json(int64_t /*uptime_sec*/) {
         flash_status = g_misc_repair_state.flash_status;
         flash_error = g_misc_repair_state.flash_error;
     }
+    const bool show_popup =
+        init && rep.needs_repair && !dismissed && !flashing &&
+        (flash_status != "flashed_rebooting") &&
+        (uptime_sec >= 12) &&
+        (rep.chip == openstation::hw::WirelessChip::Unknown ||
+         rep.reboot_suppressed_by_guard ||
+         !rep.wifi_ok || !rep.bt_ok || !rep.dt_matches);
     Value mr = Value::make_obj();
     mr["initialized"] = Value::make_bool(init);
     mr["wifiOk"] = Value::make_bool(rep.wifi_ok);
     mr["btOk"] = Value::make_bool(rep.bt_ok);
     mr["dtMatches"] = Value::make_bool(rep.dt_matches);
     mr["needsRepair"] = Value::make_bool(rep.needs_repair);
-    // Keep the diagnosis available on demand without interrupting the TV or web UI.
-    mr["showPopup"] = Value::make_bool(false);
+    mr["showPopup"] = Value::make_bool(show_popup);
     mr["dismissed"] = Value::make_bool(dismissed);
     mr["flashing"] = Value::make_bool(flashing);
     mr["chip"] = Value::make_str(openstation::hw::chip_name(rep.chip));
@@ -471,11 +527,54 @@ void startup_misc_and_wireless_hardware() {
     refresh_misc_repair_status(/*allow_power_up=*/true);
     repair_wireless_hardware_if_needed();
     auto rep = refresh_misc_repair_status(/*allow_power_up=*/false);
-    if (rep.needs_repair) {
-        LOGW("Hardware",
-             "Wireless hardware requires misc check (wifi=%d bt=%d chip=%s cur_dt=%s rec_rev=%s) — waiting for user confirmation",
-             rep.wifi_ok ? 1 : 0, rep.bt_ok ? 1 : 0,
-             openstation::hw::chip_name(rep.chip), rep.current_dt_id.c_str(), rep.recommended_revision.c_str());
+    if (!rep.needs_repair) {
+        return;
+    }
+
+    LOGW("Hardware",
+         "Wireless hardware check flagged mismatch/failure (wifi=%d bt=%d dt_match=%d chip=%s cur_dt=%s rec_rev=%s)",
+         rep.wifi_ok ? 1 : 0, rep.bt_ok ? 1 : 0, rep.dt_matches ? 1 : 0,
+         openstation::hw::chip_name(rep.chip), rep.current_dt_id.c_str(), rep.recommended_revision.c_str());
+
+    if (rep.chip == openstation::hw::WirelessChip::Unknown) {
+        LOGW("Hardware", "Chip could not be probed automatically; surfacing manual revision selector");
+        return;
+    }
+
+    bool should_reboot = false;
+    auto fix = openstation::hw::auto_repair_misc_if_needed(
+        openstation::hw::MiscPaths{},
+        /*allow_reboot=*/true,
+        /*force=*/false,
+        [&]() { should_reboot = true; });
+
+    {
+        std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+        if (!g_misc_repair_state.flashing) {
+            g_misc_repair_state.report = fix;
+            g_misc_repair_state.initialized = true;
+            if (should_reboot && fix.action == openstation::hw::MiscRepairAction::UpdatedAndReboot) {
+                g_misc_repair_state.flash_status = "flashed_rebooting";
+            } else if (fix.action == openstation::hw::MiscRepairAction::Failed) {
+                g_misc_repair_state.flash_status = "failed";
+                g_misc_repair_state.flash_error = fix.detail;
+            }
+        }
+    }
+
+    if (should_reboot && fix.action == openstation::hw::MiscRepairAction::UpdatedAndReboot) {
+        LOGW("Hardware", "Auto-repaired misc (%s -> %s); rebooting to apply matching DTB...",
+             openstation::hw::chip_name(fix.chip), fix.target_dt_id.c_str());
+        ::sync();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        ::sync();
+        const int rc = std::system("/system/bin/reboot >/dev/null 2>&1");
+        (void)rc;
+    } else if (fix.reboot_suppressed_by_guard) {
+        LOGW("Hardware", "Auto-repair reboot suppressed by loop guard (%s); user confirmation enabled",
+             fix.detail.c_str());
+    } else if (fix.action == openstation::hw::MiscRepairAction::Failed) {
+        LOGW("Hardware", "Auto-repair misc failed: %s", fix.detail.c_str());
     }
 }
 

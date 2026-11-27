@@ -52,7 +52,10 @@ goto CHECK_RC
 :SELECT_REV_WIPE
 set "REV_PARAM=auto"
 echo.
-echo   Ревизия Станции: [1] Авто  [2] 0008 / 00052  [3] 00053
+echo   Ревизия Станции (см. наклейку на дне):
+echo     [1] Не знаю / не менять misc (безопасно по умолчанию)
+echo     [2] YNDX-0008 / YNDX-00052 (Intel Wi-Fi/BT)
+echo     [3] YNDX-00053 (Realtek / Unisoc Wi-Fi/BT)
 set /p "R_CHOICE=Выберите ревизию [1-3] (Enter = 1): "
 if "%R_CHOICE%"=="2" set "REV_PARAM=0008"
 if "%R_CHOICE%"=="3" set "REV_PARAM=00053"
@@ -62,7 +65,10 @@ goto CHECK_RC
 :SELECT_REV_KEEP
 set "REV_PARAM=auto"
 echo.
-echo   Ревизия Станции: [1] Авто  [2] 0008 / 00052  [3] 00053
+echo   Ревизия Станции (см. наклейку на дне):
+echo     [1] Не знаю / не менять misc (безопасно по умолчанию)
+echo     [2] YNDX-0008 / YNDX-00052 (Intel Wi-Fi/BT)
+echo     [3] YNDX-00053 (Realtek / Unisoc Wi-Fi/BT)
 set /p "R_CHOICE=Выберите ревизию [1-3] (Enter = 1): "
 if "%R_CHOICE%"=="2" set "REV_PARAM=0008"
 if "%R_CHOICE%"=="3" set "REV_PARAM=00053"

@@ -74,12 +74,13 @@ namespace OpenStationFlasher
     public class MainWindow : Window
     {
         private const string FW_VERSION = "v1.6.3";
-        private const string INSTALLER_VERSION = "1.3.8";
+        private const string INSTALLER_VERSION = "1.3.9";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
         private bool _logVisible = false;
         private bool _closing = false;
+        private string _selectedRevision = "auto";
 
         // Paths resolved dynamically (supports both cloned repo & standalone .exe)
         private string _repoRoot = "";
@@ -95,6 +96,9 @@ namespace OpenStationFlasher
         private Border _pillConnBorder;
         private TextBlock _pillRomVal;
         private Border _pillRomBorder;
+        private Border _revCard0008;
+        private Border _revCard00053;
+        private Border _revCardAuto;
         private TextBlock _txtProgressStage;
         private TextBlock _txtProgressPct;
         private ProgressBar _progressBar;
@@ -112,9 +116,9 @@ namespace OpenStationFlasher
         {
             Title = "OpenStation USB • Станция Макс";
             Width = 740;
-            Height = 520;
+            Height = 610;
             MinWidth = 680;
-            MinHeight = 470;
+            MinHeight = 560;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ResizeMode = ResizeMode.CanMinimize;
             Background = CreateWindowBackground();
@@ -136,7 +140,7 @@ namespace OpenStationFlasher
             if (el == null) return;
             this.Content = null;
             int w = 730;
-            int h = 490;
+            int h = 580;
             el.Width = w;
             el.Height = h;
             el.Measure(new Size(w, h));
@@ -392,6 +396,50 @@ namespace OpenStationFlasher
             card.Child = cardStack;
             centerStack.Children.Add(card);
 
+            // Board Revision Selector Card
+            var revBox = new Border
+            {
+                Margin = new Thickness(0, 12, 0, 0),
+                Padding = new Thickness(16, 11, 16, 12),
+                CornerRadius = new CornerRadius(14),
+                Background = new SolidColorBrush(Color.FromArgb(170, 20, 18, 42)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                BorderThickness = new Thickness(1)
+            };
+            var revStack = new StackPanel();
+            revStack.Children.Add(new TextBlock
+            {
+                Text = "Ревизия платы (см. модель на наклейке снизу станции)",
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            var revGrid = new Grid();
+            revGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            revGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            revGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            _revCard0008 = CreateRevisionOption("YNDX-0008 / 00052", "Intel Wi-Fi/BT · misc.img", "0008");
+            _revCard0008.Margin = new Thickness(0, 0, 5, 0);
+            Grid.SetColumn(_revCard0008, 0);
+            revGrid.Children.Add(_revCard0008);
+
+            _revCard00053 = CreateRevisionOption("YNDX-00053", "Realtek/Unisoc · misc_00053", "00053");
+            _revCard00053.Margin = new Thickness(3, 0, 3, 0);
+            Grid.SetColumn(_revCard00053, 1);
+            revGrid.Children.Add(_revCard00053);
+
+            _revCardAuto = CreateRevisionOption("Не знаю / Авто", "Не менять misc · автофикс", "auto");
+            _revCardAuto.Margin = new Thickness(5, 0, 0, 0);
+            Grid.SetColumn(_revCardAuto, 2);
+            revGrid.Children.Add(_revCardAuto);
+
+            revStack.Children.Add(revGrid);
+            revBox.Child = revStack;
+            centerStack.Children.Add(revBox);
+            SelectRevision("auto");
+
             // Progress Area
             _progressCard = new Border
             {
@@ -516,6 +564,58 @@ namespace OpenStationFlasher
             Content = root;
         }
 
+        private Border CreateRevisionOption(string title, string sub, string revKey)
+        {
+            var box = new Border
+            {
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(10, 7, 10, 8),
+                Background = new SolidColorBrush(Color.FromArgb(90, 15, 23, 42)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand
+            };
+            var sp = new StackPanel();
+            sp.Children.Add(new TextBlock
+            {
+                Text = title,
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White
+            });
+            sp.Children.Add(new TextBlock
+            {
+                Text = sub,
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                Margin = new Thickness(0, 2, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+            box.Child = sp;
+            box.MouseLeftButtonUp += (s, e) => { if (!_isBusy) SelectRevision(revKey); };
+            return box;
+        }
+
+        private void SelectRevision(string revKey)
+        {
+            _selectedRevision = revKey;
+            ApplyRevStyle(_revCard0008, revKey == "0008");
+            ApplyRevStyle(_revCard00053, revKey == "00053");
+            ApplyRevStyle(_revCardAuto, revKey == "auto");
+        }
+
+        private static void ApplyRevStyle(Border card, bool selected)
+        {
+            if (card == null) return;
+            card.Background = new SolidColorBrush(selected
+                ? Color.FromArgb(165, 49, 46, 129)
+                : Color.FromArgb(90, 15, 23, 42));
+            card.BorderBrush = new SolidColorBrush(selected
+                ? Color.FromRgb(129, 140, 248)
+                : Color.FromArgb(30, 255, 255, 255));
+            card.BorderThickness = new Thickness(selected ? 1.5 : 1);
+        }
+
         private Border CreateDiagPill(string label, string initVal, out TextBlock valueOut)
         {
             var box = new Border
@@ -595,7 +695,7 @@ namespace OpenStationFlasher
             _logVisible = forceShow.HasValue ? forceShow.Value : !_logVisible;
             _logDrawer.Visibility = _logVisible ? Visibility.Visible : Visibility.Collapsed;
             _txtToggleLog.Text = _logVisible ? "Скрыть лог" : "Показать лог";
-            Height = _logVisible ? 670 : 520;
+            Height = _logVisible ? 760 : 610;
         }
 
         private void AppendLog(string line)
@@ -1055,11 +1155,19 @@ namespace OpenStationFlasher
         {
             if (!snap.UsbConnected)
                 throw new Exception("Подключите Станцию Макс по сервисному USB и повторите попытку.");
+            string selectedRev = "auto";
+            Dispatcher.Invoke(() => selectedRev = _selectedRevision);
+            string revSummary = selectedRev == "0008"
+                ? "YNDX-0008 / 00052 (Intel -> запись misc.img)"
+                : (selectedRev == "00053"
+                    ? "YNDX-00053 (Realtek/Unisoc -> запись misc_00053.img)"
+                    : "Не выбрана / Авто (раздел misc не перезаписывается)");
             bool proceed = false;
             Dispatcher.Invoke(() =>
             {
                 proceed = MessageBox.Show(
                     "Установка OpenStation Max\n\n" +
+                    "Ревизия: " + revSummary + "\n" +
                     "Будут перезаписаны системные разделы. Подключайте только Станцию Макс; " +
                     "убедитесь, что доступен проверенный способ восстановления. Продолжить?",
                     "Установка OpenStation", MessageBoxButton.YesNo,
@@ -1076,15 +1184,15 @@ namespace OpenStationFlasher
                 using (var dest = new FileStream(engine, FileMode.Create, FileAccess.Write, FileShare.None))
                     source.CopyTo(dest);
             }
-            AppendLog("Запуск встроенного модуля прошивки. Не отключайте питание и кабель.");
-            string engineArgs = "--flash";
+            AppendLog("Запуск встроенного модуля прошивки (" + revSummary + "). Не отключайте питание и кабель.");
+            string engineArgs = "--flash --revision " + selectedRev;
             if (!string.IsNullOrEmpty(snap.LocalRomDir) && Directory.Exists(snap.LocalRomDir))
             {
                 string mfVer = ReadRomManifestVersion(snap.LocalRomDir);
                 if (string.IsNullOrEmpty(mfVer) || IsVersionAtLeast(mfVer, FW_VERSION))
                 {
                     AppendLog("Используется локальный образ ROM: " + snap.LocalRomDir);
-                    engineArgs = "--flash --rom-dir \"" + snap.LocalRomDir.Replace("\"", "\\\"") + "\"";
+                    engineArgs = "--flash --revision " + selectedRev + " --rom-dir \"" + snap.LocalRomDir.Replace("\"", "\\\"") + "\"";
                 }
                 else
                 {

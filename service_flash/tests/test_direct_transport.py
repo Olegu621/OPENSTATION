@@ -219,13 +219,20 @@ class TransportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             for name in ('vbmeta.img', 'vendor.img', 'system.img'):
                 open(os.path.join(folder, name), 'wb').close()
-            args = argparse.Namespace(rom_dir=folder)
+            args_explicit = argparse.Namespace(rom_dir=folder, revision='00053')
             calls = []
             with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=lambda name, *args: calls.append(name)), patch.object(f, 'run_after_ubt', side_effect=lambda: calls.append('after_ubt')):
-                f.run_flash(args)
+                f.run_flash(args_explicit)
             self.assertEqual(calls, ['boot', 'dtbo', 'odm', 'product', 'vbmeta', 'vendor', 'system', 'misc', 'after_ubt'])
+
+            calls_auto = []
+            args_auto = argparse.Namespace(rom_dir=folder, revision='auto')
+            with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=lambda name, *args: calls_auto.append(name)), patch.object(f, 'run_after_ubt', side_effect=lambda: calls_auto.append('after_ubt')):
+                f.run_flash(args_auto)
+            self.assertEqual(calls_auto, ['boot', 'dtbo', 'odm', 'product', 'vbmeta', 'vendor', 'system', 'after_ubt'])
+
             with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=RuntimeError('failed')), patch.object(f, 'run_after_ubt') as finish:
-                with self.assertRaises(RuntimeError): f.run_flash(args)
+                with self.assertRaises(RuntimeError): f.run_flash(args_explicit)
                 finish.assert_not_called()
 
     def test_verify_rom_uses_manifest_when_present_and_rejects_mismatch(self):
@@ -292,10 +299,12 @@ class TransportTests(unittest.TestCase):
         p_00052 = f.resolve_misc_image('00052')
         p_00053 = f.resolve_misc_image('00053')
         p_auto = f.resolve_misc_image('auto')
+        p_skip = f.resolve_misc_image('skip')
         self.assertEqual(os.path.basename(p_0008), 'misc.img')
         self.assertEqual(os.path.basename(p_00052), 'misc.img')
         self.assertEqual(os.path.basename(p_00053), 'misc_00053.img')
-        self.assertEqual(os.path.basename(p_auto), 'misc_00053.img')
+        self.assertIsNone(p_auto)
+        self.assertIsNone(p_skip)
 
     def test_bootrom_password_required_aborts_before_bl2_write(self):
         from pyamlboot_local import proto
