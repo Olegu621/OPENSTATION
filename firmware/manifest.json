@@ -1,46 +1,46 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.39",
+  "version": "1.6.40",
   "autonomous": true,
-  "changelog": "Новый кинематографичный дизайн скринсейвера: 5 живых миров (Северное сияние, Биолюминесценция океана, Золотые Доломиты, Туманный лес, Пульсар Станции), асимметричные часы со счётчиком секунд и живой погодой, Liquid Glass карточка «Сейчас играет» со спектром в цвете обложки и быстрым переключением сцен пульт-кнопками ◀ ▶.",
-  "buildTimeUtc": "2026-11-27T16:31:17Z",
+  "changelog": "Новый кинематографичный дизайн скринсейвера: 5 живых миров (Северное сияние, Биолюминесценция океана, Золотые Доломиты, Тёмный лес, Планета Земля 60fps), асимметричные часы со счётчиком секунд и живой погодой, Liquid Glass карточка «Сейчас играет» со спектром в цвете обложки и быстрым переключением сцен пульт-кнопками ◀ ▶.",
+  "buildTimeUtc": "2026-11-27T17:11:02Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
       "size": 3617984,
-      "sha256": "9210285c6757aa68c06cc0f6e915eb95d9127fbb281874d6e084fb63323c8462",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.39/openstationd"
+      "sha256": "9e20f77b1cba23c63cb2e07e77eb4b99f575526cc1d26e8c7a803a371191e550",
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.40/openstationd"
     },
     "bootlogod": {
       "fileName": "bootlogod",
       "size": 657728,
       "sha256": "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.39/bootlogod"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.40/bootlogod"
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
-      "size": 30992199,
-      "sha256": "20b4c3d37f6efccfb72a369e0ffe2e4d05149ab87a00ec189040c14bd18711c6",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.39/OpenStationLauncher.apk"
+      "size": 31251455,
+      "sha256": "92304434faf7adec2026ad8d0f9023695c867312bbb2de68db37c985b249a125",
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.40/OpenStationLauncher.apk"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",
       "size": 808866,
       "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.39/OpenStationIME.apk"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.40/OpenStationIME.apk"
     },
     "bootanimation": {
       "fileName": "bootanimation.zip",
       "size": 6725707,
       "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.39/bootanimation.zip"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.40/bootanimation.zip"
     },
     "bootlogo": {
       "fileName": "logo.img",
       "size": 2252608,
       "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.39/logo.img"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.40/logo.img"
     }
   }
 }

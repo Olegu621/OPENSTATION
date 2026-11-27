@@ -16,7 +16,7 @@ class ScreensaverScenesTest {
     @Test fun preferenceCyclesThroughAutoAndAllScenes() {
         assertEquals(ScreensaverScenes.SCENE_AUTO, ScreensaverScenes.normalizePreference("unknown"))
         assertEquals(ScreensaverScenes.SCENE_AURORA, ScreensaverScenes.nextPreference(ScreensaverScenes.SCENE_AUTO))
-        assertEquals(ScreensaverScenes.SCENE_AUTO, ScreensaverScenes.nextPreference(ScreensaverScenes.SCENE_COSMOS_PULSE))
+        assertEquals(ScreensaverScenes.SCENE_AUTO, ScreensaverScenes.nextPreference(ScreensaverScenes.SCENE_PLANET_EARTH))
     }
 
     @Test fun weatherFormattingHandlesSignIconsAndNullWhenInvalid() {

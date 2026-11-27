@@ -10,7 +10,7 @@ object ScreensaverScenes {
     const val SCENE_BIOLUMINESCENT = "bioluminescent"
     const val SCENE_DOLOMITES = "dolomites"
     const val SCENE_MIST_FOREST = "mist_forest"
-    const val SCENE_COSMOS_PULSE = "cosmos_pulse"
+    const val SCENE_PLANET_EARTH = "earth_orbit"
 
     data class SceneSpec(
         val id: String,
@@ -44,17 +44,17 @@ object ScreensaverScenes {
         ),
         SceneSpec(
             id = SCENE_MIST_FOREST,
-            title = "Туманный лес",
-            subtitle = "Живое видео 60fps · Лучи света",
-            accentHex = "#6EE7B7",
-            secondaryHex = "#38BDF8"
+            title = "Тёмный лес",
+            subtitle = "Вековые ели · Ночной туман",
+            accentHex = "#34D399",
+            secondaryHex = "#0EA5E9"
         ),
         SceneSpec(
-            id = SCENE_COSMOS_PULSE,
-            title = "Пульсар Станции",
-            subtitle = "Живая сфера · Реакция на звук",
+            id = SCENE_PLANET_EARTH,
+            title = "Планета Земля",
+            subtitle = "Вид с орбиты · Живое 60fps видео",
             accentHex = "#38BDF8",
-            secondaryHex = "#E8C686"
+            secondaryHex = "#818CF8"
         )
     )
 

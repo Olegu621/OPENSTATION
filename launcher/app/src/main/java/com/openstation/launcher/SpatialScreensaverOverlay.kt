@@ -195,7 +195,7 @@ class SpatialScreensaverOverlay(
             }
         }
 
-        // Layer 0: Video backdrop (for live 60fps mist forest) + solid noir floor behind photos/cosmos
+        // Layer 0: Video backdrop (for live 60fps Earth orbit) + solid noir floor behind photos
         videoBackground = VideoBackdropView(context).apply {
             visibility = View.GONE
         }
@@ -829,26 +829,27 @@ class SpatialScreensaverOverlay(
             ScreensaverScenes.SCENE_AURORA -> R.drawable.saver_aurora
             ScreensaverScenes.SCENE_BIOLUMINESCENT -> R.drawable.saver_bioluminescent
             ScreensaverScenes.SCENE_DOLOMITES -> R.drawable.saver_dolomites
-            else -> 0
+            ScreensaverScenes.SCENE_MIST_FOREST -> R.drawable.saver_forest
+            else -> R.drawable.saver_aurora
         }
 
-        if (scene.id == ScreensaverScenes.SCENE_MIST_FOREST) {
+        if (scene.id == ScreensaverScenes.SCENE_PLANET_EARTH) {
             rootOverlay.setBackgroundColor(Color.TRANSPARENT)
             solidBackdrop.animate().alpha(0f).setDuration(if (immediate) 0L else 600L).withEndAction {
-                if (isOpen && currentScene.id == ScreensaverScenes.SCENE_MIST_FOREST) solidBackdrop.visibility = View.GONE
+                if (isOpen && currentScene.id == ScreensaverScenes.SCENE_PLANET_EARTH) solidBackdrop.visibility = View.GONE
             }.start()
             ivPhotoA.animate().alpha(0f).setDuration(if (immediate) 0L else 650L).withEndAction {
-                if (currentScene.id == ScreensaverScenes.SCENE_MIST_FOREST) ivPhotoA.visibility = View.GONE
+                if (currentScene.id == ScreensaverScenes.SCENE_PLANET_EARTH) ivPhotoA.visibility = View.GONE
             }.start()
             ivPhotoB.animate().alpha(0f).setDuration(if (immediate) 0L else 650L).withEndAction {
-                if (currentScene.id == ScreensaverScenes.SCENE_MIST_FOREST) ivPhotoB.visibility = View.GONE
+                if (currentScene.id == ScreensaverScenes.SCENE_PLANET_EARTH) ivPhotoB.visibility = View.GONE
             }.start()
 
             fadeCurtain.alpha = 1f
             fadeCurtain.visibility = View.VISIBLE
             videoBackground.setRunning(true)
             fadeCurtain.postDelayed({
-                if (isOpen && currentScene.id == ScreensaverScenes.SCENE_MIST_FOREST && fadeCurtain.visibility == View.VISIBLE) {
+                if (isOpen && currentScene.id == ScreensaverScenes.SCENE_PLANET_EARTH && fadeCurtain.visibility == View.VISIBLE) {
                     videoBackground.onFirstFrameReady?.invoke()
                 }
             }, 420L)
@@ -861,17 +862,6 @@ class SpatialScreensaverOverlay(
         rootOverlay.setBackgroundColor(Color.parseColor("#02040A"))
         solidBackdrop.visibility = View.VISIBLE
         solidBackdrop.alpha = 1f
-
-        if (resId == 0) {
-            // Cosmos Pulse procedural shader backdrop
-            ivPhotoA.animate().alpha(0f).setDuration(if (immediate) 0L else 700L).withEndAction {
-                if (currentScene.id == ScreensaverScenes.SCENE_COSMOS_PULSE) ivPhotoA.visibility = View.GONE
-            }.start()
-            ivPhotoB.animate().alpha(0f).setDuration(if (immediate) 0L else 700L).withEndAction {
-                if (currentScene.id == ScreensaverScenes.SCENE_COSMOS_PULSE) ivPhotoB.visibility = View.GONE
-            }.start()
-            return
-        }
 
         val bmp = obtainScenicBitmap(resId)
         val showView = if (activePhotoSlotA) ivPhotoA else ivPhotoB
@@ -1285,15 +1275,7 @@ class SpatialScreensaverOverlay(
         private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val particlePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         private val particleRect = RectF()
-        private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-        }
-        private val rayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-        }
         private val ovalRect = RectF()
-        private val smoothBands = FloatArray(32)
 
         private val shaderMatrix = Matrix()
         private var sceneAccentColor = Color.parseColor(scene.accentHex)
@@ -1301,8 +1283,6 @@ class SpatialScreensaverOverlay(
         private var cachedShaderSceneId: String? = null
         private var auroraShader1: RadialGradient? = null
         private var auroraShader2: RadialGradient? = null
-        private var cosmosWashShader: RadialGradient? = null
-        private var cosmosCoreShader: RadialGradient? = null
         private var cachedMusicAccent = Color.TRANSPARENT
         private var musicHaloShader: RadialGradient? = null
         private var cachedParticleColor = Color.TRANSPARENT
@@ -1328,18 +1308,6 @@ class SpatialScreensaverOverlay(
                 0f, 0f, 1f,
                 intArrayOf(Color.argb(28, sr, sg, sb), Color.argb(10, ar, ag, ab), Color.TRANSPARENT),
                 floatArrayOf(0f, 0.55f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            cosmosWashShader = RadialGradient(
-                0f, 0f, 1f,
-                intArrayOf(Color.argb(74, sr, sg, sb), Color.argb(46, ar, ag, ab), Color.TRANSPARENT),
-                floatArrayOf(0f, 0.45f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            cosmosCoreShader = RadialGradient(
-                0f, 0f, 1f,
-                intArrayOf(Color.argb(120, 224, 242, 254), Color.argb(72, ar, ag, ab), Color.argb(26, sr, sg, sb), Color.TRANSPARENT),
-                floatArrayOf(0f, 0.35f, 0.75f, 1f),
                 Shader.TileMode.CLAMP
             )
         }
@@ -1435,10 +1403,8 @@ class SpatialScreensaverOverlay(
             val dp = resources.displayMetrics.density
             val bass = LiveOrbState.musicBass
 
-            when (scene.id) {
-                ScreensaverScenes.SCENE_COSMOS_PULSE -> drawCosmosPulsar(canvas, w, h, t, dp, bass, sceneAccentColor, sceneSecondaryColor)
-                ScreensaverScenes.SCENE_AURORA -> drawAuroraRibbons(canvas, w, h, t)
-                else -> {}
+            if (scene.id == ScreensaverScenes.SCENE_AURORA) {
+                drawAuroraRibbons(canvas, w, h, t)
             }
 
             // Editorial edge vignette for crisp legibility over bright skies/snow
@@ -1466,13 +1432,13 @@ class SpatialScreensaverOverlay(
                 }
             }
 
-            // Living floating dust / bioluminescent sparks / sunlit embers
+            // Living floating dust / bioluminescent sparks / forest mist wisps
             val pColor = when (scene.id) {
                 ScreensaverScenes.SCENE_DOLOMITES -> Color.parseColor("#FDE68A")
                 ScreensaverScenes.SCENE_BIOLUMINESCENT -> Color.parseColor("#67E8F9")
                 ScreensaverScenes.SCENE_AURORA -> Color.parseColor("#A7F3D0")
-                ScreensaverScenes.SCENE_MIST_FOREST -> Color.parseColor("#D1FAE5")
-                else -> Color.parseColor("#BAE6FD")
+                ScreensaverScenes.SCENE_MIST_FOREST -> Color.parseColor("#A7F3D0")
+                else -> Color.parseColor("#E0F2FE")
             }
             if (cachedParticleColor != pColor) {
                 cachedParticleColor = pColor
@@ -1527,94 +1493,6 @@ class SpatialScreensaverOverlay(
                 glowPaint.shader = sh
                 ovalRect.set(cx2 - rx2, cy2 - ry2, cx2 + rx2, cy2 + ry2)
                 canvas.drawOval(ovalRect, glowPaint)
-            }
-            glowPaint.shader = null
-        }
-
-        private fun drawCosmosPulsar(
-            canvas: Canvas,
-            w: Float,
-            h: Float,
-            t: Float,
-            dp: Float,
-            bass: Float,
-            accent: Int,
-            secondary: Int
-        ) {
-            val cx = w * 0.50f
-            val cy = h * 0.40f
-            val baseR = min(w, h) * 0.225f
-
-            val ar = Color.red(accent)
-            val ag = Color.green(accent)
-            val ab = Color.blue(accent)
-            val sr = Color.red(secondary)
-            val sg = Color.green(secondary)
-            val sb = Color.blue(secondary)
-
-            cosmosWashShader?.let { wash ->
-                val washR = min(w, h) * (0.64f + bass * 0.12f)
-                shaderMatrix.setScale(washR, washR)
-                shaderMatrix.postTranslate(cx, cy)
-                wash.setLocalMatrix(shaderMatrix)
-                glowPaint.shader = wash
-                canvas.drawCircle(cx, cy, washR, glowPaint)
-            }
-
-            // Outer celestial orbital halo
-            val orbitR = baseR * (1.26f + 0.04f * sin(t * 0.55f) + bass * 0.08f)
-            ringPaint.color = Color.argb(95, ar, ag, ab)
-            ringPaint.strokeWidth = 1.6f * dp
-            canvas.drawCircle(cx, cy, orbitR, ringPaint)
-
-            val tilt = 12f * sin(t * 0.25f)
-            canvas.save()
-            canvas.rotate(tilt, cx, cy)
-            ovalRect.set(cx - orbitR * 1.24f, cy - orbitR * 0.52f, cx + orbitR * 1.24f, cy + orbitR * 0.52f)
-            ringPaint.color = Color.argb(80, sr, sg, sb)
-            ringPaint.strokeWidth = 1.3f * dp
-            canvas.drawOval(ovalRect, ringPaint)
-            canvas.restore()
-
-            // 32-spoke radial audio harmonic corona
-            val nRays = 32
-            val playing = LiveOrbState.musicPlaying
-            for (i in 0 until nRays) {
-                val raw = LiveOrbState.rawBands.getOrNull(i * 24 / nRays) ?: 0f
-                val target = if (playing) {
-                    (0.15f + raw * 1.15f).coerceIn(0.1f, 1.3f)
-                } else {
-                    0.18f + 0.08f * sin(t * 1.1f + i * 0.35f)
-                }
-                smoothBands[i] = smoothBands[i] + (target - smoothBands[i]) * 0.24f
-
-                val angle = (i.toFloat() / nRays) * (2f * PI.toFloat()) + t * 0.12f
-                val rIn = baseR * 0.72f
-                val rOut = rIn + smoothBands[i] * (baseR * 0.44f)
-                val x1 = cx + cos(angle) * rIn
-                val y1 = cy + sin(angle) * rIn
-                val x2 = cx + cos(angle) * rOut
-                val y2 = cy + sin(angle) * rOut
-
-                val mix = (i % 8) / 7f
-                rayPaint.strokeWidth = (2.6f + smoothBands[i] * 1.8f) * dp
-                rayPaint.color = Color.argb(
-                    (110 + (smoothBands[i] * 110).toInt()).coerceIn(70, 235),
-                    (ar * (1f - mix) + sr * mix).toInt(),
-                    (ag * (1f - mix) + sg * mix).toInt(),
-                    (ab * (1f - mix) + sb * mix).toInt()
-                )
-                canvas.drawLine(x1, y1, x2, y2, rayPaint)
-            }
-
-            // Inner glowing glass core orb
-            cosmosCoreShader?.let { core ->
-                val coreR = baseR * 0.72f
-                shaderMatrix.setScale(coreR, coreR)
-                shaderMatrix.postTranslate(cx - baseR * 0.16f, cy - baseR * 0.18f)
-                core.setLocalMatrix(shaderMatrix)
-                glowPaint.shader = core
-                canvas.drawCircle(cx, cy, baseR * 0.70f, glowPaint)
             }
             glowPaint.shader = null
         }
