@@ -155,23 +155,28 @@ def render_frame(
     else:
         reveal_mask = 1.0
 
-    # Smooth 3D glassy AI sphere (no pinch artifacts at r=0)
-    pulse = 1.0 + 0.06 * math.sin(phase) + 0.03 * math.cos(2.0 * phase)
-    orb_r = 32.0 * max(0.05, intro_scale) * pulse
-    orb_mask = np.clip((orb_r - r) / 2.2 + 0.5, 0.0, 1.0)
-    orb_halo = np.exp(-(r / (52.0 * pulse * max(0.25, intro_scale))) ** 2)
+    # 3D Obsidian Matte Carbon & Silver Halftone Dot Sphere at center
+    pulse = 1.0 + 0.03 * math.sin(phase)
+    orb_r = 34.0 * max(0.05, intro_scale) * pulse
+    orb_mask = np.clip((orb_r - r) / 1.8 + 0.5, 0.0, 1.0)
+    orb_shadow = np.exp(-(r / (48.0 * pulse * max(0.25, intro_scale))) ** 2)
 
     inv_orb_r = 1.0 / max(1.0, orb_r)
     nx = np.clip(dx * inv_orb_r, -1.0, 1.0)
     ny = np.clip(dy * inv_orb_r, -1.0, 1.0)
     nz = np.sqrt(np.maximum(0.0, 1.0 - nx * nx - ny * ny))
 
-    # Moving caustic studio highlight orbiting gently around the sphere face
-    lx = 0.42 * math.cos(phase) - 0.25
-    ly = 0.32 * math.sin(phase) - 0.38
-    lz = 0.80
-    diff_light = np.maximum(0.0, nx * lx + ny * ly + nz * lz)
-    rim_fresnel = (1.0 - nz) ** 2.2
+    # Glossy dark obsidian glass shell with subtle studio rim light from upper-left
+    ndotl_shell = np.maximum(0.0, nx * -0.48 + ny * -0.54 + nz * 0.69)
+    rim_fresnel = (1.0 - nz) ** 2.7
+    rim_dir = np.clip(-(nx * 0.68 + ny * 0.73), 0.0, 1.0)
+    d_soft = np.sqrt((nx + 0.34) ** 2 + (ny + 0.36) ** 2)
+    shell_lum = (
+        3.0
+        + 10.0 * (ndotl_shell ** 2.2)
+        + 18.0 * rim_fresnel * (0.20 + 0.80 * rim_dir)
+        + 22.0 * np.exp(-d_soft * d_soft * 7.8)
+    )
 
     intensity_ring = (ring_core * (0.72 + 0.58 * wave_main) + ring_glow * (0.24 + 0.22 * wave_sec)) * reveal_mask
     intensity_ring *= np.clip(intro_scale * 1.1, 0.0, 1.0)
@@ -182,15 +187,71 @@ def render_frame(
     ring_col_g = (224.0 * (1.0 - t_blend) + 92.0 * t_blend) * (1.0 - gold_hit) + 198.0 * gold_hit
     ring_col_b = (255.0 * (1.0 - t_blend) + 246.0 * t_blend) * (1.0 - gold_hit) + 134.0 * gold_hit
 
-    # Inside orb: deep cerulean body + glossy specular core + bright cyan fresnel rim
-    spec = (diff_light ** 4.5) * 215.0 + (diff_light ** 1.4) * 75.0
-    orb_r_ch = 18.0 * orb_halo + orb_mask * (18.0 + 75.0 * rim_fresnel + spec * 0.85)
-    orb_g_ch = 96.0 * orb_halo + orb_mask * (115.0 + 115.0 * rim_fresnel + spec * 0.96)
-    orb_b_ch = 165.0 * orb_halo + orb_mask * (215.0 + 40.0 * rim_fresnel + spec * 1.00)
+    # Blend obsidian center sphere cleanly over interior ring glow
+    orb_shade = shell_lum * orb_mask
+    base_bg_r = (bg_r + intensity_ring * ring_col_r) * (1.0 - orb_mask * (1.0 - 0.12 * orb_shadow))
+    base_bg_g = (bg_g + intensity_ring * ring_col_g) * (1.0 - orb_mask * (1.0 - 0.12 * orb_shadow))
+    base_bg_b = (bg_b + intensity_ring * ring_col_b) * (1.0 - orb_mask * (1.0 - 0.12 * orb_shadow))
 
-    out_r = bg_r + intensity_ring * ring_col_r + orb_r_ch
-    out_g = bg_g + intensity_ring * ring_col_g + orb_g_ch
-    out_b = bg_b + intensity_ring * ring_col_b + orb_b_ch
+    out_r = base_bg_r + orb_shade
+    out_g = base_bg_g + orb_shade
+    out_b = base_bg_b + orb_shade * 1.03
+
+    # Curved 3D Spherical Halftone Silver Dot Matrix inside the obsidian orb
+    if orb_r > 6.0:
+        grid_n = 7
+        theta_max = 1.02
+        inv_sin_max = 1.0 / math.sin(theta_max)
+        max_env = 0.87
+        l1x = 0.45 * math.cos(phase)
+        l1y = 0.45 * math.sin(phase * 0.75 - 0.35) - 0.10
+        l2x = 0.52 * math.sin(phase * 0.8 + 1.8)
+        l2y = 0.42 * math.cos(phase + 0.9) + 0.06
+        breath = 0.58 + 0.42 * math.sin(phase + 0.25)
+        dot_base_r = orb_r * (max_env / grid_n) * 0.43
+
+        for gj in range(-grid_n, grid_n + 1):
+            for gi in range(-grid_n, grid_n + 1):
+                gx = gi / float(grid_n)
+                gy = gj / float(grid_n)
+                gr = math.hypot(gx, gy)
+                if gr > 1.03:
+                    continue
+                ang_r = gr * theta_max
+                sx_v = (gx / gr) * math.sin(ang_r) if gr > 1e-4 else 0.0
+                sy_v = (gy / gr) * math.sin(ang_r) if gr > 1e-4 else 0.0
+                sz_v = math.cos(ang_r)
+                nxx = sx_v * inv_sin_max * max_env
+                nyy = sy_v * inv_sin_max * max_env
+                r2d = math.hypot(nxx, nyy)
+                if r2d > max_env:
+                    continue
+
+                d1 = (sx_v - l1x) ** 2 + (sy_v - l1y) ** 2
+                d2 = (sx_v - l2x) ** 2 + (sy_v - l2y) ** 2
+                caustic = (1.10 * math.exp(-d1 * 7.0) + 0.95 * math.exp(-d2 * 6.5)) * (0.35 + 0.65 * breath)
+                base_s = 0.12 + 0.16 * max(0.0, -sx_v * 0.45 - sy_v * 0.50 + sz_v * 0.72)
+                rim_fade = max(0.0, min(1.0, (max_env - r2d) / 0.16)) ** 0.75
+                inten = max(0.0, min(1.0, (base_s + caustic) * rim_fade))
+
+                dpx = nxx * orb_r
+                dpy = nyy * orb_r
+                dr = dot_base_r * (0.46 + 0.54 * sz_v) * (0.46 + 0.54 * (inten ** 0.65))
+                lum = 22.0 + 233.0 * (inten ** 0.88)
+
+                cx_d = int(round(cx + dpx))
+                cy_d = int(round(cy + dpy))
+                pad = max(2, int(math.ceil(dr)) + 1)
+                x0 = max(0, cx_d - pad)
+                x1 = min(WIDTH, cx_d + pad + 1)
+                y0 = max(0, cy_d - pad)
+                y1 = min(HEIGHT, cy_d + pad + 1)
+                if x0 < x1 and y0 < y1:
+                    dist_d = np.sqrt((dx[y0:y1, x0:x1] - dpx) ** 2 + (dy[y0:y1, x0:x1] - dpy) ** 2)
+                    cov = np.clip((dr - dist_d) * 1.4 + 0.5, 0.0, 1.0) * min(1.0, intro_scale * 1.1)
+                    out_r[y0:y1, x0:x1] = np.maximum(out_r[y0:y1, x0:x1], cov * lum)
+                    out_g[y0:y1, x0:x1] = np.maximum(out_g[y0:y1, x0:x1], cov * lum)
+                    out_b[y0:y1, x0:x1] = np.maximum(out_b[y0:y1, x0:x1], cov * lum)
 
     # 24 subtle LED dot nodes orbiting the station ring
     for i in range(24):

@@ -773,9 +773,6 @@ class SetupWizardActivity : Activity() {
         val orbWrap = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(124), dp(124)).apply { bottomMargin = dp(10) }
         }
-        orbWrap.addView(makeSpriteView(R.drawable.sprite_alice_orb, 118, spinSec = 26L, isFrameChild = true).apply {
-            alpha = 0.88f
-        })
         wizardOrbScreen4 = AliceOrbView(this).apply {
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
@@ -1169,9 +1166,6 @@ class SetupWizardActivity : Activity() {
         val orbWrap7 = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(88), dp(88)).apply { marginEnd = dp(16) }
         }
-        orbWrap7.addView(makeSpriteView(R.drawable.sprite_alice_orb, 84, spinSec = 24L, isFrameChild = true).apply {
-            alpha = 0.88f
-        })
         wizardOrbFinish = AliceOrbView(this).apply {
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }

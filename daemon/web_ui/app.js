@@ -2358,36 +2358,82 @@
     const c = $("wizOrbCanvas");
     if (!c) return;
     const ctx = c.getContext("2d");
-    const w = c.width, h = c.height, cx = w / 2, cy = h / 2;
+    const w = c.width, h = c.height, cx = w * 0.5, cy = h * 0.5;
     ctx.clearRect(0, 0, w, h);
 
     const astState = state?.assistant?.state || "idle";
     const rms = Number(state?.audio?.engine?.monoRms || 0);
     const amp = Math.min(1, rms / 1800);
-    const tgt = WIZ_PALETTES[Math.max(0, Math.min(WIZ_TOTAL_STEPS - 1, wizStep - 1))];
-    const colA = astState === "listening" ? [56, 189, 248] : astState === "speaking" ? [232, 198, 134] : tgt[0];
-    const colB = astState === "thinking" ? [168, 85, 247] : tgt[1];
+    const R = w * (0.44 + amp * 0.03);
 
-    const glowR = w * (0.42 + amp * 0.07 + Math.sin(t * 2.5) * 0.02);
-    const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, glowR);
-    g.addColorStop(0, `rgba(${colA[0]},${colA[1]},${colA[2]},0.92)`);
-    g.addColorStop(0.55, `rgba(${colB[0]},${colB[1]},${colB[2]},0.40)`);
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
+    // 1. Glossy 3D obsidian carbon sphere body
+    const bodyGrad = ctx.createRadialGradient(
+      cx - R * 0.34, cy - R * 0.36, R * 0.04,
+      cx, cy, R
+    );
+    bodyGrad.addColorStop(0, "rgba(46, 48, 56, 0.98)");
+    bodyGrad.addColorStop(0.45, "rgba(12, 13, 17, 0.99)");
+    bodyGrad.addColorStop(1, "rgba(2, 2, 4, 1)");
+    ctx.fillStyle = bodyGrad;
     ctx.beginPath();
-    ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = `rgba(255,255,255,0.42)`;
-    ctx.lineWidth = 2;
+    // Subtle metallic studio rim
+    ctx.strokeStyle = astState === "listening" ? "rgba(186, 230, 253, 0.55)"
+      : astState === "speaking" ? "rgba(224, 231, 255, 0.55)"
+      : astState === "thinking" ? "rgba(253, 230, 138, 0.50)"
+      : "rgba(255, 255, 255, 0.16)";
+    ctx.lineWidth = Math.max(1, w * 0.015);
     ctx.beginPath();
-    ctx.arc(cx, cy, w * 0.30, t * 1.8, t * 1.8 + Math.PI * 1.15);
+    ctx.arc(cx, cy, R - 0.5, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.fillStyle = "#f8fafc";
-    ctx.beginPath();
-    ctx.arc(cx, cy, w * (0.12 + amp * 0.05), 0, Math.PI * 2);
-    ctx.fill();
+    // 2. Curved 3D Spherical Halftone Dot Matrix + sweeping specular lobes
+    const N = 6;
+    const thetaMax = 1.02;
+    const invSinMax = 1 / Math.sin(thetaMax);
+    const maxEnv = 0.87;
+    const tW = t * (astState === "thinking" ? 2.6 : astState === "idle" ? 0.95 : 1.7);
+    const l1x = Math.cos(tW) * 0.48, l1y = Math.sin(tW * 0.72 - 0.35) * 0.48 - 0.10;
+    const l2x = Math.sin(tW * 0.8 + 1.85) * 0.54, l2y = Math.cos(tW + 0.9) * 0.44 + 0.06;
+    const breath = 0.58 + 0.42 * Math.sin(tW + 0.25);
+    const voiceBoost = astState !== "idle" ? (0.35 + amp * 0.65) : 0;
+
+    for (let j = -N; j <= N; j++) {
+      for (let i = -N; i <= N; i++) {
+        const gx = i / N, gy = j / N;
+        const r = Math.hypot(gx, gy);
+        if (r > 1.03) continue;
+        const angR = r * thetaMax;
+        const sx = r > 1e-4 ? (gx / r) * Math.sin(angR) : 0;
+        const sy = r > 1e-4 ? (gy / r) * Math.sin(angR) : 0;
+        const sz = Math.cos(angR);
+        const nx = sx * invSinMax * maxEnv;
+        const ny = sy * invSinMax * maxEnv;
+        const r2d = Math.hypot(nx, ny);
+        if (r2d > maxEnv) continue;
+
+        const d1 = (sx - l1x) ** 2 + (sy - l1y) ** 2;
+        const d2 = (sx - l2x) ** 2 + (sy - l2y) ** 2;
+        const caustic = (1.12 * Math.exp(-d1 * 7) + 0.95 * Math.exp(-d2 * 6.5)) * (0.32 + 0.68 * breath)
+          + voiceBoost * Math.exp(-r2d * r2d * 4.0);
+        const rimFade = Math.pow(Math.max(0, Math.min(1, (maxEnv - r2d) / 0.18)), 0.75);
+        const inten = Math.max(0, Math.min(1, (0.14 + caustic) * rimFade));
+
+        const px = cx + nx * R;
+        const py = cy + ny * R;
+        const dr = R * 0.056 * (0.48 + 0.52 * sz) * (0.46 + 0.54 * Math.pow(inten, 0.65));
+        const lum = (24 + 231 * Math.pow(inten, 0.88)) | 0;
+        const alpha = (0.38 + 0.62 * Math.pow(inten, 0.55) * rimFade).toFixed(2);
+        ctx.fillStyle = astState === "listening" && inten > 0.45
+          ? `rgba(${(lum * 0.82) | 0},${(lum * 0.95) | 0},${lum},${alpha})`
+          : `rgba(${lum},${lum},${lum},${alpha})`;
+        ctx.beginPath();
+        ctx.arc(px, py, Math.max(0.7, dr), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   function drawWizMicWave(t) {
