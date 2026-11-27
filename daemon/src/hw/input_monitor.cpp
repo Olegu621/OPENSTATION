@@ -136,9 +136,7 @@ void InputMonitor::poll_loop() {
     bool action_long_fired = false;
     clock::time_point action_down_tp;
 
-    int mute_tap_count = 0;
-    clock::time_point last_mute_tap_tp;
-    bool mute_tap_pending = false;
+    MuteButtonTracker mute_tracker;
     clock::time_point last_home_press_tp{};
     clock::time_point last_rescan_tp = clock::now();
 
@@ -156,7 +154,7 @@ void InputMonitor::poll_loop() {
             pfd.events = POLLIN;
             pfds.push_back(pfd);
         }
-        int ret = pfds.empty() ? (usleep(100000), 0) : poll(pfds.data(), pfds.size(), 100);
+        int ret = pfds.empty() ? (usleep(60000), 0) : poll(pfds.data(), pfds.size(), 60);
         now = clock::now();
 
         if (action_down && !action_long_fired &&
@@ -166,16 +164,10 @@ void InputMonitor::poll_loop() {
             if (cb_) cb_(HwEventType::ActionLong);
         }
 
-        // Check if pending Mute tap sequence expired without reaching 5 taps
-        if (mute_tap_pending && now - last_mute_tap_tp >= std::chrono::milliseconds(450)) {
-            mute_tap_pending = false;
-            if (mute_tap_count > 0 && mute_tap_count < 5) {
-                LOGI("InputMonitor", "Hardware Mute button tap (count=%d)", mute_tap_count);
-                if (mute_tap_count % 2 != 0) {
-                    if (cb_) cb_(HwEventType::MuteToggle);
-                }
-            }
-            mute_tap_count = 0;
+        const auto mute_act = mute_tracker.tick(now);
+        if (mute_act == MuteButtonTracker::Action::MuteToggle) {
+            LOGI("InputMonitor", "Hardware Mute button -> MuteToggle");
+            if (cb_) cb_(HwEventType::MuteToggle);
         }
 
         if (ret < 0) {
@@ -226,20 +218,8 @@ void InputMonitor::poll_loop() {
                     }
                 } else if (fds_[i].role == DevRole::Keypad && ev.type == EV_KEY) {
                     if (ev.code == kKeyMute && ev.value == 1) {
-                        if (mute_tap_pending && (now - last_mute_tap_tp < std::chrono::milliseconds(550))) {
-                            mute_tap_count++;
-                        } else {
-                            mute_tap_count = 1;
-                        }
-                        last_mute_tap_tp = now;
-                        mute_tap_pending = true;
-
-                        LOGI("InputMonitor", "Hardware Mute button tap #%d", mute_tap_count);
-
-                        if (mute_tap_count >= 5) {
+                        if (mute_tracker.on_press(now) == MuteButtonTracker::Action::BluetoothToggle) {
                             LOGI("InputMonitor", "Hardware Mute 5-tap detected -> BluetoothToggle!");
-                            mute_tap_pending = false;
-                            mute_tap_count = 0;
                             if (cb_) cb_(HwEventType::BluetoothToggle);
                         }
                     } else if (ev.code == kKeyAction) {
@@ -262,18 +242,42 @@ void InputMonitor::poll_loop() {
                     LOGI("InputMonitor", "3.5mm jack state -> %s", plugged ? "plugged" : "unplugged");
                     if (cb_) cb_(plugged ? HwEventType::JackPlugged : HwEventType::JackUnplugged);
                 } else if (fds_[i].role == DevRole::RemoteControl && ev.type == EV_KEY) {
+                    auto ev_now = clock::now();
                     if (is_remote_assistant_key(fds_[i].name, ev.code)) {
-                        const bool was_down = fds_[i].assistant_press.pressed();
-                        const auto gesture = fds_[i].assistant_press.event(ev.value, clock::now());
-                        if (ev.value == 1 && !was_down && cb_) {
-                            LOGI("InputMonitor", "Remote assistant key down");
-                            cb_(HwEventType::RemoteAssistantDown);
+                        if (remote_assistant_double_.load()) {
+                            const auto g = fds_[i].assistant_gesture.event(ev.value, ev_now, true, 800, 340);
+                            if (g == RemoteGesture::Short && cb_) cb_(HwEventType::RemoteAssistant);
+                            else if (g == RemoteGesture::Double && cb_) cb_(HwEventType::RemoteAssistantDouble);
+                            else if (g == RemoteGesture::Long && cb_) cb_(HwEventType::RemoteAssistantLong);
+                        } else {
+                            const bool was_down = fds_[i].assistant_press.pressed();
+                            const auto gesture = fds_[i].assistant_press.event(ev.value, ev_now);
+                            if (ev.value == 1 && !was_down && cb_) {
+                                LOGI("InputMonitor", "Remote assistant key down");
+                                cb_(HwEventType::RemoteAssistantDown);
+                            }
+                            if (gesture == RemoteAssistantGesture::Short && cb_) cb_(HwEventType::RemoteAssistant);
+                            if (gesture == RemoteAssistantGesture::Long && cb_) cb_(HwEventType::RemoteAssistantLong);
+                            if (ev.value == 0 && was_down && cb_) {
+                                LOGI("InputMonitor", "Remote assistant key up");
+                                cb_(HwEventType::RemoteAssistantRelease);
+                            }
                         }
-                        if (gesture == RemoteAssistantGesture::Short && cb_) cb_(HwEventType::RemoteAssistant);
-                        if (gesture == RemoteAssistantGesture::Long && cb_) cb_(HwEventType::RemoteAssistantLong);
-                        if (ev.value == 0 && was_down && cb_) {
-                            LOGI("InputMonitor", "Remote assistant key up");
-                            cb_(HwEventType::RemoteAssistantRelease);
+                    } else if (ev.code == KEY_LEFT) {
+                        if (fds_[i].left_gesture.event(ev.value, ev_now, false, 650) == RemoteGesture::Long && cb_) {
+                            cb_(HwEventType::RemoteLeftLong);
+                        }
+                    } else if (ev.code == KEY_RIGHT) {
+                        if (fds_[i].right_gesture.event(ev.value, ev_now, false, 650) == RemoteGesture::Long && cb_) {
+                            cb_(HwEventType::RemoteRightLong);
+                        }
+                    } else if (ev.code == KEY_BACK || ev.code == KEY_ESC) {
+                        if (fds_[i].back_gesture.event(ev.value, ev_now, false, 650) == RemoteGesture::Long && cb_) {
+                            cb_(HwEventType::RemoteBackLong);
+                        }
+                    } else if (ev.code == KEY_PLAYPAUSE || ev.code == KEY_PLAYCD) {
+                        if (fds_[i].play_gesture.event(ev.value, ev_now, true, 650, 360) == RemoteGesture::Double && cb_) {
+                            cb_(HwEventType::RemotePlayDouble);
                         }
                     } else if (ev.value == 1 && (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377)) {
                         auto hnow = clock::now();
@@ -292,11 +296,24 @@ void InputMonitor::poll_loop() {
                                [](const WatchedFd& w) { return w.fd < 0; }),
                 fds_.end());
         }
+        auto tick_now = clock::now();
         for (auto& w : fds_) {
-            if (w.role == DevRole::RemoteControl && w.fd >= 0 &&
-                w.assistant_press.tick(clock::now()) == RemoteAssistantGesture::Long) {
-                LOGI("InputMonitor", "Yandex remote assistant long press");
-                if (cb_) cb_(HwEventType::RemoteAssistantLong);
+            if (w.role == DevRole::RemoteControl && w.fd >= 0) {
+                if (remote_assistant_double_.load()) {
+                    const auto g = w.assistant_gesture.tick(tick_now, 800, 340);
+                    if (g == RemoteGesture::Short && cb_) cb_(HwEventType::RemoteAssistant);
+                    else if (g == RemoteGesture::Long && cb_) {
+                        LOGI("InputMonitor", "Yandex remote assistant long press");
+                        cb_(HwEventType::RemoteAssistantLong);
+                    }
+                } else if (w.assistant_press.tick(tick_now) == RemoteAssistantGesture::Long) {
+                    LOGI("InputMonitor", "Yandex remote assistant long press");
+                    if (cb_) cb_(HwEventType::RemoteAssistantLong);
+                }
+                if (w.left_gesture.tick(tick_now, 650) == RemoteGesture::Long && cb_) cb_(HwEventType::RemoteLeftLong);
+                if (w.right_gesture.tick(tick_now, 650) == RemoteGesture::Long && cb_) cb_(HwEventType::RemoteRightLong);
+                if (w.back_gesture.tick(tick_now, 650) == RemoteGesture::Long && cb_) cb_(HwEventType::RemoteBackLong);
+                w.play_gesture.tick(tick_now, 650, 360);
             }
         }
     }

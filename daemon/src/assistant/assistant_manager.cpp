@@ -463,6 +463,10 @@ void AssistantManager::set_mic_muted(bool muted) {
     if (muted) {
         if (remote_turn_.load() && cb_.stop_remote_capture) cb_.stop_remote_capture();
         {
+            std::lock_guard<std::mutex> blk(barge_mu_);
+            barge_in_.reset();
+        }
+        {
             std::lock_guard<std::mutex> lk(pre_mu_);
             pre_head_ = 0;
             pre_count_ = 0;
@@ -516,11 +520,12 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
 
     const AssistantState st = state_.load();
     const bool idle = st == AssistantState::Idle || st == AssistantState::Error;
-    const bool wake_during_reply = st == AssistantState::Speaking && vqe_input && c.wake_word_enabled;
-    if (idle || wake_during_reply) {
+    const bool vqe_reply = (st == AssistantState::Speaking && vqe_input);
+    const bool wake_during_reply = vqe_reply && c.wake_word_enabled;
+    if (idle || vqe_reply) {
         if (idle && (now_ms < wake_suppress_until_ms_.load() || playback_active)) return;
 
-        // Keep the words that immediately follow the wake phrase, also during a reply.
+        // Keep the words that immediately follow the wake phrase or voice barge-in.
         size_t max_pre = static_cast<size_t>(std::max(0, c.pre_roll_ms)) * 16U;
         if (max_pre > 0) {
             std::lock_guard<std::mutex> lk(pre_mu_);
@@ -536,7 +541,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
             }
         }
 
-        if (idle && stock_cfg) {
+        if ((idle || wake_during_reply) && stock_cfg && now_ms >= wake_suppress_until_ms_.load()) {
             const size_t active = stock_phrase_index(c);
             bool health_changed = false;
             bool fallback_now = false;
@@ -584,18 +589,46 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
         }
 
         const bool stock_active = is_stock_wake_active(c);
-        if (!stock_active ? (c.wake_word_enabled || c.quick_commands) : c.quick_commands) {
+        if ((idle || wake_during_reply) &&
+            (!stock_active ? (c.wake_word_enabled || (idle && c.quick_commands)) : (idle && c.quick_commands))) {
             wake_word_.set_paused(false);
             wake_word_.feed_audio_16k(samples, count, noise_rms, wake_during_reply);
+        } else if (!idle && !wake_during_reply) {
+            wake_word_.set_paused(true);
         }
         if (idle) return;
     } else {
         wake_word_.set_paused(true);
     }
 
-    // Echo Guard still keeps the local wake audio out of the outgoing dialogue during TTS.
-    if (c.echo_guard && cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()) {
-        return;
+    // Echo Guard / hardware-AEC barge-in gate during TTS playback.
+    bool trigger_barge_now = false;
+    {
+        std::lock_guard<std::mutex> blk(barge_mu_);
+        const auto res = barge_in_.feed(rms, noise_rms, playback_active, vqe_input, c.echo_guard);
+        if (res == BargeInGate::Result::Drop) {
+            return;
+        }
+        trigger_barge_now = (res == BargeInGate::Result::TriggerBargeIn);
+    }
+
+    std::vector<int16_t> barge_pre;
+    if (trigger_barge_now) {
+        LOGI("Assistant", "Voice barge-in detected (rms=%.0f, noise=%.0f) -> interrupting reply", rms, noise_rms);
+        if (cb_.clear_playback) cb_.clear_playback();
+        set_state(AssistantState::Listening);
+        {
+            std::lock_guard<std::mutex> plk(pre_mu_);
+            if (pre_count_ > 0 && !pre_ring_.empty()) {
+                const size_t take = std::min<size_t>(pre_count_, 3520U);
+                barge_pre.reserve(take);
+                size_t cap = pre_ring_.size();
+                size_t start_idx = (pre_head_ + cap - take) % cap;
+                for (size_t i = 0; i < take; ++i) {
+                    barge_pre.push_back(pre_ring_[(start_idx + i) % cap]);
+                }
+            }
+        }
     }
 
     std::lock_guard<std::mutex> lk(tx_mu_);
@@ -603,10 +636,14 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     // first live microphone callback discards the beginning of the request.
     size_t cap = (st == AssistantState::Connecting || tx_pcm_.size() > kMaxLivePcmSamples)
                      ? kMaxConnectingPcmSamples : kMaxLivePcmSamples;
-    if (tx_pcm_.size() + count > cap) {
-        size_t overflow = tx_pcm_.size() + count - cap;
+    const size_t add_len = barge_pre.size() + count;
+    if (tx_pcm_.size() + add_len > cap) {
+        size_t overflow = tx_pcm_.size() + add_len - cap;
         if (overflow >= tx_pcm_.size()) tx_pcm_.clear();
         else tx_pcm_.erase(tx_pcm_.begin(), tx_pcm_.begin() + static_cast<ptrdiff_t>(overflow));
+    }
+    if (!barge_pre.empty()) {
+        tx_pcm_.insert(tx_pcm_.end(), barge_pre.begin(), barge_pre.end());
     }
     tx_pcm_.insert(tx_pcm_.end(), samples, samples + count);
     if (tx_pcm_.size() >= kTxChunkSamples) {
@@ -793,6 +830,10 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         return false;
     }
     abort_active_session_locked();
+    {
+        std::lock_guard<std::mutex> blk(barge_mu_);
+        barge_in_.reset();
+    }
     if (interrupted_session != 0 && cb_.clear_playback) cb_.clear_playback();
 
     remote_end_pending_.store(false);
@@ -1304,7 +1345,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
         p["muted"] = make_prop("BOOLEAN", "true to mute microphones, false to unmute");
         decls.push(make_func_decl(
             "set_mic_mute",
-            "Mute or unmute speaker microphones. If muted=true, closes dialogue after final reply.",
+            "Mute or unmute speaker microphones ONLY when the user explicitly asks to turn off or mute the microphone ('выключи микрофон'). Never call muted=true on noise or 'хватит/тише/стоп'.",
             std::move(p),
             {"muted"},
             nb));
@@ -1905,6 +1946,13 @@ void AssistantManager::session_worker(uint64_t sid,
             }
 
             if (const auto* tc = msg.get("toolCall"); tc && tc->is_obj()) {
+                std::string turn_user_snap;
+                std::string last_user_snap;
+                {
+                    std::lock_guard<std::mutex> hlk(hist_mu_);
+                    turn_user_snap = live_user_text_;
+                    last_user_snap = last_user_text_;
+                }
                 flush_live_user();
                 had_interaction = true;
                 model_turn_done = false;
@@ -1921,11 +1969,18 @@ void AssistantManager::session_worker(uint64_t sid,
                         emit_event("tool_call", "tool", name);
 
                         json::Value res;
+                        const bool req_mic_mute = (name == "set_mic_mute") &&
+                            (!args.get("muted") || args.get("muted")->as_bool(true));
                         if (block_power_tool_for_stop(self_stop_requested, name)) {
                             res = json::Value::make_obj();
                             res["ok"] = json::Value::make_bool(false);
                             res["error"] = json::Value::make_str("Пользователь просит завершить диалог, а не выключать устройство.");
                             res["stopSession"] = json::Value::make_bool(true);
+                        } else if (req_mic_mute && !should_allow_ai_mic_mute(true, turn_user_snap, last_user_snap)) {
+                            LOGW("Assistant", "Blocked spontaneous set_mic_mute(true) without explicit microphone command");
+                            res = json::Value::make_obj();
+                            res["ok"] = json::Value::make_bool(false);
+                            res["error"] = json::Value::make_str("Отключать микрофон можно только по прямой просьбе выключить микрофон.");
                         } else {
                             res = cb_.execute_tool ? cb_.execute_tool(name, args) : json::Value::make_obj();
                         }

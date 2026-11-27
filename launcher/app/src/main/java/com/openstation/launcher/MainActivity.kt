@@ -280,6 +280,14 @@ class MainActivity : Activity() {
     private var lastRingingAlarmJson: JSONObject? = null
     private var lastTimersFetchedMs: Long = 0L
     private var timersScreenRef: TimersScreen? = null
+    private var astEchoGuardState = true
+    private var remoteShortState = "assistant"
+    private var remoteDoubleState = "play_pause"
+    private var remoteLongState = "next"
+    private var remoteLeftLongState = "prev"
+    private var remoteRightLongState = "next"
+    private var remoteBackLongState = "stop_alarm"
+    private var remotePlayDoubleState = "next"
 
     // Screen 1: Apps grid & Native Yandex Music Vinyl Hero card
     private lateinit var appsGrid: GridLayout
@@ -2025,8 +2033,16 @@ class MainActivity : Activity() {
         val (remBox, _) = makeServiceChip("🎮 Пульт BLE", "#CBD5E1") {
             startActivity(Intent(this, RemoteSetupActivity::class.java))
         }
-        remBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.85f)
+        remBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.85f).apply {
+            marginEnd = dp(6)
+        }
         serviceRow.addView(remBox)
+
+        val (blindBox, _) = makeServiceChip("🎛 Жесты и ИИ", "#93C5FD") {
+            showBlindControlsModal()
+        }
+        blindBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.9f)
+        serviceRow.addView(blindBox)
         col.addView(serviceRow)
 
         // System Settings Dock (5 unified monochrome spatial categories)
@@ -3169,6 +3185,17 @@ class MainActivity : Activity() {
                     assistantWakeAvailablePhrases = availSet
                     assistantVoiceState = pVoice
                     assistantPromptState = pPrompt
+                    astEchoGuardState = astCfg?.optBoolean("echoGuard", true) ?: true
+                    val inpCfg = cfg?.optJSONObject("input")
+                    if (inpCfg != null) {
+                        remoteShortState = inpCfg.optString("remoteShort", "assistant").ifBlank { "assistant" }
+                        remoteDoubleState = inpCfg.optString("remoteDouble", "play_pause").ifBlank { "play_pause" }
+                        remoteLongState = inpCfg.optString("remoteLong", "next").ifBlank { "next" }
+                        remoteLeftLongState = inpCfg.optString("remoteLeftLong", "prev").ifBlank { "prev" }
+                        remoteRightLongState = inpCfg.optString("remoteRightLong", "next").ifBlank { "next" }
+                        remoteBackLongState = inpCfg.optString("remoteBackLong", "stop_alarm").ifBlank { "stop_alarm" }
+                        remotePlayDoubleState = inpCfg.optString("remotePlayDouble", "next").ifBlank { "next" }
+                    }
                     LiveOrbState.updateAssistantPersona(pName, pVoice)
 
                     val timersArr = root.optJSONArray("timers")
@@ -4859,7 +4886,9 @@ class MainActivity : Activity() {
             val aEnabled = (0 until (lastAlarmsJson?.length() ?: 0)).count {
                 lastAlarmsJson?.optJSONObject(it)?.optBoolean("enabled", false) == true
             }
+            val isRingingTimer = ringing?.optBoolean("isTimer", false) == true
             tvServiceTimers.text = when {
+                ringing != null && isRingingTimer -> "⏰ Сработал таймер!"
                 ringing != null -> "🔔 Звонит будильник!"
                 tCount > 0 -> "⏱ Таймеры ($tCount) · Буд: $aEnabled"
                 aEnabled > 0 -> "⏱ Будильники ($aEnabled)"
@@ -5146,6 +5175,128 @@ class MainActivity : Activity() {
         footer.addView(btnDone)
         panel.addView(footer)
         presentOverlayModal(panel, firstFocusView ?: btnDone)
+    }
+
+    private fun showBlindControlsModal() {
+        timersScreenRef = null
+        val panel = makeModalGlassPanel(700)
+        panel.addView(TextView(this).apply {
+            text = "УПРАВЛЕНИЕ В СЛЕПУЮ И ГОЛОС"
+            setTextColor(Color.WHITE)
+            textSize = 17f
+            letterSpacing = 0.05f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(TextView(this).apply {
+            text = "Общие настройки с веб-интерфейсом: жесты пульта работают в фоне и при выключенном ТВ, а любое нажатие глушит звонящий таймер или будильник."
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 11.5f
+            setPadding(0, dp(2), 0, dp(10))
+        })
+
+        val actionLabels = mapOf(
+            "assistant" to "Алиса",
+            "play_pause" to "Пауза / Воспроизведение",
+            "next" to "Следующий трек",
+            "prev" to "Предыдущий трек",
+            "mic_mute" to "Микрофон вкл/выкл",
+            "stop_alarm" to "Стоп таймера/будильника",
+            "led_cycle" to "Сменить подсветку",
+            "bt_toggle" to "Bluetooth колонка",
+            "vol_up" to "Громче",
+            "vol_down" to "Тише",
+            "push_to_talk" to "Рация (пока держат)",
+            "launcher" to "Домой (ТВ)",
+            "none" to "Ничего"
+        )
+        val baseCycle = listOf("play_pause", "next", "prev", "assistant", "stop_alarm", "mic_mute", "led_cycle", "bt_toggle", "none")
+        val longCycle = listOf("next", "prev", "play_pause", "push_to_talk", "stop_alarm", "mic_mute", "led_cycle", "none")
+
+        lateinit var pillEcho: TextView
+        fun addCycleRow(title: String, getter: () -> String, setter: (String) -> Unit, field: String, allowPtt: Boolean = false) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(6)
+                }
+            }
+            row.addView(TextView(this).apply {
+                text = title
+                setTextColor(Color.parseColor("#CBD5E1"))
+                textSize = 12.5f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            val opts = if (allowPtt) longCycle else baseCycle
+            lateinit var pill: TextView
+            pill = makeModalChoicePill(actionLabels[getter()] ?: getter(), true) {
+                val cur = getter()
+                val next = opts[(opts.indexOf(cur) + 1) % opts.size]
+                setter(next)
+                pill.text = actionLabels[next] ?: next
+                postAsync(
+                    "http://127.0.0.1:8080/api/config",
+                    JSONObject().put("input", JSONObject().put(field, next)).toString()
+                )
+            }
+            row.addView(pill)
+            panel.addView(row)
+        }
+
+        val echoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(10)
+            }
+        }
+        echoRow.addView(TextView(this).apply {
+            text = "Перебивание Алисы (VQE Echo Guard)"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        pillEcho = makeModalChoicePill(if (astEchoGuardState) "Умное Вкл" else "Прямое Вкл", true) {
+            astEchoGuardState = !astEchoGuardState
+            pillEcho.text = if (astEchoGuardState) "Умное Вкл" else "Прямое Вкл"
+            postAsync(
+                "http://127.0.0.1:8080/api/config",
+                JSONObject().put("assistant", JSONObject().put("echoGuard", astEchoGuardState)).toString()
+            )
+        }
+        echoRow.addView(pillEcho)
+        panel.addView(echoRow)
+
+        addCycleRow("Пульт: Алиса (1 нажатие)", { remoteShortState }, { remoteShortState = it }, "remoteShort")
+        addCycleRow("Пульт: Алиса (2x тап)", { remoteDoubleState }, { remoteDoubleState = it }, "remoteDouble")
+        addCycleRow("Пульт: Алиса (удержание)", { remoteLongState }, { remoteLongState = it }, "remoteLong", allowPtt = true)
+        addCycleRow("Пульт: Play/Pause (2x тап)", { remotePlayDoubleState }, { remotePlayDoubleState = it }, "remotePlayDouble")
+        addCycleRow("Пульт: ◄ (удержание)", { remoteLeftLongState }, { remoteLeftLongState = it }, "remoteLeftLong")
+        addCycleRow("Пульт: ► (удержание)", { remoteRightLongState }, { remoteRightLongState = it }, "remoteRightLong")
+        addCycleRow("Пульт: Назад (удержание)", { remoteBackLongState }, { remoteBackLongState = it }, "remoteBackLong")
+
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(10)
+            }
+        }
+        val btnDone = TextView(this).apply {
+            text = "Готово"
+            setTextColor(Color.parseColor("#090D16"))
+            textSize = 12.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+            setBackgroundResource(R.drawable.bg_pill_gold)
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { closeHomeCustomizationMenu() }
+        }
+        footer.addView(btnDone)
+        panel.addView(footer)
+        presentOverlayModal(panel, pillEcho)
     }
 
     private fun showTimersModal() {

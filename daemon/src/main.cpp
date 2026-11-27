@@ -58,7 +58,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.44";
+constexpr const char* kFirmwareVersion = "1.6.45";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -2131,6 +2131,7 @@ int main(int argc, char** argv) {
 
         push_eq_to_launcher(c);
         push_style_sync_to_launcher(c);
+        inputs.set_remote_assistant_double_enabled(c.input.remote_long != "push_to_talk");
     };
 
     auto set_android_volume_pct = [&](int pct,
@@ -2255,19 +2256,105 @@ int main(int argc, char** argv) {
         ::close(fd);
     });
     std::atomic<bool> remote_voice_held{false};
-    auto next_track = [&]() {
-        bool ym_playing;
+    std::atomic<bool> mic_muted_by_assistant{false};
+    std::function<bool()> try_stop_ringing_alert_cb;
+    auto send_music_action = [&](const char* ym_action, const char* fallback_key) {
+        bool ym_active = false;
         {
             std::lock_guard<std::mutex> lk(music_mu);
-            ym_playing = music_state.playing && !music_state.paused;
+            ym_active = music_state.playing || music_state.paused;
         }
-        if (ym_playing && is_udp_port_bound(8086)) {
+        if (ym_active && is_udp_port_bound(8086)) {
             json::Value mcmd = json::Value::make_obj();
             mcmd["cmd"] = json::Value::make_str("music_action");
-            mcmd["action"] = json::Value::make_str("NEXT");
-            send_udp_json(8086, mcmd.dump(-1));
-        } else {
-            uinput.send_android_action("next");
+            mcmd["action"] = json::Value::make_str(ym_action);
+            if (send_udp_json(8086, mcmd.dump(-1))) return;
+        }
+        uinput.send_android_action(fallback_key);
+    };
+    auto toggle_mic_mute_state = [&](bool by_assistant, const bool* explicit_state = nullptr) -> bool {
+        DaemonConfig next_c;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            cfg.audio.mic_muted = explicit_state ? *explicit_state : !cfg.audio.mic_muted;
+            cfg.sanitize_and_validate();
+            next_c = cfg;
+        }
+        mic_muted_by_assistant.store(next_c.audio.mic_muted && by_assistant);
+        audio.set_mic_muted(next_c.audio.mic_muted);
+        assistant.set_mic_muted(next_c.audio.mic_muted);
+        leds.set_mic_muted(next_c.audio.mic_muted);
+        save_cfg(next_c);
+        return next_c.audio.mic_muted;
+    };
+    auto execute_input_action = [&](const std::string& act, DaemonConfig& c) {
+        if (act == "none" || act.empty()) return;
+        if (act == "stop_alarm") {
+            if (try_stop_ringing_alert_cb && try_stop_ringing_alert_cb()) {
+                leds.trigger_flash(0, 212, 255, 350);
+                leds.trigger_screen_text("СТОП", 0, 220, 255, 2000);
+            }
+            return;
+        }
+        if (act == "assistant") {
+            if (c.audio.mic_muted) {
+                if (mic_muted_by_assistant.load()) {
+                    toggle_mic_mute_state(false);
+                    c.audio.mic_muted = false;
+                    leds.trigger_screen_text("МИКР: ВКЛ", 0, 230, 255, 2200);
+                } else {
+                    audio.play_error_chime();
+                    leds.trigger_flash(255, 32, 32, 450);
+                    leds.trigger_screen_text("МИКРОФОН ВЫКЛ", 255, 80, 80, 2600);
+                    return;
+                }
+            }
+            if (c.assistant.enabled && c.assistant.mode == "gemini") {
+                assistant.toggle_session();
+            } else if (c.wyoming.enabled) {
+                if (wyoming.is_streaming()) wyoming.stop_session();
+                else wyoming.trigger_button_session(6000);
+            }
+        } else if (act == "wyoming") {
+            if (wyoming.is_streaming()) wyoming.stop_session();
+            else wyoming.trigger_button_session(6000);
+        } else if (act == "play_pause") {
+            send_music_action("PLAY_PAUSE", "play_pause");
+            leds.trigger_flash(0, 212, 255, 220);
+        } else if (act == "next") {
+            send_music_action("NEXT", "next");
+            leds.trigger_flash(0, 212, 255, 200);
+        } else if (act == "prev") {
+            send_music_action("PREV", "prev");
+            leds.trigger_flash(0, 212, 255, 200);
+        } else if (act == "mic_mute") {
+            bool muted_now = toggle_mic_mute_state(false);
+            leds.trigger_screen_text(muted_now ? "МИКР: ВЫКЛ" : "МИКР: ВКЛ",
+                                     muted_now ? 255 : 0, muted_now ? 70 : 225, muted_now ? 70 : 255, 2200);
+            LOGI("Main", "Input mic mute toggled -> %s", muted_now ? "MUTED" : "LIVE");
+        } else if (act == "led_cycle") {
+            static const char* kModes[] = {"rainbow", "solid", "breathe", "spinner", "music", "off"};
+            DaemonConfig next_c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                int next_i = 0;
+                for (int i = 0; i < 6; ++i) {
+                    if (cfg.led_ring.mode == kModes[i]) { next_i = (i + 1) % 6; break; }
+                }
+                cfg.led_ring.mode = kModes[next_i];
+                next_c = cfg;
+            }
+            leds.update_config(next_c.led_ring, next_c.led_screen);
+            leds.trigger_flash(124, 58, 237, 250);
+            save_cfg(next_c);
+        } else if (act == "bt_toggle") {
+            toggle_bluetooth_mode();
+        } else if (act == "launcher") {
+            trigger_go_home();
+        } else if (act == "vol_up") {
+            step_android_volume_pct(6, true);
+        } else if (act == "vol_down") {
+            step_android_volume_pct(-6, true);
         }
     };
     inputs.start([&](HwEventType ev) {
@@ -2275,6 +2362,16 @@ int main(int argc, char** argv) {
         {
             std::lock_guard<std::mutex> lk(cfg_mu);
             c = cfg;
+        }
+        const bool is_passive_ev =
+            (ev == HwEventType::RotaryUp || ev == HwEventType::RotaryDown ||
+             ev == HwEventType::JackPlugged || ev == HwEventType::JackUnplugged ||
+             ev == HwEventType::RemoteAssistantRelease);
+        if (!is_passive_ev && try_stop_ringing_alert_cb && try_stop_ringing_alert_cb()) {
+            leds.trigger_flash(0, 212, 255, 400);
+            leds.trigger_screen_text("СТОП", 0, 220, 255, 2200);
+            LOGI("Main", "Stopped ringing timer/alarm via hardware/remote button");
+            return;
         }
         switch (ev) {
             case HwEventType::RotaryUp:
@@ -2313,17 +2410,8 @@ int main(int argc, char** argv) {
                 break;
             }
             case HwEventType::MuteToggle: {
-                DaemonConfig next_c;
-                {
-                    std::lock_guard<std::mutex> lk(cfg_mu);
-                    cfg.audio.mic_muted = !cfg.audio.mic_muted;
-                    next_c = cfg;
-                }
-                audio.set_mic_muted(next_c.audio.mic_muted);
-                assistant.set_mic_muted(next_c.audio.mic_muted);
-                leds.set_mic_muted(next_c.audio.mic_muted);
-                save_cfg(next_c);
-                LOGI("Main", "Mic mute toggled -> %s", next_c.audio.mic_muted ? "MUTED" : "LIVE");
+                const bool muted_now = toggle_mic_mute_state(false);
+                LOGI("Main", "Mic mute toggled -> %s", muted_now ? "MUTED" : "LIVE");
                 break;
             }
             case HwEventType::BluetoothToggle: {
@@ -2336,46 +2424,7 @@ int main(int argc, char** argv) {
                 const std::string& act = (ev == HwEventType::ActionShort)
                                              ? c.input.action_short
                                              : c.input.action_long;
-                if (act == "assistant") {
-                    if (c.assistant.enabled && c.assistant.mode == "gemini") {
-                        assistant.toggle_session();
-                    } else if (c.wyoming.enabled) {
-                        if (wyoming.is_streaming()) wyoming.stop_session();
-                        else wyoming.trigger_button_session(6000);
-                    }
-                } else if (act == "wyoming") {
-                    if (wyoming.is_streaming()) wyoming.stop_session();
-                    else wyoming.trigger_button_session(6000);
-                } else if (act == "play_pause") {
-                    if (is_udp_port_bound(8086)) {
-                        json::Value mcmd = json::Value::make_obj();
-                        mcmd["cmd"] = json::Value::make_str("music_action");
-                        mcmd["action"] = json::Value::make_str("PLAY_PAUSE");
-                        send_udp_json(8086, mcmd.dump(-1));
-                    } else {
-                        uinput.send_android_action("play_pause");
-                    }
-                    leds.trigger_flash(0, 212, 255, 250);
-                } else if (act == "next") {
-                    next_track();
-                } else if (act == "led_cycle") {
-                    static const char* kModes[] = {"rainbow", "solid", "breathe", "spinner", "music", "off"};
-                    DaemonConfig next_c;
-                    {
-                        std::lock_guard<std::mutex> lk(cfg_mu);
-                        int next_i = 0;
-                        for (int i = 0; i < 6; ++i) {
-                            if (cfg.led_ring.mode == kModes[i]) { next_i = (i + 1) % 6; break; }
-                        }
-                        cfg.led_ring.mode = kModes[next_i];
-                        next_c = cfg;
-                    }
-                    leds.update_config(next_c.led_ring, next_c.led_screen);
-                    leds.trigger_flash(124, 58, 237, 250);
-                    save_cfg(next_c);
-                } else if (act == "launcher") {
-                    trigger_go_home();
-                }
+                execute_input_action(act, c);
                 break;
             }
             case HwEventType::HomePress: {
@@ -2399,27 +2448,34 @@ int main(int argc, char** argv) {
             }
             case HwEventType::RemoteAssistant: {
                 if (c.input.remote_long == "push_to_talk" || remote_voice_held.load()) break;
-                if (c.input.remote_short == "next") {
-                    next_track();
-                } else if (c.input.remote_short == "play_pause") {
-                    if (is_udp_port_bound(8086)) {
-                        json::Value cmd = json::Value::make_obj();
-                        cmd["cmd"] = json::Value::make_str("music_action");
-                        cmd["action"] = json::Value::make_str("PLAY_PAUSE");
-                        send_udp_json(8086, cmd.dump(-1));
-                    } else uinput.send_android_action("play_pause");
-                } else if (c.input.remote_short == "assistant" && c.assistant.enabled && c.assistant.mode == "gemini") {
-                    assistant.toggle_session();
-                } else if (c.input.remote_short == "assistant" && c.wyoming.enabled) {
-                    if (wyoming.is_streaming()) wyoming.stop_session();
-                    else wyoming.trigger_button_session(6000);
-                }
+                execute_input_action(c.input.remote_short, c);
+                break;
+            }
+            case HwEventType::RemoteAssistantDouble: {
+                if (c.input.remote_long == "push_to_talk" || remote_voice_held.load()) break;
+                execute_input_action(c.input.remote_double, c);
                 break;
             }
             case HwEventType::RemoteAssistantLong: {
-                if (c.input.remote_long == "next") {
-                    next_track();
+                if (c.input.remote_long != "push_to_talk") {
+                    execute_input_action(c.input.remote_long, c);
                 }
+                break;
+            }
+            case HwEventType::RemoteLeftLong: {
+                execute_input_action(c.input.remote_left_long, c);
+                break;
+            }
+            case HwEventType::RemoteRightLong: {
+                execute_input_action(c.input.remote_right_long, c);
+                break;
+            }
+            case HwEventType::RemoteBackLong: {
+                execute_input_action(c.input.remote_back_long, c);
+                break;
+            }
+            case HwEventType::RemotePlayDouble: {
+                execute_input_action(c.input.remote_play_double, c);
                 break;
             }
             case HwEventType::RemoteAssistantRelease: {
@@ -2566,25 +2622,12 @@ int main(int argc, char** argv) {
         }
     });
 
-    timers.start([&](const TimerEntry& t) {
-        leds.trigger_flash(255, 140, 0, 2200);
-        leds.trigger_screen_text("ТАЙМЕР: " + t.label, 255, 165, 0, 5000);
-        audio.play_timer_alarm();
-        if (http.ws_client_count() > 0) {
-            json::Value evt = json::Value::make_obj();
-            evt["type"] = json::Value::make_str("timer_fired");
-            evt["id"] = json::Value::make_int(t.id);
-            evt["label"] = json::Value::make_str(t.label);
-            evt["totalSec"] = json::Value::make_int(t.total_sec);
-            http.broadcast_ws_text(evt.dump(-1));
-        }
-    });
-
-    // --- Wall-clock alarms (config "alarms"); ticked from the main loop below ---
+    // --- Wall-clock alarms & repeating timer alerts; ticked from the main loop below ---
     struct RingingAlarm {
         int id = 0;
         std::string label, time, sound;
         std::chrono::steady_clock::time_point started{}, next_beep{};
+        bool is_timer = false;
     };
     struct SnoozedAlarm {
         AlarmEntry alarm;
@@ -2604,17 +2647,39 @@ int main(int argc, char** argv) {
         o["label"] = json::Value::make_str(ringing_alarm.label);
         o["time"] = json::Value::make_str(ringing_alarm.time);
         o["sound"] = json::Value::make_str(ringing_alarm.sound);
+        o["isTimer"] = json::Value::make_bool(ringing_alarm.is_timer);
         o["ringingSec"] = json::Value::make_int(std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - ringing_alarm.started).count());
         return o;
     };
+
+    timers.start([&](const TimerEntry& t) {
+        auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            alarm_ringing = true;
+            ringing_alarm = RingingAlarm{t.id, t.label, "", "chime", now, now + std::chrono::seconds(3), true};
+        }
+        LOGI("Timer", "Timer #%d (%s) fired -> repeating alert active", t.id, t.label.c_str());
+        leds.trigger_flash(255, 140, 0, 2200);
+        leds.trigger_screen_text("ТАЙМЕР: " + t.label, 255, 165, 0, 6000);
+        audio.play_timer_alarm();
+        if (http.ws_client_count() > 0) {
+            json::Value evt = json::Value::make_obj();
+            evt["type"] = json::Value::make_str("timer_fired");
+            evt["id"] = json::Value::make_int(t.id);
+            evt["label"] = json::Value::make_str(t.label);
+            evt["totalSec"] = json::Value::make_int(t.total_sec);
+            http.broadcast_ws_text(evt.dump(-1));
+        }
+    });
 
     auto fire_alarm = [&](const AlarmEntry& a) {
         auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lk(alarm_mu);
             alarm_ringing = true;
-            ringing_alarm = RingingAlarm{a.id, a.label, a.time, a.sound, now, now + std::chrono::seconds(4)};
+            ringing_alarm = RingingAlarm{a.id, a.label, a.time, a.sound, now, now + std::chrono::seconds(4), false};
         }
         LOGI("Alarm", "Alarm %d (%s) fired: %s", a.id, a.time.c_str(), a.label.c_str());
         leds.trigger_flash(255, 140, 0, 2200);
@@ -2646,7 +2711,7 @@ int main(int argc, char** argv) {
         }
     };
 
-    // Stops the ringing alarm; returns it via out param (false if nothing was ringing).
+    // Stops the ringing alarm or timer; returns it via out param (false if nothing was ringing).
     auto stop_ringing_alarm = [&](RingingAlarm& out) -> bool {
         {
             std::lock_guard<std::mutex> lk(alarm_mu);
@@ -2655,7 +2720,7 @@ int main(int argc, char** argv) {
             out = ringing_alarm;
         }
         audio.clear_playback_queue();
-        if (out.sound == "wave" || out.sound == "calm") {
+        if (!out.is_timer && (out.sound == "wave" || out.sound == "calm")) {
             json::Value p = json::Value::make_obj();
             p["cmd"] = json::Value::make_str("music_action");
             p["action"] = json::Value::make_str("PAUSE");
@@ -2663,18 +2728,37 @@ int main(int argc, char** argv) {
         }
         return true;
     };
+    try_stop_ringing_alert_cb = [&]() -> bool {
+        RingingAlarm stopped;
+        return stop_ringing_alarm(stopped);
+    };
 
     auto alarm_tick = [&]() {
         auto steady_now = std::chrono::steady_clock::now();
+        bool beep_now = false;
+        bool is_timer_now = false;
+        std::string timer_lbl;
         {
-            // Chime repeats every 4 s while ringing; auto-stop after 10 min.
+            // Repeating chime until stopped (timers every 3s, chime alarms every 4s); auto-stop after 10 min.
             std::lock_guard<std::mutex> lk(alarm_mu);
             if (alarm_ringing) {
                 if (steady_now - ringing_alarm.started >= std::chrono::minutes(10)) {
                     alarm_ringing = false;
-                } else if (ringing_alarm.sound == "chime" && steady_now >= ringing_alarm.next_beep) {
-                    ringing_alarm.next_beep = steady_now + std::chrono::seconds(4);
+                } else if ((ringing_alarm.is_timer || ringing_alarm.sound == "chime") &&
+                           steady_now >= ringing_alarm.next_beep) {
+                    const int gap_sec = ringing_alarm.is_timer ? 3 : 4;
+                    ringing_alarm.next_beep = steady_now + std::chrono::seconds(gap_sec);
+                    beep_now = true;
+                    is_timer_now = ringing_alarm.is_timer;
+                    timer_lbl = ringing_alarm.label;
+                }
+                if (beep_now) {
                     audio.play_timer_alarm();
+                    if (is_timer_now) {
+                        leds.trigger_flash(255, 140, 0, 1600);
+                        leds.trigger_screen_text("ТАЙМЕР: " + (timer_lbl.empty() ? std::string("ВРЕМЯ!") : timer_lbl),
+                                                 255, 165, 0, 2600);
+                    }
                 }
                 return;
             }
@@ -2823,6 +2907,38 @@ int main(int argc, char** argv) {
             ::close(fd);
         }
     };
+    auto trigger_startup_presentation = [&](bool play_sound, bool send_launcher_udp) {
+        mark_startup_shown_flag();
+        if (!first_vol_state_seen.load()) {
+            std::string route_snap;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                route_snap = cfg.audio.output_route;
+            }
+            int probe_pct = volume_osd_pct.load();
+            int probe_max = android_vol_max.load();
+            probe_android_stream_music(route_snap, inputs.headphone_plugged(), probe_pct, probe_max);
+            volume_osd_pct.store(probe_pct);
+            android_vol_max.store(probe_max);
+        }
+        reapply_current_volume_and_route(true, true);
+        if (play_sound) {
+            // Let Android AudioHAL execute its initial mixer_paths route on silence, then lock ALSA gains.
+            audio.warm_up_output(70);
+            std::this_thread::sleep_for(std::chrono::milliseconds(90));
+            reapply_current_volume_and_route(true, false);
+            reconcile_volume_if_drifted();
+        }
+        leds.trigger_startup_show(5800);
+        if (play_sound) {
+            audio.play_startup_chime();
+        }
+        if (send_launcher_udp && is_udp_port_bound(8086)) {
+            json::Value scmd = json::Value::make_obj();
+            scmd["cmd"] = json::Value::make_str("startup_show");
+            send_udp_json(8086, scmd.dump(-1));
+        }
+    };
 
     auto resolve_app_pkg = [&](const std::string& q, std::string& out_pkg, std::string& out_label) {
         out_pkg.clear();
@@ -2888,7 +3004,16 @@ int main(int argc, char** argv) {
             case QuickCommand::Previous: player_action = "PREV"; media_key = "prev"; break;
             case QuickCommand::Play: player_action = "RESUME"; media_key = "play"; break;
             case QuickCommand::Pause: player_action = "PAUSE"; media_key = "pause"; break;
-            case QuickCommand::Stop: player_action = "STOP"; media_key = "stop"; break;
+            case QuickCommand::Stop: {
+                RingingAlarm stopped;
+                if (stop_ringing_alarm(stopped)) {
+                    leds.trigger_flash(0, 212, 255, 350);
+                    return;
+                }
+                player_action = "STOP";
+                media_key = "stop";
+                break;
+            }
             case QuickCommand::Seek: player_action = "SEEK_BY"; break;
             case QuickCommand::VideoNext: media_key = "next"; break;
             case QuickCommand::VideoPrevious: media_key = "prev"; break;
@@ -3782,19 +3907,7 @@ int main(int argc, char** argv) {
 
         if (name == "set_mic_mute") {
             bool muted = args.get("muted") ? args.get("muted")->as_bool(true) : true;
-            DaemonConfig c;
-            {
-                std::lock_guard<std::mutex> lk(cfg_mu);
-                cfg.audio.mic_muted = muted;
-                cfg.sanitize_and_validate();
-                c = cfg;
-            }
-            audio.set_mic_muted(muted);
-            leds.set_mic_muted(muted);
-            if (!muted) {
-                assistant.set_mic_muted(false);
-            }
-            save_cfg(c);
+            toggle_mic_mute_state(muted, &muted);
             res["ok"] = Value::make_bool(true);
             res["muted"] = Value::make_bool(muted);
             if (muted) res["stopSession"] = Value::make_bool(true);
@@ -3931,12 +4044,15 @@ int main(int argc, char** argv) {
                 res["stopSession"] = Value::make_bool(true);
                 return res;
             }
-            if (act == "cancel") {
+            if (act == "cancel" || act == "stop") {
+                RingingAlarm stopped_ring;
+                const bool stopped_active = stop_ringing_alarm(stopped_ring);
                 std::string target = args.get("target") ? args.get("target")->as_str() : "";
                 int removed = timers.cancel_timer(target);
-                if (removed > 0) leds.trigger_task_icon("check", 72, 238, 145, 3600);
-                res["ok"] = Value::make_bool(removed > 0);
+                if (removed > 0 || stopped_active) leds.trigger_task_icon("check", 72, 238, 145, 3600);
+                res["ok"] = Value::make_bool(removed > 0 || stopped_active);
                 res["removed"] = Value::make_int(removed);
+                res["stoppedRinging"] = Value::make_bool(stopped_active);
                 res["activeTimers"] = timers.list_timers_json();
                 res["stopSession"] = Value::make_bool(true);
                 return res;
@@ -5102,9 +5218,7 @@ fi
                 }
                 bool already = is_startup_shown_flag();
                 if (!already || force) {
-                    mark_startup_shown_flag();
-                    leds.trigger_startup_show(5800);
-                    if (!silent) audio.play_startup_chime();
+                    trigger_startup_presentation(!silent, false);
                 }
                 json::Value resp = json::Value::make_obj();
                 resp["ok"] = json::Value::make_bool(true);
@@ -6078,10 +6192,9 @@ fi
                             last_announced_music_banner = key;
                             should_banner = true;
                         }
-                    } else if (!music_state.playing && !music_state.paused) {
+                    } else if (!music_state.playing && !music_state.paused && full_track_title.empty()) {
                         last_announced_music_banner.clear();
-                        clear_track_title = full_track_title.empty();
-                        keep_track_title = !full_track_title.empty();
+                        clear_track_title = true;
                     } else if (!full_track_title.empty()) {
                         keep_track_title = true;
                     }
@@ -6094,7 +6207,17 @@ fi
                     leds.set_music_track_title("");
                 }
                 if (should_banner) {
-                    leds.trigger_music_track_banner(full_track_title);
+                    bool skip_banner_for_track_vis = false;
+                    {
+                        std::lock_guard<std::mutex> clk(cfg_mu);
+                        skip_banner_for_track_vis =
+                            cfg.led_screen.auto_music_visualizer &&
+                            cfg.led_screen.visualizer_style == "track_title" &&
+                            cfg.led_screen.mode != "off";
+                    }
+                    if (!skip_banner_for_track_vis) {
+                        leds.trigger_music_track_banner(full_track_title);
+                    }
                 }
                 return HttpResponse::json("{\"ok\":true}");
             }
@@ -6425,25 +6548,31 @@ fi
                 }
                 json::Value out = json::Value::make_obj();
                 out["ok"] = json::Value::make_bool(true);
-                if (req.path == "/api/alarms/snooze") {
-                    int minutes = 5;
-                    json::Value v;
-                    if (json::Parser::parse(req.body, v) && v.get("minutes") && v.get("minutes")->is_num()) {
-                        minutes = std::clamp(v.get("minutes")->as_int(5), 1, 60);
+                    if (req.path == "/api/alarms/snooze") {
+                        int minutes = 5;
+                        json::Value v;
+                        if (json::Parser::parse(req.body, v) && v.get("minutes") && v.get("minutes")->is_num()) {
+                            minutes = std::clamp(v.get("minutes")->as_int(5), 1, 60);
+                        }
+                        if (stopped.is_timer) {
+                            const int tid = timers.set_timer(minutes * 60, stopped.label);
+                            out["timerId"] = json::Value::make_int(tid);
+                            out["snoozeMinutes"] = json::Value::make_int(minutes);
+                        } else {
+                            SnoozedAlarm s;
+                            s.alarm.id = stopped.id;
+                            s.alarm.label = stopped.label;
+                            s.alarm.time = stopped.time;
+                            s.alarm.sound = stopped.sound;
+                            s.fire_epoch = std::time(nullptr) + minutes * 60;
+                            {
+                                std::lock_guard<std::mutex> lk(alarm_mu);
+                                snoozed_alarms.push_back(s);
+                            }
+                            out["snoozeMinutes"] = json::Value::make_int(minutes);
+                            out["fireEpoch"] = json::Value::make_int(static_cast<int64_t>(s.fire_epoch));
+                        }
                     }
-                    SnoozedAlarm s;
-                    s.alarm.id = stopped.id;
-                    s.alarm.label = stopped.label;
-                    s.alarm.time = stopped.time;
-                    s.alarm.sound = stopped.sound;
-                    s.fire_epoch = std::time(nullptr) + minutes * 60;
-                    {
-                        std::lock_guard<std::mutex> lk(alarm_mu);
-                        snoozed_alarms.push_back(s);
-                    }
-                    out["snoozeMinutes"] = json::Value::make_int(minutes);
-                    out["fireEpoch"] = json::Value::make_int(static_cast<int64_t>(s.fire_epoch));
-                }
                 out["id"] = json::Value::make_int(stopped.id);
                 out["ringingAlarm"] = json::Value::make_null();
                 return HttpResponse::json(out.dump(-1));
@@ -6666,16 +6795,7 @@ fi
                     int dy = v.get("dy") ? v.get("dy")->as_int(0) : 0;
                     uinput.send_mouse_scroll(dy);
                 } else if (cmd == "mute_toggle") {
-                    DaemonConfig next_c;
-                    {
-                        std::lock_guard<std::mutex> lk(cfg_mu);
-                        cfg.audio.mic_muted = !cfg.audio.mic_muted;
-                        next_c = cfg;
-                    }
-                    audio.set_mic_muted(next_c.audio.mic_muted);
-                    assistant.set_mic_muted(next_c.audio.mic_muted);
-                    leds.set_mic_muted(next_c.audio.mic_muted);
-                    save_cfg(next_c);
+                    toggle_mic_mute_state(false);
                 }
             }
         });
@@ -6737,26 +6857,14 @@ fi
             push_hdmi_route_to_launcher(c_init.audio.output_route, volume_osd_pct.load(), c_init.audio.output_route == "hdmi");
             if (!c_init.setup_completed && !initial_startup_show_played && !is_startup_shown_flag()) {
                 initial_startup_show_played = true;
-                mark_startup_shown_flag();
-                leds.trigger_startup_show(5800);
-                audio.play_startup_chime();
-                json::Value scmd = json::Value::make_obj();
-                scmd["cmd"] = json::Value::make_str("startup_show");
-                send_udp_json(8086, scmd.dump(-1));
+                trigger_startup_presentation(true, true);
             }
             initial_udp_synced = true;
         } else if (!initial_startup_show_played &&
                    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start_tp).count() >= 6) {
             initial_startup_show_played = true;
             if (!is_startup_shown_flag()) {
-                mark_startup_shown_flag();
-                leds.trigger_startup_show(5800);
-                audio.play_startup_chime();
-                if (is_udp_port_bound(8086)) {
-                    json::Value scmd = json::Value::make_obj();
-                    scmd["cmd"] = json::Value::make_str("startup_show");
-                    send_udp_json(8086, scmd.dump(-1));
-                }
+                trigger_startup_presentation(true, true);
             }
         }
 
@@ -6803,6 +6911,14 @@ fi
         }
 
         auto now = std::chrono::steady_clock::now();
+        static auto last_fast_reconcile_tp = now;
+        const bool in_boot_audio_window =
+            std::chrono::duration_cast<std::chrono::seconds>(now - start_tp).count() < 20;
+        if ((in_boot_audio_window || audio.is_playing()) &&
+            (now - last_fast_reconcile_tp) >= std::chrono::milliseconds(150)) {
+            last_fast_reconcile_tp = now;
+            reconcile_volume_if_drifted();
+        }
         bool v_act = assistant.is_active() || audio.is_playback_or_tail_active(250);
         if ((v_act && (now - last_voice_udp_tp) >= std::chrono::milliseconds(45)) ||
             (!v_act && prev_voice_active)) {

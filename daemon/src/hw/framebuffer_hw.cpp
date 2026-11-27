@@ -1,5 +1,6 @@
 #include "hw/framebuffer_pixel.hpp"
 #include "hw/framebuffer_hw.hpp"
+#include "hw/led_ring_policy.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
@@ -403,6 +404,7 @@ void FramebufferHw::set_music_track_title(const std::string& title) {
         std::lock_guard<std::mutex> lk(mu_);
         if (music_track_title_ != title) {
             music_track_title_ = title;
+            track_scroll_start_tp_ = title.empty() ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now();
             ++wake_seq_;
             notify = true;
         }
@@ -430,12 +432,20 @@ void FramebufferHw::trigger_music_track_banner(const std::string& title, uint8_t
     const int dur_ms = compute_full_scroll_duration_ms(title, 18.0, 25);
     {
         std::lock_guard<std::mutex> lk(mu_);
-        music_track_title_ = title;
+        const auto now = std::chrono::steady_clock::now();
+        if (music_track_title_ != title) {
+            music_track_title_ = title;
+            track_scroll_start_tp_ = now;
+        }
+        // Keep an already-running one-shot scroll for the same track from jumping back to 0.
+        if (scr_override_one_shot_ && scr_override_text_ == title && now < scr_text_until_) {
+            return;
+        }
         scr_override_text_ = title;
         scr_override_color_ = Rgb{r, g, b};
         scr_override_one_shot_ = true;
         scr_override_speed_ = 18.0;
-        scr_override_start_ = std::chrono::steady_clock::now();
+        scr_override_start_ = now;
         scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(dur_ms);
         ++wake_seq_;
     }
@@ -774,10 +784,15 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
         int target_bl = static_cast<int>(min_bl + norm * (max_bl - min_bl));
         bl = std::clamp(target_bl, min_bl, max_bl);
     }
-    eff_brightness_.store(bl);
-    if ((last_fb4_bl_ < 0 || std::abs(bl - last_fb4_bl_) >= 2) && fb4_.fd >= 0) {
-        write_backlight(fb4_.bl_path, bl, fb4_max_bl_);
-        last_fb4_bl_ = bl;
+    float peak_spec = 0.0f;
+    for (float b : spec) peak_spec = std::max(peak_spec, std::clamp(b, 0.0f, 1.0f));
+    const bool ring_override =
+        startup_active || cal_active || osd_active || bt_active || flash_active || (vstate != VoiceVisualState::Idle);
+    const int hw_bl = effective_ring_backlight(cfg.mode, ring_override, muted, peak_spec, bl);
+    eff_brightness_.store(hw_bl);
+    if (should_write_ring_backlight(last_fb4_bl_, hw_bl) && fb4_.fd >= 0) {
+        write_backlight(fb4_.bl_path, hw_bl, fb4_max_bl_);
+        last_fb4_bl_ = hw_bl;
     }
 
     float spd = 0.25f + (std::clamp(cfg.speed, 1, 100) / 100.0f) * 2.5f;
@@ -900,11 +915,14 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
             logical[i] = lerp_rgb(scale_rgb(secondary, 0.12f), primary, k);
         }
     } else if (cfg.mode == "music" || cfg.mode == "voice") {
-        for (int i = 0; i < 24; ++i) {
-            float b = std::clamp(spec[i], 0.0f, 1.0f);
-            float base_lvl = 0.08f + b * 0.92f;
-            Rgb col = lerp_rgb(primary, secondary, b);
-            logical[i] = scale_rgb(col, base_lvl);
+        if (peak_spec < 0.015f) {
+            logical.fill(Rgb{0, 0, 0});
+        } else {
+            for (int i = 0; i < 24; ++i) {
+                float b = ring_music_band_level(spec[i]);
+                Rgb col = lerp_rgb(primary, secondary, b);
+                logical[i] = scale_rgb(col, b);
+            }
         }
     } else { // "rainbow"
         float phase = static_cast<float>(t_sec * spd * 45.0);
@@ -915,9 +933,9 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
     }
 
     // Apply brightness scale in pixel domain too so direct RGB ring shows exact intensity
-    float br_k = static_cast<float>(bl) / 255.0f;
+    float br_k = static_cast<float>(hw_bl) / 255.0f;
     // Note: backlight sysfs scales overall current, keep RGB vivid above low thresholds
-    float pixel_scale = cfg.mode == "off" ? 0.0f : (0.25f + 0.75f * br_k);
+    float pixel_scale = (hw_bl == 0) ? 0.0f : (0.25f + 0.75f * br_k);
 
     if (fb4_.fd >= 0) {
         std::fill(fb4_.buf.begin(), fb4_.buf.end(), 0);
@@ -938,7 +956,7 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
 
     std::lock_guard<std::mutex> lk(mu_);
     for (int i = 0; i < 24; ++i) {
-        ring_pixels_[i] = scale_rgb(logical[i], cfg.mode == "off" ? 0.0f : std::max(0.15f, br_k));
+        ring_pixels_[i] = scale_rgb(logical[i], hw_bl == 0 ? 0.0f : std::max(0.15f, br_k));
     }
 }
 
@@ -1034,6 +1052,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     double scr_override_speed = 22.0;
     bool music_vis_active = false;
     std::string music_track_txt;
+    double track_scroll_elapsed = t_sec;
     bool weather_active = false;
     int weather_temp = 0;
     std::string weather_cond = "clear";
@@ -1068,6 +1087,9 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         music_vis_active = (music_playing_ || now < music_stop_grace_until_) &&
                            cfg.auto_music_visualizer && (cfg.mode != "off");
         music_track_txt = music_track_title_;
+        if (track_scroll_start_tp_.time_since_epoch().count() > 0) {
+            track_scroll_elapsed = std::max(0.0, std::chrono::duration<double>(now - track_scroll_start_tp_).count());
+        }
         if (now < weather_until_) {
             weather_active = true;
             weather_temp = weather_temp_c_;
@@ -1307,7 +1329,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
                 draw_text_col(title, static_cast<int>((W - txt_w) / 2), text_y, tc);
             } else {
                 const int span = txt_w + static_cast<int>(W);
-                const int px = static_cast<int>(t_sec * 16.0) % std::max(1, span);
+                const int px = static_cast<int>(track_scroll_elapsed * 16.0) % std::max(1, span);
                 draw_text_col(title, static_cast<int>(W) - px, text_y, tc);
             }
             (void)base_col;

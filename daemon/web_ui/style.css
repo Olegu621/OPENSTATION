@@ -1706,8 +1706,10 @@ body.offline .content { opacity: 0.45; pointer-events: none; }
   .only-mobile { display: inline-flex !important; }
   .main { padding-bottom: calc(164px + env(safe-area-inset-bottom)); }
   .appbar {
-    padding: 14px 16px 10px;
-    flex-wrap: nowrap;
+    padding: 12px 14px 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
     position: sticky;
     top: 0;
     z-index: 20;
@@ -1716,20 +1718,28 @@ body.offline .content { opacity: 0.45; pointer-events: none; }
     -webkit-backdrop-filter: blur(22px);
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
-  .page-title { font-size: 1.35rem; flex: 1; }
-  .badges { flex-wrap: nowrap; }
+  .page-title { font-size: 1.28rem; flex: none; }
+  .badges {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+  .badges::-webkit-scrollbar { display: none; }
+  .badges > * { flex: 0 0 auto; }
   .content { padding: 12px 14px 24px; }
   .conn-banner, .alarm-banner { width: calc(100% - 28px); }
   .grid-2-tight, .grid-3-tight, .wiz-diag-grid, .wiz-checklist { grid-template-columns: minmax(0, 1fr); }
 
   .bottom-nav {
     display: grid !important;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 30;
     height: calc(76px + env(safe-area-inset-bottom));
-    padding: 10px 4px calc(12px + env(safe-area-inset-bottom));
+    padding: 10px 2px calc(12px + env(safe-area-inset-bottom));
     background: rgba(8, 13, 26, 0.94);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
@@ -1744,10 +1754,10 @@ body.offline .content { opacity: 0.45; pointer-events: none; }
     flex-direction: column;
     align-items: center;
     gap: 3px;
-    font: 500 0.72rem var(--font);
+    font: 500 0.65rem var(--font);
     color: var(--muted);
   }
-  .bottom-nav .pill { width: 52px; height: 30px; border-radius: 15px; display: flex; align-items: center; justify-content: center; }
+  .bottom-nav .pill { width: 42px; height: 28px; border-radius: 14px; display: flex; align-items: center; justify-content: center; }
   .bottom-nav .tab.active { color: #fff; font-weight: 700; }
   .bottom-nav .tab.active .pill { background: rgba(0, 212, 255, 0.24); color: var(--accent); }
 

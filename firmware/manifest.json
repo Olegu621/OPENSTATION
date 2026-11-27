@@ -1,46 +1,46 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.44",
+    "version":  "1.6.45",
     "autonomous":  true,
-    "changelog":  "Улучшение надёжности аудио и диагностики микрофона: сохранение TDMOUT_B для референса AEC на YNDX-00053, автовосстановление зависших audio-hal/audioserver, резервный ALSA-выход (pcmC0D0p), ожидание звуковой карты при старте и диагностика отсутствия звуковой карты/EBUSY в веб-интерфейсе.",
-    "buildTimeUtc":  "2026-11-27T21:20:28Z",
+    "changelog":  "Комплексное улучшение UX по отзывам: плавный старт приветственного звука без скачка громкости, стабильная бегущая строка трека, мгновенное отключение LED-кольца и реакция режима «Музыка» только на внутренний звук, перебивание ассистента голосом (VQE barge-in), защита от случайного отключения микрофона ИИ и надёжная кнопка Mute, бинды пульта вслепую (двойной тап / удержание), унификация мобильного/ПК Web UI и ТВ-меню, а также зацикленный сигнал таймера.",
+    "buildTimeUtc":  "2026-11-27T21:51:30Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  3629864,
-                                 "sha256":  "90037bc7ddbfcd88795ba5a7299c4bc0df718b1a9260e6148d0b694dc1190acc",
-                                 "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.44/openstationd"
+                                 "size":  3654568,
+                                 "sha256":  "2db1c681b61a0b02222d4bbaae836e8cf409416d4e458e4e1ed992850597f35d",
+                                 "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.45/openstationd"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
                                     "size":  657728,
                                     "sha256":  "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14",
-                                    "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.44/bootlogod"
+                                    "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.45/bootlogod"
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  29405501,
-                                   "sha256":  "6d1c762a82951d690504f5b85f84b8a64509139634f835e27c59e6052dbc35bf",
-                                   "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.44/OpenStationLauncher.apk"
+                                   "size":  29410865,
+                                   "sha256":  "90fb0068eeee4dad6a28dc314eb52acb60a556b911ef1b4e767b77bec4e56d11",
+                                   "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.45/OpenStationLauncher.apk"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",
                               "size":  808866,
                               "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03",
-                              "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.44/OpenStationIME.apk"
+                              "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.45/OpenStationIME.apk"
                           },
                   "bootanimation":  {
                                         "fileName":  "bootanimation.zip",
                                         "size":  6708019,
                                         "sha256":  "3e9035ffae9cfa21aaab9cd413562bfa6980479e304dd0f511f7b8e248e07bdf",
-                                        "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.44/bootanimation.zip"
+                                        "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.45/bootanimation.zip"
                                     },
                   "bootlogo":  {
                                    "fileName":  "logo.img",
                                    "size":  2252608,
                                    "sha256":  "349bfd8074c83e7ddc8ef51bc88b9d3d93a3118871e1442866f1e82f17ffc444",
-                                   "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.44/logo.img"
+                                   "url":  "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.45/logo.img"
                                }
               }
 }

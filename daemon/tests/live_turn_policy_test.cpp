@@ -54,5 +54,30 @@ int main() {
     health.reset();
     assert(!health.healthy && !health.fallback_to_kws && health.unhealthy_since_ms == 0);
 
+    // Hardware-AEC barge-in gate checks.
+    BargeInGate barge;
+    assert(barge.feed(50.0f, 40.0f, false, true, true) == BargeInGate::Result::Pass);
+    // Without VQE input, echo guard drops audio during playback even for loud spikes.
+    for (int i = 0; i < 8; ++i) {
+        assert(barge.feed(3000.0f, 50.0f, true, false, true) == BargeInGate::Result::Drop);
+    }
+    // With VQE input, low residual echo is dropped; 5 sustained speech frames trigger barge-in.
+    assert(barge.feed(120.0f, 80.0f, true, true, true) == BargeInGate::Result::Drop);
+    for (int i = 0; i < BargeInGate::kTriggerFrames - 1; ++i) {
+        assert(barge.feed(900.0f, 80.0f, true, true, true) == BargeInGate::Result::Drop);
+    }
+    assert(barge.feed(900.0f, 80.0f, true, true, true) == BargeInGate::Result::TriggerBargeIn);
+    // Subsequent playback frames stay unlocked until playback ends.
+    assert(barge.feed(100.0f, 80.0f, true, true, true) == BargeInGate::Result::Pass);
+    assert(barge.feed(100.0f, 80.0f, false, true, true) == BargeInGate::Result::Pass);
+    assert(!barge.latched);
+
+    // AI mic mute guard: block spontaneous mute on unrelated chatter, allow explicit request or unmute.
+    assert(should_allow_ai_mic_mute(false, "", ""));
+    assert(!should_allow_ai_mic_mute(true, "", ""));
+    assert(!should_allow_ai_mic_mute(true, "хватит говорить", "включи микроволновку"));
+    assert(should_allow_ai_mic_mute(true, "Выключи МИКРОФОН пожалуйста", ""));
+    assert(should_allow_ai_mic_mute(true, "", "mute the mic"));
+
     return 0;
 }

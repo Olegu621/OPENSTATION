@@ -174,6 +174,8 @@ private:
     std::atomic<bool> stock_fallback_to_kws_{false};
     std::mutex stock_mu_;
     StockSpotterHealth stock_health_;
+    std::mutex barge_mu_;
+    BargeInGate barge_in_;
     std::atomic<bool> use_proxy_host_{false};
     std::atomic<bool> search_quota_unsupported_{false};
 

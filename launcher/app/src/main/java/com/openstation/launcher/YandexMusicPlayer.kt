@@ -958,10 +958,7 @@ class YandexMusicPlayer(private val context: Context) {
                         }
                         startProgressTicker()
                         emitSnapshot(forceDaemon = true)
-                        if (track.id != lastTickerTrackId) {
-                            lastTickerTrackId = track.id
-                            pushTickerToDaemon("♪ ${track.artists} - ${track.title}")
-                        }
+                        lastTickerTrackId = track.id
                         if (sid.isNotEmpty()) {
                             enqueueRotorFeedback(sid, "trackStarted", track)
                         }

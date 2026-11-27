@@ -627,25 +627,20 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             if (ws_audio_cb_) ws_audio_cb_(frame16, 320);
         }
 
-        // Fallback LED spectrum ONLY if LEDs actually use spectrum AND Visualizer didn't push recently
+        // Internal audio visualizer spectrum: never react to room mic sound; only reset to zero
+        // once an external Android Visualizer (UDP 8087) stream stops sending while TTS is idle.
         if (need_spec && !playing_active_.load()) {
-            bool use_mic_spec = false;
+            bool ext_expired = false;
             {
                 std::lock_guard<std::mutex> lk(stat_mu_);
-                auto age = std::chrono::steady_clock::now() - ext_spec_tp_;
-                use_mic_spec = age > std::chrono::milliseconds(350);
+                ext_expired = (std::chrono::steady_clock::now() - ext_spec_tp_) > std::chrono::milliseconds(420);
             }
-            if (use_mic_spec) {
-                if (cfg_copy.mic_muted || rms < 25.0f) {
-                    if (!mic_spec_zero_sent_) {
-                        std::array<float, 24> zero{};
-                        spec_cb_(zero);
-                        mic_spec_zero_sent_ = true;
-                    }
-                } else {
-                    mic_spec_zero_sent_ = false;
-                    spec_cb_(compute_spectrum_16k(frame16, 320));
-                }
+            if (ext_expired && !mic_spec_zero_sent_) {
+                std::array<float, 24> zero{};
+                spec_cb_(zero);
+                mic_spec_zero_sent_ = true;
+            } else if (!ext_expired) {
+                mic_spec_zero_sent_ = false;
             }
         }
 
@@ -1169,26 +1164,29 @@ void AudioEngine::play_error_chime() {
 }
 
 void AudioEngine::play_timer_alarm() {
-    // Cheerful 3-cycle C5-E5-G5 alarm (~1.2s @ 48 kHz)
+    // Crisp, unmistakable 4-pulse crystal bell alarm triad (~1.55s @ 48 kHz)
     const int sr = 48000;
-    const double freqs[4] = {523.25, 659.25, 783.99, 1046.50};
-    const int note_n = sr * 90 / 1000;
-    const int gap_n = sr * 60 / 1000;
+    const double freqs[4] = {659.25, 880.00, 1046.50, 1318.51};
+    const int note_n = sr * 105 / 1000;
+    const int gap_n = sr * 75 / 1000;
     const int cycle_n = note_n * 3 + gap_n;
-    const int total = cycle_n * 3;
+    const int total = cycle_n * 4;
     std::vector<int16_t> pcm(static_cast<size_t>(total) * 2, 0);
-    for (int rep = 0; rep < 3; ++rep) {
+    for (int rep = 0; rep < 4; ++rep) {
         int base = rep * cycle_n;
         double phase = 0.0;
+        double harm_phase = 0.0;
         for (int note = 0; note < 3; ++note) {
-            double f = freqs[note + (rep == 2 ? 1 : 0)];
+            double f = freqs[(note + (rep % 2)) % 4];
             int nbase = base + note * note_n;
             for (int k = 0; k < note_n; ++k) {
                 phase += 2.0 * kPi * f / sr;
+                harm_phase += 4.0 * kPi * f / sr;
                 double env = 1.0;
-                if (k < 240) env = k / 240.0;
-                else if (k > note_n - 480) env = std::max(0.0, (note_n - k) / 480.0);
-                int16_t v = static_cast<int16_t>(std::sin(phase) * env * 7800.0);
+                if (k < 260) env = k / 260.0;
+                else if (k > note_n - 520) env = std::max(0.0, (note_n - k) / 520.0);
+                double sig = (std::sin(phase) + 0.30 * std::sin(harm_phase)) * env * 13800.0;
+                int16_t v = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(sig)), -30000, 30000));
                 int idx = (nbase + k) * 2;
                 pcm[idx] = v;
                 pcm[idx + 1] = v;
@@ -1198,51 +1196,61 @@ void AudioEngine::play_timer_alarm() {
     play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
 }
 
+void AudioEngine::warm_up_output(int silence_ms) {
+    const int sr = 48000;
+    const int frames = (sr * std::clamp(silence_ms, 20, 300)) / 1000;
+    std::vector<int16_t> silence(static_cast<size_t>(frames) * 2, 0);
+    play_pcm(silence.data(), static_cast<size_t>(frames), sr, 2);
+}
+
 void AudioEngine::play_startup_chime() {
-    // Rich Station Max boot signature: 52->65 Hz woofer bloom + Liquid Glass major-9 arpeggio (~2.4s @ 48 kHz)
+    // Rich Station Max boot signature: soft fade-in, controlled headroom to avoid start burst/clipping (~2.4s @ 48 kHz)
     const int sr = 48000;
     const int total = sr * 24 / 10; // 2.4s
     std::vector<int16_t> pcm(static_cast<size_t>(total) * 2, 0);
 
     struct Note { double freq; double start_s; double dur_s; double amp; double pan; };
     const Note notes[] = {
-        {130.81, 0.04, 2.20, 4200.0,  0.00}, // C3 foundation
-        {261.63, 0.14, 1.90, 3200.0, -0.25}, // C4
-        {392.00, 0.28, 1.80, 3000.0,  0.25}, // G4
-        {493.88, 0.44, 1.75, 2900.0, -0.35}, // B4
-        {587.33, 0.60, 1.65, 2800.0,  0.35}, // D5
-        {659.25, 0.78, 1.55, 2600.0, -0.15}, // E5
-        {783.99, 0.96, 1.38, 2500.0,  0.15}, // G5
-        {1046.50,1.16, 1.18, 2100.0,  0.00}, // C6 shimmer
+        {130.81, 0.06, 2.20, 3400.0,  0.00}, // C3 foundation
+        {261.63, 0.16, 1.90, 2700.0, -0.25}, // C4
+        {392.00, 0.30, 1.80, 2500.0,  0.25}, // G4
+        {493.88, 0.46, 1.75, 2400.0, -0.35}, // B4
+        {587.33, 0.62, 1.65, 2300.0,  0.35}, // D5
+        {659.25, 0.80, 1.55, 2150.0, -0.15}, // E5
+        {783.99, 0.98, 1.38, 2050.0,  0.15}, // G5
+        {1046.50,1.18, 1.18, 1750.0,  0.00}, // C6 shimmer
     };
 
     double sub_phase = 0.0;
     for (int i = 0; i < total; ++i) {
         double t = static_cast<double>(i) / sr;
+        double master_fade = std::min(1.0, t / 0.045);
         // Sub-bass warm sweep 48 -> 65.4 Hz
         double sub_f = 48.0 + 17.41 * std::min(1.0, t / 0.85);
         sub_phase += 2.0 * kPi * sub_f / sr;
-        double sub_env = (t < 0.06) ? (t / 0.06) : std::exp(-(t - 0.06) * 1.45);
-        double sub_s = std::sin(sub_phase) * sub_env * 5200.0;
+        double sub_env = (t < 0.08) ? (t / 0.08) : std::exp(-(t - 0.08) * 1.45);
+        double sub_s = std::sin(sub_phase) * sub_env * 3800.0;
 
         double l_sum = sub_s;
         double r_sum = sub_s;
         for (const auto& n : notes) {
             if (t >= n.start_s && t < n.start_s + n.dur_s) {
                 double dt = t - n.start_s;
-                double atk = std::min(1.0, dt / 0.018);
+                double atk = std::min(1.0, dt / 0.022);
                 double rel = std::min(1.0, (n.start_s + n.dur_s - t) / 0.28);
                 double dec = std::exp(-dt * 2.1);
                 double env = atk * rel * dec;
-                double s = (std::sin(2.0 * kPi * n.freq * dt) + 0.18 * std::sin(4.0 * kPi * n.freq * dt)) * env * n.amp;
+                double s = (std::sin(2.0 * kPi * n.freq * dt) + 0.16 * std::sin(4.0 * kPi * n.freq * dt)) * env * n.amp;
                 double g_l = 0.5 * (1.0 - n.pan * 0.6);
                 double g_r = 0.5 * (1.0 + n.pan * 0.6);
-                l_sum += s * g_l * 1.6;
-                r_sum += s * g_r * 1.6;
+                l_sum += s * g_l * 1.45;
+                r_sum += s * g_r * 1.45;
             }
         }
-        pcm[i * 2] = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(l_sum)), -31000, 31000));
-        pcm[i * 2 + 1] = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(r_sum)), -31000, 31000));
+        l_sum *= master_fade;
+        r_sum *= master_fade;
+        pcm[i * 2] = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(l_sum)), -28000, 28000));
+        pcm[i * 2 + 1] = static_cast<int16_t>(std::clamp(static_cast<int>(std::lround(r_sum)), -28000, 28000));
     }
     play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
 }

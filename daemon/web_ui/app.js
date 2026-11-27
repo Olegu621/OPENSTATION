@@ -41,6 +41,45 @@
   let currentMemoryNotes = [];
   let eqPushTimer = null;
 
+  const INPUT_ACTION_OPTIONS = [
+    ["assistant", "Запустить / остановить Алису"],
+    ["wyoming", "Home Assistant (Wyoming)"],
+    ["play_pause", "Пауза / Воспроизведение"],
+    ["next", "Следующий трек"],
+    ["prev", "Предыдущий трек"],
+    ["mic_mute", "Микрофон вкл / выкл"],
+    ["stop_alarm", "Стоп таймера / будильника"],
+    ["led_cycle", "Сменить режим подсветки"],
+    ["bt_toggle", "Bluetooth колонка вкл / выкл"],
+    ["vol_up", "Громче"],
+    ["vol_down", "Тише"],
+    ["launcher", "Домой (ТВ-экран)"],
+    ["none", "Ничего"]
+  ];
+  document.querySelectorAll(".js-input-act").forEach((sel) => {
+    const allowPtt = sel.dataset.allowPtt === "1";
+    const list = allowPtt
+      ? [
+          ["next", "Следующий трек"],
+          ["prev", "Предыдущий трек"],
+          ["play_pause", "Пауза / Воспроизведение"],
+          ["push_to_talk", "Рация — говорить, пока держат"],
+          ["stop_alarm", "Стоп таймера / будильника"],
+          ["mic_mute", "Микрофон вкл / выкл"],
+          ["led_cycle", "Сменить подсветку"],
+          ["bt_toggle", "Bluetooth колонка вкл / выкл"],
+          ["none", "Ничего"]
+        ]
+      : INPUT_ACTION_OPTIONS;
+    sel.innerHTML = "";
+    list.forEach(([val, lbl]) => {
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = lbl;
+      sel.appendChild(opt);
+    });
+  });
+
   function showToast(msg, isErr = false) {
     const t = $("toast");
     if (!t) return;
@@ -172,10 +211,13 @@
       const inp = {};
       if ($("rotaryInvert")) inp.rotaryInvert = $("rotaryInvert").checked;
       if ($("rotaryStep")) inp.rotaryStep = parseInt($("rotaryStep").value, 10) || 1;
-      if ($("actShort")) inp.actionShort = $("actShort").value;
-      if ($("actLong")) inp.actionLong = $("actLong").value;
-      if ($("remoteShort")) inp.remoteShort = $("remoteShort").value;
-      if ($("remoteLong")) inp.remoteLong = $("remoteLong").value;
+      ["actShort", "actLong", "remoteShort", "remoteLong", "remoteDouble",
+       "remoteLeftLong", "remoteRightLong", "remoteBackLong", "remotePlayDouble"].forEach((id) => {
+        if ($(id)) {
+          const cfgKey = id === "actShort" ? "actionShort" : (id === "actLong" ? "actionLong" : id);
+          inp[cfgKey] = $(id).value;
+        }
+      });
       payload.input = inp;
     }
 
@@ -980,6 +1022,11 @@
       if ($("actLong")) $("actLong").value = cfg.input?.actionLong || "led_cycle";
       if ($("remoteShort")) $("remoteShort").value = cfg.input?.remoteShort || "assistant";
       if ($("remoteLong")) $("remoteLong").value = cfg.input?.remoteLong || "next";
+      if ($("remoteDouble")) $("remoteDouble").value = cfg.input?.remoteDouble || "play_pause";
+      if ($("remoteLeftLong")) $("remoteLeftLong").value = cfg.input?.remoteLeftLong || "prev";
+      if ($("remoteRightLong")) $("remoteRightLong").value = cfg.input?.remoteRightLong || "next";
+      if ($("remoteBackLong")) $("remoteBackLong").value = cfg.input?.remoteBackLong || "stop_alarm";
+      if ($("remotePlayDouble")) $("remotePlayDouble").value = cfg.input?.remotePlayDouble || "next";
       if ($("rotaryInvert")) $("rotaryInvert").checked = !!cfg.input?.rotaryInvert;
       if ($("rotaryStep")) $("rotaryStep").value = cfg.input?.rotaryStep ?? 1;
       if ($("devHost")) $("devHost").value = cfg.deviceHostname || "station-max";
@@ -1416,7 +1463,9 @@
   [
     "ringColor", "ringSecColor", "ringAutoBrightness",
     "scrMode", "scrText", "scrColor", "scrAutoBri", "clockStyle", "visualizerStyle", "autoMusicVisualizer",
-    "eqPreset", "actShort", "actLong", "remoteShort", "remoteLong", "rotaryInvert", "rotaryStep", "locCity",
+    "eqPreset", "actShort", "actLong", "remoteShort", "remoteLong", "remoteDouble",
+    "remoteLeftLong", "remoteRightLong", "remoteBackLong", "remotePlayDouble",
+    "rotaryInvert", "rotaryStep", "locCity",
     "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel",
     "astPrompt", "astWakeEn", "astChime", "astQuickCommands", "astSearch", "astEchoGuard", "astQuietWhisper",
     "astFollowUp", "astMaxSess", "otaAutoCheck", "otaSyncBootanim", "otaRepo", "otaBranch"
@@ -3356,8 +3405,15 @@
     if ($("alarmBanner")) {
       $("alarmBanner").hidden = !ring;
       if (ring) {
-        $("alarmBannerTitle").textContent = `Будильник ${ring.time || ""}`;
-        $("alarmBannerSub").textContent = ring.label || "Звонит сейчас";
+        if (ring.isTimer) {
+          $("alarmBannerTitle").textContent = "Таймер сработал";
+          $("alarmBannerSub").textContent = ring.label || "Время вышло";
+          if ($("btnAlarmSnooze")) $("btnAlarmSnooze").textContent = "+5 мин";
+        } else {
+          $("alarmBannerTitle").textContent = `Будильник ${ring.time || ""}`;
+          $("alarmBannerSub").textContent = ring.label || "Звонит сейчас";
+          if ($("btnAlarmSnooze")) $("btnAlarmSnooze").textContent = "Отложить 5 мин";
+        }
       }
     }
 

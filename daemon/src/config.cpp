@@ -211,19 +211,27 @@ void DaemonConfig::sanitize_and_validate() {
     audio.primary_mic_channel = std::clamp(audio.primary_mic_channel, -1, 15);
     audio.loopback_channel = std::clamp(audio.loopback_channel, 0, 15);
 
+    auto norm_action = [](std::string& v, const char* def, bool allow_wyoming, bool allow_ptt) {
+        if (is_one_of(v, {"assistant", "play_pause", "next", "prev", "mic_mute",
+                          "led_cycle", "bt_toggle", "launcher", "stop_alarm",
+                          "vol_up", "vol_down", "none"})) {
+            return;
+        }
+        if (allow_wyoming && v == "wyoming") return;
+        if (allow_ptt && v == "push_to_talk") return;
+        v = def;
+    };
+
     input.rotary_step = std::clamp(input.rotary_step, 1, 5);
-    if (!is_one_of(input.action_short, {"assistant", "wyoming", "play_pause", "next", "led_cycle", "launcher", "none"})) {
-        input.action_short = "assistant";
-    }
-    if (!is_one_of(input.action_long, {"assistant", "wyoming", "play_pause", "next", "led_cycle", "launcher", "none"})) {
-        input.action_long = "led_cycle";
-    }
-    if (!is_one_of(input.remote_short, {"assistant", "play_pause", "next", "none"})) {
-        input.remote_short = "assistant";
-    }
-    if (!is_one_of(input.remote_long, {"next", "push_to_talk", "none"})) {
-        input.remote_long = "next";
-    }
+    norm_action(input.action_short, "assistant", true, false);
+    norm_action(input.action_long, "led_cycle", true, false);
+    norm_action(input.remote_short, "assistant", true, false);
+    norm_action(input.remote_long, "next", true, true);
+    norm_action(input.remote_double, "play_pause", true, false);
+    norm_action(input.remote_left_long, "prev", true, false);
+    norm_action(input.remote_right_long, "next", true, false);
+    norm_action(input.remote_back_long, "stop_alarm", true, false);
+    norm_action(input.remote_play_double, "next", true, false);
 
     if (!is_one_of(assistant.mode, {"gemini", "wyoming", "off"})) {
         assistant.mode = "gemini";
@@ -429,6 +437,11 @@ json::Value DaemonConfig::to_json() const {
     in["actionLong"] = Value::make_str(input.action_long);
     in["remoteShort"] = Value::make_str(input.remote_short);
     in["remoteLong"] = Value::make_str(input.remote_long);
+    in["remoteDouble"] = Value::make_str(input.remote_double);
+    in["remoteLeftLong"] = Value::make_str(input.remote_left_long);
+    in["remoteRightLong"] = Value::make_str(input.remote_right_long);
+    in["remoteBackLong"] = Value::make_str(input.remote_back_long);
+    in["remotePlayDouble"] = Value::make_str(input.remote_play_double);
     root["input"] = std::move(in);
 
     Value ast = Value::make_obj();
@@ -625,6 +638,11 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = in->get("actionLong"); x && x->is_str()) input.action_long = x->as_str();
         if (auto* x = in->get("remoteShort"); x && x->is_str()) input.remote_short = x->as_str();
         if (auto* x = in->get("remoteLong"); x && x->is_str()) input.remote_long = x->as_str();
+        if (auto* x = in->get("remoteDouble"); x && x->is_str()) input.remote_double = x->as_str();
+        if (auto* x = in->get("remoteLeftLong"); x && x->is_str()) input.remote_left_long = x->as_str();
+        if (auto* x = in->get("remoteRightLong"); x && x->is_str()) input.remote_right_long = x->as_str();
+        if (auto* x = in->get("remoteBackLong"); x && x->is_str()) input.remote_back_long = x->as_str();
+        if (auto* x = in->get("remotePlayDouble"); x && x->is_str()) input.remote_play_double = x->as_str();
     }
 
     if (auto* ast = v.get("assistant"); ast && ast->is_obj()) {

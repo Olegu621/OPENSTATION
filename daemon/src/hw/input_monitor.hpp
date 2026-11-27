@@ -21,8 +21,13 @@ enum class HwEventType {
     HomePress,
     RemoteAssistantDown,
     RemoteAssistant,
+    RemoteAssistantDouble,
     RemoteAssistantLong,
-    RemoteAssistantRelease
+    RemoteAssistantRelease,
+    RemoteLeftLong,
+    RemoteRightLong,
+    RemoteBackLong,
+    RemotePlayDouble
 };
 
 class InputMonitor {
@@ -35,6 +40,7 @@ public:
     bool start(Callback cb);
     void stop();
 
+    void set_remote_assistant_double_enabled(bool en) { remote_assistant_double_.store(en); }
     bool headphone_plugged() const { return hp_plugged_.load(); }
 
 private:
@@ -45,6 +51,11 @@ private:
         std::string name;
         std::string path;
         RemoteAssistantPress assistant_press;
+        RemoteKeyGestureTracker assistant_gesture;
+        RemoteKeyGestureTracker left_gesture;
+        RemoteKeyGestureTracker right_gesture;
+        RemoteKeyGestureTracker back_gesture;
+        RemoteKeyGestureTracker play_gesture;
     };
 
     void scan_devices();
@@ -54,6 +65,7 @@ private:
     std::vector<WatchedFd> fds_;
     std::atomic<bool> running_{false};
     std::atomic<bool> hp_plugged_{false};
+    std::atomic<bool> remote_assistant_double_{true};
     std::thread worker_;
 };
 

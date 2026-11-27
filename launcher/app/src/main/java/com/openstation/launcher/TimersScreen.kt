@@ -323,9 +323,11 @@ class TimersScreen(
                     cornerRadius = dp(16).toFloat()
                 }
             }
-            val rTitle = ringing.optString("label").ifBlank { "Звонит будильник" }
+            val isTimer = ringing.optBoolean("isTimer", false)
+            val rTitle = ringing.optString("label").ifBlank { if (isTimer) "Таймер сработал!" else "Звонит будильник" }
+            val rPrefix = if (isTimer) "⏰ " else "🔔 "
             ringBox.addView(
-                makeText("🔔 $rTitle", 15f, "#FFFFFF", bold = true),
+                makeText("$rPrefix$rTitle", 15f, "#FFFFFF", bold = true),
                 LinearLayout.LayoutParams(0, -2, 1f)
             )
             ringBox.addView(makePill("Стоп", gold = true) {

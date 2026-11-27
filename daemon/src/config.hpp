@@ -88,10 +88,15 @@ struct LocationConfig {
 struct InputConfig {
     bool rotary_invert = false;
     int rotary_step = 1;                  // volume steps per detent
-    std::string action_short = "assistant"; // assistant, wyoming, play_pause, next, led_cycle, launcher, none
+    std::string action_short = "assistant"; // assistant, wyoming, play_pause, next, prev, mic_mute, led_cycle, bt_toggle, launcher, stop_alarm, vol_up, vol_down, none
     std::string action_long = "led_cycle";
-    std::string remote_short = "assistant"; // assistant, play_pause, next, none
-    std::string remote_long = "next"; // next, push_to_talk, none
+    std::string remote_short = "assistant"; // assistant, play_pause, next, prev, mic_mute, led_cycle, bt_toggle, launcher, stop_alarm, vol_up, vol_down, none
+    std::string remote_long = "next";       // + push_to_talk
+    std::string remote_double = "play_pause";
+    std::string remote_left_long = "prev";
+    std::string remote_right_long = "next";
+    std::string remote_back_long = "stop_alarm";
+    std::string remote_play_double = "next";
 };
 
 struct AssistantConfig {

@@ -136,6 +136,7 @@ private:
 
     bool music_playing_ = false;
     std::string music_track_title_;
+    std::chrono::steady_clock::time_point track_scroll_start_tp_{};
     std::chrono::steady_clock::time_point music_stop_grace_until_{};
     std::chrono::steady_clock::time_point weather_until_{};
     std::chrono::steady_clock::time_point weather_start_{};

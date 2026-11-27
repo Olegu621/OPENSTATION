@@ -54,6 +54,7 @@ public:
     void play_error_chime();
     void play_timer_alarm();
     void play_startup_chime();
+    void warm_up_output(int silence_ms = 70);
     void play_bt_chime(const std::string& kind);
     bool is_playing() const { return playing_active_.load(); }
     bool is_playback_or_tail_active(int tail_ms = 350) const;

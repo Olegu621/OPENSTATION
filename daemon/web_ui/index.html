@@ -64,7 +64,7 @@
         </div>
         <div class="mini-progress"><div data-mini="progress"></div></div>
         <div class="mini-ctrls">
-          <button class="icon-btn hide-mobile" data-mini-cmd="btnMusicPrev" aria-label="Предыдущий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h2v14H7zM20 5v14L10 12z"/></svg></button>
+              <button class="icon-btn" data-mini-cmd="btnMusicPrev" aria-label="Предыдущий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h2v14H7zM20 5v14L10 12z"/></svg></button>
           <button class="icon-btn mini-play" data-mini-cmd="btnMusicPlayPause" data-mini="play" aria-label="Пауза или воспроизведение"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg></button>
           <button class="icon-btn" data-mini-cmd="btnMusicNext" aria-label="Следующий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5h2v14h-2zM4 5v14l10-7z"/></svg></button>
         </div>
@@ -75,16 +75,13 @@
       <header class="appbar">
         <h1 class="page-title" id="pageTitle">Музыка</h1>
         <div class="badges">
-          <span class="badge hide-mobile" id="badgeVol">Громкость: --%</span>
+          <span class="badge" id="badgeVol">Громкость: --%</span>
           <button class="btn btn-sm btn-danger" id="btnQuickMute">Микрофон: ВКЛ</button>
-          <button class="btn btn-sm hide-mobile" id="btnQuickBt" title="Режим Bluetooth (A2DP колонка для телефона)">ᛒ Bluetooth: ВЫКЛ</button>
-          <button class="btn btn-sm btn-accent hide-mobile" id="btnQuickAlice">Алиса: Спит</button>
-          <button class="btn btn-sm hide-mobile" id="btnQuickMusic">🌊 Моя волна</button>
+          <button class="btn btn-sm" id="btnQuickBt" title="Режим Bluetooth (A2DP колонка для телефона)">ᛒ Bluetooth: ВЫКЛ</button>
+          <button class="btn btn-sm btn-accent" id="btnQuickAlice">Алиса: Спит</button>
+          <button class="btn btn-sm" id="btnQuickMusic">🌊 Моя волна</button>
           <button class="btn btn-sm btn-ota" id="badgeOtaUpdate" style="display:none;">⬇ Обновление</button>
-          <button class="btn btn-sm btn-accent hide-mobile" id="btnOpenWizard">✨ Мастер</button>
-          <button class="icon-btn tab only-mobile" data-tab="system" data-title="Система" aria-label="Система">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-          </button>
+          <button class="btn btn-sm btn-accent" id="btnOpenWizard">✨ Мастер</button>
         </div>
       </header>
 
@@ -595,7 +592,7 @@
 
                 <div class="grid-2-tight">
                   <div class="form-row toggle-row">
-                    <label>Защита от эха (Echo Guard)</label>
+                    <label>Защита от эха (и перебивание по VQE)</label>
                     <input type="checkbox" id="astEchoGuard" checked />
                   </div>
                   <div class="form-row toggle-row">
@@ -996,54 +993,53 @@
                 <button class="btn btn-sm btn-danger" id="btnRebootStation" type="button">⏻ Перезагрузить</button>
               </div>
               <details class="adv-details">
-                <summary>Управление кнопкой, кольцом и сервисом</summary>
+                <summary>Кнопки, пульт (вслепую) и сервис</summary>
                 <div class="adv-details-body">
                   <div class="grid-2-tight">
                     <div class="form-row">
-                      <label>Короткое нажатие кнопки</label>
-                      <select id="actShort">
-                        <option value="assistant">Запустить Алису</option>
-                        <option value="wyoming">Home Assistant (Wyoming)</option>
-                        <option value="play_pause">Пауза / Воспроизведение</option>
-                        <option value="next">Следующий трек</option>
-                        <option value="led_cycle">Сменить подсветку</option>
-                        <option value="launcher">Домой (ТВ-экран)</option>
-                        <option value="none">Ничего</option>
-                      </select>
+                      <label for="actShort">Кнопка сверху (короткое)</label>
+                      <select id="actShort" class="js-input-act"></select>
                     </div>
                     <div class="form-row">
-                      <label>Длинное нажатие кнопки</label>
-                      <select id="actLong">
-                        <option value="led_cycle">Сменить подсветку</option>
-                        <option value="assistant">Запустить Алису</option>
-                        <option value="wyoming">Home Assistant (Wyoming)</option>
-                        <option value="play_pause">Пауза / Воспроизведение</option>
-                        <option value="next">Следующий трек</option>
-                        <option value="launcher">Домой (ТВ-экран)</option>
-                        <option value="none">Ничего</option>
-                      </select>
+                      <label for="actLong">Кнопка сверху (удержание)</label>
+                      <select id="actLong" class="js-input-act"></select>
                     </div>
                   </div>
                   <div class="grid-2-tight">
                     <div class="form-row">
-                    <label for="remoteShort">Короткое нажатие на пульте</label>
-                    <select id="remoteShort">
-                      <option value="assistant">Включить / выключить Алису</option>
-                      <option value="play_pause">Пауза / Воспроизведение</option>
-                      <option value="next">Следующий трек</option>
-                      <option value="none">Ничего</option>
-                    </select>
+                      <label for="remoteShort">Пульт: Алиса (одно)</label>
+                      <select id="remoteShort" class="js-input-act"></select>
                     </div>
                     <div class="form-row">
-                    <label for="remoteLong">Удержание кнопки Алисы на пульте</label>
-                    <select id="remoteLong">
-                      <option value="next">Следующий трек</option>
-                      <option value="push_to_talk">Рация — говорить, пока кнопка удерживается</option>
-                      <option value="none">Ничего</option>
-                    </select>
+                      <label for="remoteDouble">Пульт: Алиса (двойной тап)</label>
+                      <select id="remoteDouble" class="js-input-act"></select>
                     </div>
                   </div>
-                  <p class="hint">В режиме рации кнопка записывает голос, пока её держат; короткое нажатие отдельно не выполняется. Требуются совместимый пульт и режим Gemini.</p>
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                      <label for="remoteLong">Пульт: Алиса (удержание)</label>
+                      <select id="remoteLong" class="js-input-act" data-allow-ptt="1"></select>
+                    </div>
+                    <div class="form-row">
+                      <label for="remotePlayDouble">Пульт: Play/Pause (двойной)</label>
+                      <select id="remotePlayDouble" class="js-input-act"></select>
+                    </div>
+                  </div>
+                  <div class="grid-3-tight">
+                    <div class="form-row">
+                      <label for="remoteLeftLong">Пульт: ◄ (удержание)</label>
+                      <select id="remoteLeftLong" class="js-input-act"></select>
+                    </div>
+                    <div class="form-row">
+                      <label for="remoteRightLong">Пульт: ► (удержание)</label>
+                      <select id="remoteRightLong" class="js-input-act"></select>
+                    </div>
+                    <div class="form-row">
+                      <label for="remoteBackLong">Пульт: Назад (удержание)</label>
+                      <select id="remoteBackLong" class="js-input-act"></select>
+                    </div>
+                  </div>
+                  <p class="hint">Удержания и двойные клики срабатывают в фоне даже при выключенном ТВ; любое нажатие также глушит звонящий таймер/будильник.</p>
                   <div class="grid-2-tight">
                     <div class="form-row toggle-row">
                       <label>Инвертировать кольцо громкости</label>
@@ -1206,6 +1202,7 @@
       <button class="tab" data-tab="sound" data-title="Звук и подсветка"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4v16M12 4v16M19 4v16M3 14h4M10 8h4M17 16h4"/></svg></span><span>Звук</span></button>
       <button class="tab" data-tab="home" data-title="Умный дом"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span><span>Дом</span></button>
       <button class="tab" data-tab="plugins" data-title="Плагины"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l3 3h4v4l3 3-3 3v4h-4l-3 3-3-3H5v-4l-3-3 3-3V5h4z"/></svg></span><span>Плагины</span></button>
+      <button class="tab" data-tab="system" data-title="Система"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span><span>Система</span></button>
     </nav>
   </div>
 
