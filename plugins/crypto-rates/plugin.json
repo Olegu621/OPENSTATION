@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "id": "crypto-rates",
+  "name": "Курсы ЦБ РФ и Криптовалют",
+  "version": "1.0.0",
+  "author": "Olegu621",
+  "category": "Алиса",
+  "icon": "💹",
+  "description": "Курсы BTC, ETH, TON, SOL по CoinGecko и официальные курсы валют ЦБ РФ (USD, EUR, CNY) без API-ключа.",
+  "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/crypto-rates",
+  "assistantHint": "Для курса криптовалют используй plugin_crypto_price, для курса рубля/доллара/евро ЦБ РФ — plugin_cbr_rates.",
+  "settingsSchema": [
+    {
+      "key": "vs_currency",
+      "label": "Основная валюта",
+      "type": "select",
+      "options": ["rub", "usd", "eur"],
+      "default": "rub",
+      "help": "Валюта для отображения стоимости криптовалют"
+    }
+  ],
+  "tools": [
+    {
+      "name": "plugin_crypto_price",
+      "description": "Получить актуальный курс криптовалют через CoinGecko (bitcoin, ethereum, the-open-network, solana, tether).",
+      "parameters": {
+        "coins": {
+          "type": "STRING",
+          "description": "Список монет CoinGecko через запятую, например: bitcoin,ethereum,the-open-network"
+        }
+      },
+      "required": [],
+      "runner": {
+        "type": "http",
+        "method": "GET",
+        "url": "https://api.coingecko.com/api/v3/simple/price?ids={{args.coins|bitcoin,ethereum,the-open-network}}&vs_currencies={{settings.vs_currency|rub}},usd",
+        "timeoutMs": 6000
+      }
+    },
+    {
+      "name": "plugin_cbr_rates",
+      "description": "Получить официальные ежедневные курсы валют ЦБ РФ (USD, EUR, CNY, GBP и др.) в JSON.",
+      "parameters": {},
+      "required": [],
+      "runner": {
+        "type": "http",
+        "method": "GET",
+        "url": "https://www.cbr-xml-daily.ru/daily_json.js",
+        "timeoutMs": 6000
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "check_crypto",
+      "label": "Проверить BTC / ETH / TON",
+      "runner": {
+        "type": "http",
+        "method": "GET",
+        "url": "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network&vs_currencies={{settings.vs_currency|rub}},usd",
+        "timeoutMs": 6000
+      }
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "id": "webhook-automations",
+  "name": "Webhook / n8n / Умный дом",
+  "version": "1.0.0",
+  "author": "Olegu621",
+  "category": "Умный дом",
+  "icon": "🔗",
+  "description": "Вызывает любые локальные или облачные Webhook-автоматизации (Home Assistant, n8n, Node-RED, Make) голосом и кнопкой.",
+  "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/webhook-automations",
+  "assistantHint": "Когда пользователь просит запустить сценарий или вебхук автоматизации — вызывай plugin_trigger_webhook.",
+  "settingsSchema": [
+    {
+      "key": "webhook_url",
+      "label": "URL Webhook",
+      "type": "string",
+      "default": "",
+      "placeholder": "http://192.168.1.10:8123/api/webhook/evening_scene"
+    },
+    {
+      "key": "auth_header",
+      "label": "Заголовок Authorization (опционально)",
+      "type": "secret",
+      "default": "",
+      "placeholder": "Bearer ..."
+    },
+    {
+      "key": "scene_name",
+      "label": "Название сценария по умолчанию",
+      "type": "string",
+      "default": "Домашний сценарий"
+    }
+  ],
+  "tools": [
+    {
+      "name": "plugin_trigger_webhook",
+      "description": "Отправить POST-запрос на настроенный Webhook автоматизации умного дома или n8n.",
+      "parameters": {
+        "event": {
+          "type": "STRING",
+          "description": "Название события или параметра сценария"
+        }
+      },
+      "required": ["event"],
+      "runner": {
+        "type": "http",
+        "method": "POST",
+        "url": "{{settings.webhook_url}}",
+        "insecure": true,
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "{{settings.auth_header}}"
+        },
+        "body": {
+          "source": "openstation-max",
+          "scene": "{{settings.scene_name|Домашний сценарий}}",
+          "event": "{{args.event}}"
+        },
+        "timeoutMs": 7000
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "run_webhook",
+      "label": "Запустить Webhook сейчас",
+      "inputs": [
+        { "key": "event", "label": "Событие", "default": "manual_trigger" }
+      ],
+      "runner": {
+        "type": "http",
+        "method": "POST",
+        "url": "{{settings.webhook_url}}",
+        "insecure": true,
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "{{settings.auth_header}}"
+        },
+        "body": {
+          "source": "openstation-max",
+          "scene": "{{settings.scene_name|Домашний сценарий}}",
+          "event": "{{args.event|manual_trigger}}"
+        },
+        "timeoutMs": 7000
+      }
+    }
+  ]
+}

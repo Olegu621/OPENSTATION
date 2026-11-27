@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "id": "cinema-ambilight",
+      "name": "Режим «Кинотеатр»",
+      "version": "1.0.0",
+      "author": "Olegu621",
+      "category": "Подсветка",
+      "icon": "🎬",
+      "description": "Приглушает LED-кольцо до мягкого тёмного свечения, выключает яркий матричный экран и переводит ТВ в атмосферу кинотеатра.",
+      "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/cinema-ambilight",
+      "manifestUrl": "https://raw.githubusercontent.com/Olegu621/OPENSTATION/main/plugins/cinema-ambilight/plugin.json",
+      "manifestSha256": "562cef96bf1883db5e2410ea991e72c245d943c72f9587081bdc4f0acd6bb46d",
+      "tools": [
+        "plugin_cinema_on",
+        "plugin_cinema_off"
+      ],
+      "hasSettings": true,
+      "actionsCount": 2,
+      "hasVoiceCommands": false,
+      "hasSchedule": false
+    },
+    {
+      "id": "crypto-rates",
+      "name": "Курсы ЦБ РФ и Криптовалют",
+      "version": "1.0.0",
+      "author": "Olegu621",
+      "category": "Алиса",
+      "icon": "💹",
+      "description": "Курсы BTC, ETH, TON, SOL по CoinGecko и официальные курсы валют ЦБ РФ (USD, EUR, CNY) без API-ключа.",
+      "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/crypto-rates",
+      "manifestUrl": "https://raw.githubusercontent.com/Olegu621/OPENSTATION/main/plugins/crypto-rates/plugin.json",
+      "manifestSha256": "7e6a9a4f40afce154184147184dd2e6f21143b2b599d9eedb17c05b0f2e297de",
+      "tools": [
+        "plugin_crypto_price",
+        "plugin_cbr_rates"
+      ],
+      "hasSettings": true,
+      "actionsCount": 1,
+      "hasVoiceCommands": false,
+      "hasSchedule": false
+    },
+    {
+      "id": "telegram-notifier",
+      "name": "Telegram-уведомления и заметки",
+      "version": "1.0.0",
+      "author": "Olegu621",
+      "category": "Алиса",
+      "icon": "✈️",
+      "description": "Отправка сообщений, заметок и списков покупок голосом с колонки прямо в ваш чат Telegram через Bot API.",
+      "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/telegram-notifier",
+      "manifestUrl": "https://raw.githubusercontent.com/Olegu621/OPENSTATION/main/plugins/telegram-notifier/plugin.json",
+      "manifestSha256": "f77a95f4037db0d47f3b1f12c5fb0fb198bc13b7e0c9b0a1ce309e8b4154447b",
+      "tools": [
+        "plugin_telegram_send"
+      ],
+      "hasSettings": true,
+      "actionsCount": 1,
+      "hasVoiceCommands": false,
+      "hasSchedule": false
+    },
+    {
+      "id": "webhook-automations",
+      "name": "Webhook / n8n / Умный дом",
+      "version": "1.0.0",
+      "author": "Olegu621",
+      "category": "Умный дом",
+      "icon": "🔗",
+      "description": "Вызывает любые локальные или облачные Webhook-автоматизации (Home Assistant, n8n, Node-RED, Make) голосом и кнопкой.",
+      "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/webhook-automations",
+      "manifestUrl": "https://raw.githubusercontent.com/Olegu621/OPENSTATION/main/plugins/webhook-automations/plugin.json",
+      "manifestSha256": "d8b9fc35288579672cfa0ba54416467a602423d50dbcf97deba2a659b8420072",
+      "tools": [
+        "plugin_trigger_webhook"
+      ],
+      "hasSettings": true,
+      "actionsCount": 1,
+      "hasVoiceCommands": false,
+      "hasSchedule": false
+    },
+    {
+      "id": "wol-pc",
+      "name": "Wake-on-LAN (Включение ПК)",
+      "version": "1.0.0",
+      "author": "Olegu621",
+      "category": "Умный дом",
+      "icon": "🖥️",
+      "description": "Включает домашний компьютер, сервер или NAS по локальной сети магическим пакетом (Wake-on-LAN) голосом или кнопкой.",
+      "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/wol-pc",
+      "manifestUrl": "https://raw.githubusercontent.com/Olegu621/OPENSTATION/main/plugins/wol-pc/plugin.json",
+      "manifestSha256": "3a881360c3f28b149de38e25b0d92b8a9461559584692d457267f5aad1be74ba",
+      "tools": [
+        "plugin_wol_wake"
+      ],
+      "hasSettings": true,
+      "actionsCount": 1,
+      "hasVoiceCommands": false,
+      "hasSchedule": false
+    }
+  ]
+}

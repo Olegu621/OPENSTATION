@@ -46,6 +46,10 @@
           <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
           <span>Умный дом</span>
         </button>
+        <button class="tab" data-tab="plugins" data-title="Плагины">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l3 3h4v4l3 3-3 3v4h-4l-3 3-3-3H5v-4l-3-3 3-3V5h4z"/></svg>
+          <span>Плагины</span>
+        </button>
         <button class="tab" data-tab="system" data-title="Система">
           <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
           <span>Система</span>
@@ -1180,6 +1184,45 @@
           </div>
         </div>
       </section>
+
+      <!-- TAB 7: PLUGIN MARKETPLACE -->
+      <section class="panel" id="tab-plugins">
+        <div class="card pl-hero">
+          <div class="pl-hero-top">
+            <div>
+              <h2>Маркетплейс плагинов OpenStation</h2>
+              <p class="hint" id="plStatsLine">Устанавливайте расширения сообщества, включайте или отключайте их в 1 клик и выкладывайте свои плагины.</p>
+            </div>
+            <div class="btn-row" style="margin-top:0;">
+              <button class="btn btn-sm" id="btnPluginsRefresh" type="button">↻ Обновить каталог</button>
+              <button class="btn btn-sm" id="btnPluginCustomOpen" type="button">+ По URL / JSON</button>
+              <button class="btn btn-sm btn-accent" id="btnPluginSubmitOpen" type="button">📤 Выложить плагин</button>
+            </div>
+          </div>
+          <div class="pl-toolbar">
+            <input type="text" id="pluginSearchInput" placeholder="Поиск плагинов (Telegram, Wake-on-LAN, курсы, кино...)" autocomplete="off" />
+            <div class="pl-filters" id="pluginFilterChips">
+              <button class="seg active" type="button" data-plcat="all">Все</button>
+              <button class="seg" type="button" data-plcat="installed">Установленные</button>
+              <button class="seg" type="button" data-plcat="Алиса">Алиса</button>
+              <button class="seg" type="button" data-plcat="Умный дом">Умный дом</button>
+              <button class="seg" type="button" data-plcat="Подсветка">Подсветка</button>
+              <button class="seg" type="button" data-plcat="Утилиты">Утилиты</button>
+            </div>
+          </div>
+          <div class="status-banner" id="pluginCatalogBanner" style="display:none; margin-top:10px;"></div>
+        </div>
+
+        <div id="pluginInstalledSection" style="display:none; margin-top:16px;">
+          <h3 class="pl-section-title">Установленные на станции</h3>
+          <div class="pl-grid" id="pluginInstalledGrid"></div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <h3 class="pl-section-title">Каталог сообщества</h3>
+          <div class="pl-grid" id="pluginCatalogGrid"></div>
+        </div>
+      </section>
       </main>
     </div>
 
@@ -1203,6 +1246,7 @@
       <button class="tab" data-tab="alice" data-title="Алиса" id="mobTabAlice"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg></span><span class="js-ast-name">Алиса</span></button>
       <button class="tab" data-tab="sound" data-title="Звук и подсветка"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4v16M12 4v16M19 4v16M3 14h4M10 8h4M17 16h4"/></svg></span><span>Звук</span></button>
       <button class="tab" data-tab="home" data-title="Умный дом"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span><span>Дом</span></button>
+      <button class="tab" data-tab="plugins" data-title="Плагины"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l3 3h4v4l3 3-3 3v4h-4l-3 3-3-3H5v-4l-3-3 3-3V5h4z"/></svg></span><span>Плагины</span></button>
     </nav>
   </div>
 
@@ -1617,6 +1661,122 @@
         <div class="wizard-footer">
           <button class="btn btn-sm" id="btnMiscDismiss" type="button">Позже</button>
           <button class="btn btn-accent" id="btnMiscFlashConfirm" type="button" disabled>⚡ Прошить misc и перезагрузить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PLUGIN SETTINGS & ACTIONS MODAL -->
+  <div class="wizard-backdrop" id="pluginDetailModal" style="display:none;">
+    <div class="wizard-modal" style="max-width:680px;" role="dialog" aria-modal="true">
+      <div class="wizard-layer">
+        <div class="wizard-header">
+          <div class="wiz-title-group">
+            <div>
+              <div class="wiz-title-row">
+                <h2 id="plModalTitle">Плагин</h2>
+                <span class="badge" id="plModalBadge">v1.0.0</span>
+              </div>
+              <div class="sub" id="plModalSub"></div>
+            </div>
+          </div>
+          <div class="wizard-header-actions" style="display:flex; align-items:center; gap:10px;">
+            <label class="pl-switch" title="Включить / выключить плагин">
+              <input type="checkbox" id="plModalEnabledSwitch" />
+              <span class="pl-slider"></span>
+            </label>
+            <button class="btn btn-sm" id="btnPlDetailClose" type="button">✕</button>
+          </div>
+        </div>
+        <div class="pl-modal-body">
+          <p class="hint" id="plModalDesc" style="margin-top:0;"></p>
+          <div id="plModalToolsRow" class="pl-tags"></div>
+          <div id="plModalSettingsBox" style="margin-top:12px;"></div>
+          <div id="plModalActionsBox" style="margin-top:14px;"></div>
+          <pre class="pl-result-box" id="plModalResult" style="display:none;"></pre>
+        </div>
+        <div class="wizard-footer">
+          <button class="btn btn-sm btn-danger" id="btnPlUninstall" type="button">Удалить плагин</button>
+          <div class="btn-row" style="margin-top:0;">
+            <button class="btn btn-sm" id="btnPlDetailCloseFoot" type="button">Закрыть</button>
+            <button class="btn btn-accent" id="btnPlSaveSettings" type="button">Сохранить настройки</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PLUGIN CUSTOM INSTALL / PUBLISH MODAL -->
+  <div class="wizard-backdrop" id="pluginPublishModal" style="display:none;">
+    <div class="wizard-modal" style="max-width:740px;" role="dialog" aria-modal="true">
+      <div class="wizard-layer">
+        <div class="wizard-header">
+          <div class="wiz-title-group">
+            <div>
+              <div class="wiz-title-row">
+                <h2 id="plPubTitle">Добавить или выложить плагин</h2>
+              </div>
+              <div class="sub">Тестируйте свой плагин локально и публикуйте его в общий каталог GitHub</div>
+            </div>
+          </div>
+          <div class="wizard-header-actions">
+            <button class="btn btn-sm" id="btnPlPubClose" type="button">✕</button>
+          </div>
+        </div>
+        <div class="pl-modal-body">
+          <div class="seg-group" id="plPubModeTabs" style="margin-bottom:14px;">
+            <button class="seg active" type="button" data-plpub="install">Установить по URL / JSON</button>
+            <button class="seg" type="button" data-plpub="publish">Конструктор и публикация</button>
+          </div>
+
+          <div id="plPubInstallPane">
+            <div class="form-row">
+              <label>URL манифеста <code>plugin.json</code> (GitHub Raw или любой сервер)</label>
+              <div class="input-send-row">
+                <input type="url" id="plCustomUrlInput" placeholder="https://raw.githubusercontent.com/.../plugin.json" />
+                <button class="btn btn-sm btn-accent" id="btnPlInstallUrl" type="button">Установить по URL</button>
+              </div>
+            </div>
+            <div class="form-row" style="margin-top:12px;">
+              <label>Или вставьте JSON манифеста <code>plugin.json</code> напрямую (для локального теста)</label>
+              <textarea id="plCustomJsonInput" rows="8" style="width:100%; font-family:monospace; font-size:0.8rem;" placeholder='{"schemaVersion":1,"id":"my-plugin","name":"Мой плагин","version":"1.0.0","author":"Me","category":"Утилиты","description":"Описание","tools":[]}'></textarea>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-sm btn-accent" id="btnPlInstallJson" type="button">⚡ Установить JSON локально</button>
+            </div>
+          </div>
+
+          <div id="plPubCreatePane" style="display:none;">
+            <div class="grid-2-tight">
+              <div class="form-row"><label>ID (латиница, дефисы)</label><input type="text" id="plGenId" placeholder="my-smart-plugin" /></div>
+              <div class="form-row"><label>Название</label><input type="text" id="plGenName" placeholder="Мой умный плагин" /></div>
+              <div class="form-row"><label>Автор (GitHub)</label><input type="text" id="plGenAuthor" placeholder="username" /></div>
+              <div class="form-row"><label>Категория</label>
+                <select id="plGenCat">
+                  <option value="Утилиты">Утилиты</option>
+                  <option value="Алиса">Алиса</option>
+                  <option value="Умный дом">Умный дом</option>
+                  <option value="Подсветка">Подсветка</option>
+                  <option value="Медиа">Медиа</option>
+                </select>
+              </div>
+              <div class="form-row"><label>Имя инструмента Алисы (<code>a-z0-9_</code>)</label><input type="text" id="plGenTool" placeholder="plugin_my_action" /></div>
+              <div class="form-row"><label>Webhook / HTTP URL</label><input type="url" id="plGenUrl" placeholder="https://api.example.com/hook?q={{args.query}}" /></div>
+            </div>
+            <div class="form-row"><label>Описание для маркетплейса</label><input type="text" id="plGenDesc" placeholder="Что умеет ваш плагин..." /></div>
+            <div class="btn-row">
+              <button class="btn btn-sm" id="btnPlGenBuild" type="button">Сгенерировать plugin.json</button>
+              <button class="btn btn-sm" id="btnPlGenTestInstall" type="button">Протестировать на станции</button>
+              <button class="btn btn-sm" id="btnPlGenDownload" type="button">Скачать plugin.json</button>
+              <a class="btn btn-sm btn-accent" id="btnPlGenGithubIssue" target="_blank" rel="noopener" href="https://github.com/Olegu621/OPENSTATION/issues/new?template=submit-plugin.md">🚀 Выложить на GitHub</a>
+            </div>
+            <textarea id="plGenOutput" rows="7" readonly style="width:100%; margin-top:10px; font-family:monospace; font-size:0.78rem;"></textarea>
+          </div>
+          <div class="status-banner" id="plPubBanner" style="display:none; margin-top:10px;"></div>
+        </div>
+        <div class="wizard-footer">
+          <a class="btn btn-sm" target="_blank" rel="noopener" href="https://github.com/Olegu621/OPENSTATION/blob/main/plugins/SCHEMA.md">📘 Документация (PR / Schema)</a>
+          <button class="btn btn-sm" id="btnPlPubCloseFoot" type="button">Закрыть</button>
         </div>
       </div>
     </div>

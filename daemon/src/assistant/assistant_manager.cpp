@@ -1059,6 +1059,12 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
                 sp += "\n\n" + rt;
             }
         }
+        if (cb_.get_plugin_instructions) {
+            std::string pi = cb_.get_plugin_instructions();
+            if (!pi.empty()) {
+                sp += "\n\n" + pi;
+            }
+        }
         if (!c.memory_notes.empty()) {
             sp += "\n\nПамять о пользователе и колонке:\n";
             for (size_t i = 0; i < c.memory_notes.size(); ++i) {
@@ -1533,6 +1539,15 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
         Value::make_obj(),
         {},
         nb));
+
+    if (cb_.get_plugin_tools) {
+        Value extra_tools = cb_.get_plugin_tools();
+        if (extra_tools.is_arr()) {
+            for (auto& td : extra_tools.arr_val) {
+                decls.push(std::move(td));
+            }
+        }
+    }
 
     Value tools = Value::make_arr();
     if (c.google_search) {

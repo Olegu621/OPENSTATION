@@ -43,6 +43,8 @@ struct AssistantCallbacks {
     std::function<void(const json::Value& evt)> broadcast_event;
     std::function<json::Value(const std::string& name, const json::Value& args)> execute_tool;
     std::function<std::string()> get_runtime_context;
+    std::function<json::Value()> get_plugin_tools;
+    std::function<std::string()> get_plugin_instructions;
 };
 
 struct DialogEntry {

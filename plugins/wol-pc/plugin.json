@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "id": "wol-pc",
+  "name": "Wake-on-LAN (Включение ПК)",
+  "version": "1.0.0",
+  "author": "Olegu621",
+  "category": "Умный дом",
+  "icon": "🖥️",
+  "description": "Включает домашний компьютер, сервер или NAS по локальной сети магическим пакетом (Wake-on-LAN) голосом или кнопкой.",
+  "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/wol-pc",
+  "assistantHint": "Когда пользователь просит разбудить или включить компьютер/ПК/сервер, используй plugin_wol_wake.",
+  "settingsSchema": [
+    {
+      "key": "mac",
+      "label": "MAC-адрес сетевой карты",
+      "type": "string",
+      "default": "",
+      "placeholder": "AA:BB:CC:DD:EE:FF",
+      "help": "MAC-адрес ПК, на котором включён Wake-on-LAN в BIOS"
+    },
+    {
+      "key": "broadcast",
+      "label": "Broadcast IP",
+      "type": "string",
+      "default": "255.255.255.255",
+      "placeholder": "192.168.1.255",
+      "help": "Широковещательный адрес вашей подсети (обычно 255.255.255.255)"
+    }
+  ],
+  "tools": [
+    {
+      "name": "plugin_wol_wake",
+      "description": "Отправить Wake-on-LAN Magic Packet для включения компьютера по сохранённому или указанному MAC-адресу.",
+      "parameters": {
+        "mac": {
+          "type": "STRING",
+          "description": "Необязательный MAC-адрес; если не указан, используется сохранённый в настройках плагина"
+        }
+      },
+      "required": [],
+      "runner": {
+        "type": "wol",
+        "mac": "{{args.mac}}",
+        "broadcast": "{{settings.broadcast|255.255.255.255}}",
+        "port": 9
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "wake_now",
+      "label": "Разбудить ПК сейчас",
+      "runner": {
+        "type": "wol",
+        "mac": "{{settings.mac}}",
+        "broadcast": "{{settings.broadcast|255.255.255.255}}",
+        "port": 9
+      }
+    }
+  ]
+}

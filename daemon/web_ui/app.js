@@ -86,6 +86,7 @@
     document.body.classList.add("tab-" + tabName);
     try { localStorage.setItem("os_tab", tabName); } catch {}
     if (tabName === "home") loadHome();
+    if (tabName === "plugins" && window.osPlugins) window.osPlugins.refresh(false);
     if (tabName === "music") {
       refreshMediaReceivers();
       syncMusicProvider();
@@ -4007,4 +4008,515 @@
     }
   });
   sync();
+})();
+
+/* ===================== PLUGIN MARKETPLACE CONTROLLER ===================== */
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const tabEl = $("tab-plugins");
+  if (!tabEl) return;
+
+  let dataState = null;
+  let activeCat = "all";
+  let searchQuery = "";
+  let currentModalPluginId = "";
+
+  const esc = (s) => String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  async function reqJson(url, method = "GET", body = null) {
+    const opts = { method, headers: {} };
+    if (body !== null) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    const r = await fetch(url, opts);
+    let j = null;
+    try { j = await r.json(); } catch {}
+    if (!r.ok || (j && j.ok === false)) {
+      throw new Error((j && (j.error || j.message)) || ("HTTP " + r.status));
+    }
+    return j || {};
+  }
+
+  function toast(msg, isErr = false) {
+    const t = $("toast");
+    if (!t) return;
+    t.textContent = msg;
+    t.className = "toast show" + (isErr ? " err" : "");
+    setTimeout(() => t.classList.remove("show"), 2600);
+  }
+
+  function matchesFilter(item, isInstalledSection) {
+    if (activeCat === "installed" && !item.installed) return false;
+    if (activeCat !== "all" && activeCat !== "installed" && (item.category || "Утилиты") !== activeCat) return false;
+    if (searchQuery) {
+      const hay = [item.id, item.name, item.author, item.category, item.description, ...(item.tools || [])]
+        .join(" ").toLowerCase();
+      if (!hay.includes(searchQuery)) return false;
+    }
+    if (isInstalledSection && !item.installed) return false;
+    return true;
+  }
+
+  function buildCard(item, installedMap) {
+    const inst = item.installed ? (installedMap.get(item.id) || item) : null;
+    const enabled = Boolean(inst && inst.enabled);
+    const card = document.createElement("div");
+    card.className = "pl-card" + (enabled ? " enabled" : "");
+
+    const tools = (inst?.tools || item.tools || []).slice(0, 3);
+    const verLabel = inst
+      ? ("v" + (inst.version || item.version || "1.0.0") + (item.updateAvailable ? (" → v" + item.version) : ""))
+      : ("v" + (item.version || "1.0.0"));
+
+    card.innerHTML = `
+      <div>
+        <div class="pl-card-head">
+          <div class="pl-card-id">
+            <div class="pl-ico">${esc(item.icon || "🧩")}</div>
+            <div style="min-width:0;">
+              <div class="pl-name">${esc(item.name || item.id)}</div>
+              <div class="pl-meta">${esc(item.author || "Community")} · ${esc(item.category || "Утилиты")} · ${esc(verLabel)}</div>
+            </div>
+          </div>
+          ${inst ? `
+            <label class="pl-switch" title="${enabled ? "Выключить" : "Включить"}">
+              <input type="checkbox" class="js-pl-toggle" ${enabled ? "checked" : ""} />
+              <span class="pl-slider"></span>
+            </label>
+          ` : ""}
+        </div>
+        <p class="pl-desc" style="margin-top:10px;">${esc(item.description || "")}</p>
+        <div class="pl-tags" style="margin-top:10px;">
+          ${inst ? `<span class="pl-tag">${enabled ? "Включён" : "Выключен"}</span>` : `<span class="pl-tag">Доступен</span>`}
+          ${tools.map((t) => `<span class="pl-tag tool">${esc(t)}</span>`).join("")}
+          ${inst && inst.lastError ? `<span class="pl-tag err" title="${esc(inst.lastError)}">Ошибка</span>` : ""}
+        </div>
+      </div>
+      <div class="pl-card-foot">
+        <div class="btn-row" style="margin-top:0; gap:6px; width:100%; justify-content:flex-end;">
+          ${!inst ? `<button class="btn btn-sm btn-accent js-pl-install" type="button">Установить</button>` : ""}
+          ${inst && item.updateAvailable ? `<button class="btn btn-sm btn-accent js-pl-update" type="button">Обновить</button>` : ""}
+          ${inst ? `<button class="btn btn-sm js-pl-open" type="button">⚙ Настроить / Запуск</button>` : ""}
+        </div>
+      </div>
+    `;
+
+    card.querySelector(".js-pl-install")?.addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try {
+        await reqJson("/api/plugins/install", "POST", { id: item.id });
+        toast("Плагин «" + (item.name || item.id) + "» установлен и включён");
+        await refresh(false);
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        e.target.disabled = false;
+      }
+    });
+
+    card.querySelector(".js-pl-update")?.addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try {
+        await reqJson("/api/plugins/install", "POST", { id: item.id });
+        toast("Плагин обновлён");
+        await refresh(false);
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        e.target.disabled = false;
+      }
+    });
+
+    card.querySelector(".js-pl-toggle")?.addEventListener("change", async (e) => {
+      const nextState = e.target.checked;
+      e.target.disabled = true;
+      try {
+        await reqJson("/api/plugins/toggle", "POST", { id: item.id, enabled: nextState });
+        toast((item.name || item.id) + (nextState ? ": включён" : ": выключен"));
+        await refresh(false);
+      } catch (err) {
+        e.target.checked = !nextState;
+        toast(err.message, true);
+      } finally {
+        e.target.disabled = false;
+      }
+    });
+
+    card.querySelector(".js-pl-open")?.addEventListener("click", () => openDetailModal(inst));
+    return card;
+  }
+
+  function render() {
+    if (!dataState) return;
+    const installedList = Array.isArray(dataState.installed) ? dataState.installed : [];
+    const catalogList = Array.isArray(dataState.catalog) ? dataState.catalog : [];
+    const installedMap = new Map(installedList.map((p) => [p.id, p]));
+
+    if ($("plStatsLine")) {
+      $("plStatsLine").textContent =
+        `Установлено: ${dataState.installedCount || 0} · Включено: ${dataState.enabledCount || 0} · В каталоге: ${dataState.catalogCount || 0}`;
+    }
+
+    const banner = $("pluginCatalogBanner");
+    if (banner) {
+      if (dataState.catalogError) {
+        banner.style.display = "block";
+        banner.className = "status-banner warn";
+        banner.textContent = "Каталог GitHub временно недоступен (" + dataState.catalogError + "). Используйте локальный кэш или установку по URL / JSON.";
+      } else {
+        banner.style.display = "none";
+      }
+    }
+
+    const instSec = $("pluginInstalledSection");
+    const instGrid = $("pluginInstalledGrid");
+    if (instSec && instGrid) {
+      instGrid.replaceChildren();
+      const filteredInst = installedList.filter((p) => matchesFilter(p, true));
+      instSec.style.display = filteredInst.length ? "block" : "none";
+      filteredInst.forEach((p) => instGrid.appendChild(buildCard(p, installedMap)));
+    }
+
+    const catGrid = $("pluginCatalogGrid");
+    if (catGrid) {
+      catGrid.replaceChildren();
+      const filteredCat = catalogList.filter((p) => matchesFilter(p, false));
+      if (!filteredCat.length) {
+        const empty = document.createElement("div");
+        empty.className = "card";
+        empty.innerHTML = `<p class="hint" style="margin:0;">Нет плагинов по выбранному фильтру. Нажмите «↻ Обновить каталог» или установите плагин по URL / JSON.</p>`;
+        catGrid.appendChild(empty);
+      } else {
+        filteredCat.forEach((p) => catGrid.appendChild(buildCard(p, installedMap)));
+      }
+    }
+
+    if (currentModalPluginId && $("pluginDetailModal")?.style.display === "flex") {
+      const updated = installedMap.get(currentModalPluginId);
+      if (updated) bindDetailModal(updated);
+    }
+  }
+
+  function bindDetailModal(pl) {
+    currentModalPluginId = pl.id;
+    $("plModalTitle").textContent = (pl.icon ? pl.icon + " " : "") + (pl.name || pl.id);
+    $("plModalBadge").textContent = "v" + (pl.version || "1.0.0");
+    $("plModalSub").textContent = `ID: ${pl.id} · Автор: ${pl.author || "Community"} · Категория: ${pl.category || "Утилиты"}`;
+    $("plModalDesc").textContent = pl.description || "";
+    $("plModalEnabledSwitch").checked = Boolean(pl.enabled);
+
+    const toolsRow = $("plModalToolsRow");
+    toolsRow.replaceChildren();
+    (pl.tools || []).forEach((t) => {
+      const span = document.createElement("span");
+      span.className = "pl-tag tool";
+      span.textContent = "Голос: " + t;
+      toolsRow.appendChild(span);
+    });
+
+    const settingsBox = $("plModalSettingsBox");
+    settingsBox.replaceChildren();
+    const schema = Array.isArray(pl.settingsSchema) ? pl.settingsSchema : [];
+    const curSettings = pl.settings || {};
+    $("btnPlSaveSettings").style.display = schema.length ? "inline-flex" : "none";
+    if (schema.length) {
+      const h = document.createElement("h4");
+      h.style.margin = "0 0 8px";
+      h.textContent = "Настройки";
+      settingsBox.appendChild(h);
+      schema.forEach((f) => {
+        const row = document.createElement("div");
+        row.className = f.type === "bool" ? "form-row toggle-row" : "form-row";
+        const lbl = document.createElement("label");
+        lbl.textContent = f.label || f.key;
+        row.appendChild(lbl);
+
+        const val = curSettings[f.key] ?? f.default ?? "";
+        let inp;
+        if (f.type === "select" && Array.isArray(f.options)) {
+          inp = document.createElement("select");
+          f.options.forEach((opt) => {
+            const o = document.createElement("option");
+            o.value = opt;
+            o.textContent = opt;
+            if (String(val) === String(opt)) o.selected = true;
+            inp.appendChild(o);
+          });
+        } else if (f.type === "bool") {
+          inp = document.createElement("input");
+          inp.type = "checkbox";
+          inp.checked = Boolean(val);
+        } else {
+          inp = document.createElement("input");
+          inp.type = f.type === "secret" ? "password" : (f.type === "number" ? "number" : "text");
+          inp.value = f.type === "secret" ? "" : String(val);
+          inp.placeholder = f.type === "secret" && val ? "Сохранён (оставьте пустым чтобы не менять)" : (f.placeholder || "");
+        }
+        inp.dataset.plSettingKey = f.key;
+        inp.dataset.plSettingType = f.type || "string";
+        row.appendChild(inp);
+        if (f.help) {
+          const hp = document.createElement("div");
+          hp.className = "hint";
+          hp.textContent = f.help;
+          row.appendChild(hp);
+        }
+        settingsBox.appendChild(row);
+      });
+    }
+
+    const actBox = $("plModalActionsBox");
+    actBox.replaceChildren();
+    const actions = Array.isArray(pl.actions) ? pl.actions : [];
+    if (actions.length) {
+      const h = document.createElement("h4");
+      h.style.margin = "0 0 8px";
+      h.textContent = "Действия и проверка";
+      actBox.appendChild(h);
+      actions.forEach((a) => {
+        const wrap = document.createElement("div");
+        wrap.className = "btn-row";
+        wrap.style.marginTop = "6px";
+        const argInputs = [];
+        (a.inputs || []).forEach((ai) => {
+          const inp = document.createElement("input");
+          inp.type = "text";
+          inp.placeholder = ai.label || ai.key;
+          inp.value = ai.default || "";
+          inp.style.flex = "1 1 160px";
+          inp.dataset.actArg = ai.key;
+          wrap.appendChild(inp);
+          argInputs.push(inp);
+        });
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-sm btn-accent";
+        btn.textContent = a.label || a.id;
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const resEl = $("plModalResult");
+          resEl.style.display = "block";
+          resEl.textContent = "Выполняю...";
+          try {
+            const args = {};
+            argInputs.forEach((el) => { args[el.dataset.actArg] = el.value; });
+            const out = await reqJson("/api/plugins/run", "POST", { id: pl.id, actionId: a.id, args });
+            resEl.textContent = JSON.stringify(out, null, 2);
+          } catch (err) {
+            resEl.textContent = "Ошибка: " + err.message;
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        wrap.appendChild(btn);
+        actBox.appendChild(wrap);
+      });
+    }
+  }
+
+  function openDetailModal(pl) {
+    if (!pl) return;
+    $("plModalResult").style.display = "none";
+    $("plModalResult").textContent = "";
+    bindDetailModal(pl);
+    $("pluginDetailModal").style.display = "flex";
+  }
+
+  async function refresh(force = false) {
+    try {
+      dataState = await reqJson("/api/plugins" + (force ? "?refresh=1" : ""));
+      render();
+    } catch (err) {
+      toast("Ошибка загрузки плагинов: " + err.message, true);
+    }
+  }
+
+  $("btnPluginsRefresh")?.addEventListener("click", async () => {
+    await refresh(true);
+    toast("Каталог плагинов обновлён");
+  });
+
+  $("pluginSearchInput")?.addEventListener("input", (e) => {
+    searchQuery = e.target.value.trim().toLowerCase();
+    render();
+  });
+
+  $("pluginFilterChips")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-plcat]");
+    if (!btn) return;
+    activeCat = btn.dataset.plcat;
+    $("pluginFilterChips").querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b === btn));
+    render();
+  });
+
+  $("btnPlDetailClose")?.addEventListener("click", () => { $("pluginDetailModal").style.display = "none"; });
+  $("btnPlDetailCloseFoot")?.addEventListener("click", () => { $("pluginDetailModal").style.display = "none"; });
+
+  $("plModalEnabledSwitch")?.addEventListener("change", async (e) => {
+    if (!currentModalPluginId) return;
+    const nextState = e.target.checked;
+    try {
+      await reqJson("/api/plugins/toggle", "POST", { id: currentModalPluginId, enabled: nextState });
+      toast(nextState ? "Плагин включён" : "Плагин выключен");
+      await refresh(false);
+    } catch (err) {
+      e.target.checked = !nextState;
+      toast(err.message, true);
+    }
+  });
+
+  $("btnPlSaveSettings")?.addEventListener("click", async () => {
+    if (!currentModalPluginId) return;
+    const settings = {};
+    $("plModalSettingsBox").querySelectorAll("[data-pl-setting-key]").forEach((el) => {
+      const k = el.dataset.plSettingKey;
+      const t = el.dataset.plSettingType;
+      if (t === "bool") settings[k] = el.checked;
+      else if (t === "number") settings[k] = Number(el.value || 0);
+      else settings[k] = el.value;
+    });
+    try {
+      await reqJson("/api/plugins/settings", "POST", { id: currentModalPluginId, settings });
+      toast("Настройки плагина сохранены");
+      await refresh(false);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  $("btnPlUninstall")?.addEventListener("click", async () => {
+    if (!currentModalPluginId) return;
+    if (!confirm("Удалить плагин " + currentModalPluginId + "?")) return;
+    try {
+      await reqJson("/api/plugins/uninstall", "POST", { id: currentModalPluginId });
+      $("pluginDetailModal").style.display = "none";
+      toast("Плагин удалён");
+      await refresh(false);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  function openPublishModal(mode = "install") {
+    $("plPubBanner").style.display = "none";
+    $("pluginPublishModal").style.display = "flex";
+    const isPub = mode === "publish";
+    $("plPubInstallPane").style.display = isPub ? "none" : "block";
+    $("plPubCreatePane").style.display = isPub ? "block" : "none";
+    $("plPubModeTabs").querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.plpub === mode));
+  }
+
+  $("btnPluginCustomOpen")?.addEventListener("click", () => openPublishModal("install"));
+  $("btnPluginSubmitOpen")?.addEventListener("click", () => openPublishModal("publish"));
+  $("btnPlPubClose")?.addEventListener("click", () => { $("pluginPublishModal").style.display = "none"; });
+  $("btnPlPubCloseFoot")?.addEventListener("click", () => { $("pluginPublishModal").style.display = "none"; });
+  $("plPubModeTabs")?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-plpub]");
+    if (b) openPublishModal(b.dataset.plpub);
+  });
+
+  $("btnPlInstallUrl")?.addEventListener("click", async () => {
+    const url = ($("plCustomUrlInput")?.value || "").trim();
+    if (!url) return toast("Введите URL файла plugin.json", true);
+    try {
+      const r = await reqJson("/api/plugins/install", "POST", { url });
+      toast("Установлен плагин: " + (r.id || url));
+      $("pluginPublishModal").style.display = "none";
+      await refresh(false);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  $("btnPlInstallJson")?.addEventListener("click", async () => {
+    const raw = ($("plCustomJsonInput")?.value || "").trim();
+    if (!raw) return toast("Вставьте JSON манифест", true);
+    let manifest;
+    try { manifest = JSON.parse(raw); } catch { return toast("Некорректный JSON", true); }
+    try {
+      const r = await reqJson("/api/plugins/install", "POST", { manifest });
+      toast("Установлен плагин: " + (r.id || "ok"));
+      $("pluginPublishModal").style.display = "none";
+      await refresh(false);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  function buildGeneratedManifest() {
+    const id = ($("plGenId")?.value || "my-plugin").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    const name = ($("plGenName")?.value || "Мой плагин").trim();
+    const author = ($("plGenAuthor")?.value || "Community").trim();
+    const category = $("plGenCat")?.value || "Утилиты";
+    const tool = ($("plGenTool")?.value || "plugin_custom_hook").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    const url = ($("plGenUrl")?.value || "https://httpbin.org/get?q={{args.query}}").trim();
+    const desc = ($("plGenDesc")?.value || "Пользовательский плагин для OpenStation Max").trim();
+    return {
+      schemaVersion: 1,
+      id,
+      name,
+      version: "1.0.0",
+      author,
+      category,
+      icon: "🧩",
+      description: desc,
+      homepage: "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/" + id,
+      tools: [
+        {
+          name: tool,
+          description: desc,
+          parameters: { query: { type: "STRING", description: "Запрос или параметр" } },
+          required: [],
+          runner: { type: "http", method: "GET", url, timeoutMs: 7000 }
+        }
+      ],
+      actions: [
+        { id: "run", label: "Проверить", runner: { type: "http", method: "GET", url, timeoutMs: 7000 } }
+      ]
+    };
+  }
+
+  $("btnPlGenBuild")?.addEventListener("click", () => {
+    const txt = JSON.stringify(buildGeneratedManifest(), null, 2);
+    $("plGenOutput").value = txt;
+    const gh = $("btnPlGenGithubIssue");
+    if (gh) {
+      const mf = buildGeneratedManifest();
+      const body = "### Данные плагина\n- **ID:** `" + mf.id + "`\n- **Категория:** " + mf.category +
+        "\n- **Описание:** " + mf.description + "\n\n```json\n" + txt + "\n```\n";
+      gh.href = "https://github.com/Olegu621/OPENSTATION/issues/new?title=" +
+        encodeURIComponent("[Plugin] " + mf.name) + "&body=" + encodeURIComponent(body);
+    }
+  });
+
+  $("btnPlGenTestInstall")?.addEventListener("click", async () => {
+    const mf = buildGeneratedManifest();
+    $("plGenOutput").value = JSON.stringify(mf, null, 2);
+    try {
+      await reqJson("/api/plugins/install", "POST", { manifest: mf });
+      toast("Плагин «" + mf.name + "» установлен локально для теста");
+      await refresh(false);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  $("btnPlGenDownload")?.addEventListener("click", () => {
+    const txt = $("plGenOutput")?.value || JSON.stringify(buildGeneratedManifest(), null, 2);
+    $("plGenOutput").value = txt;
+    const blob = new Blob([txt + "\n"], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "plugin.json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  window.osPlugins = { refresh };
+  if (tabEl.classList.contains("active")) refresh(true);
 })();

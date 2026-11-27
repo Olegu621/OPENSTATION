@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "id": "cinema-ambilight",
+  "name": "Режим «Кинотеатр»",
+  "version": "1.0.0",
+  "author": "Olegu621",
+  "category": "Подсветка",
+  "icon": "🎬",
+  "description": "Приглушает LED-кольцо до мягкого тёмного свечения, выключает яркий матричный экран и переводит ТВ в атмосферу кинотеатра.",
+  "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/cinema-ambilight",
+  "assistantHint": "Когда пользователь просит режим кино / кинотеатр или обычный дневной свет — используй plugin_cinema_scene.",
+  "settingsSchema": [
+    {
+      "key": "ring_color",
+      "label": "Цвет подсветки кино",
+      "type": "string",
+      "default": "#3b1d8f",
+      "placeholder": "#3b1d8f"
+    },
+    {
+      "key": "brightness",
+      "label": "Яркость кольца (0..255)",
+      "type": "number",
+      "default": 28
+    }
+  ],
+  "hooks": {
+    "onEnable": {
+      "type": "station",
+      "steps": [
+        {
+          "tool": "show_screen_banner",
+          "args": { "text": "КИНО", "color": "#a855f7", "duration_ms": 2200 }
+        }
+      ]
+    },
+    "onDisable": {
+      "type": "station",
+      "steps": [
+        {
+          "tool": "set_led_ring",
+          "args": { "mode": "rainbow", "brightness": 160 }
+        },
+        {
+          "tool": "set_led_screen",
+          "args": { "mode": "clock" }
+        }
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "plugin_cinema_on",
+      "description": "Включить режим кинотеатра (приглушённая подсветка и выключенный матричный экран).",
+      "parameters": {},
+      "required": [],
+      "runner": {
+        "type": "station",
+        "steps": [
+          {
+            "tool": "set_led_ring",
+            "args": { "mode": "breathe", "color": "{{settings.ring_color|#3b1d8f}}" }
+          },
+          {
+            "tool": "set_led_screen",
+            "args": { "mode": "off" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "plugin_cinema_off",
+      "description": "Выключить режим кинотеатра и вернуть обычную подсветку и часы на экране.",
+      "parameters": {},
+      "required": [],
+      "runner": {
+        "type": "station",
+        "steps": [
+          {
+            "tool": "set_led_ring",
+            "args": { "mode": "rainbow" }
+          },
+          {
+            "tool": "set_led_screen",
+            "args": { "mode": "clock" }
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "cinema_on",
+      "label": "Включить режим кино",
+      "runner": {
+        "type": "station",
+        "steps": [
+          { "tool": "set_led_ring", "args": { "mode": "breathe", "color": "{{settings.ring_color|#3b1d8f}}" } },
+          { "tool": "set_led_screen", "args": { "mode": "off" } }
+        ]
+      }
+    },
+    {
+      "id": "cinema_off",
+      "label": "Вернуть обычный свет и часы",
+      "runner": {
+        "type": "station",
+        "steps": [
+          { "tool": "set_led_ring", "args": { "mode": "rainbow" } },
+          { "tool": "set_led_screen", "args": { "mode": "clock" } }
+        ]
+      }
+    }
+  ]
+}

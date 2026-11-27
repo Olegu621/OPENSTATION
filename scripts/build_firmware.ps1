@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.36",
-    [string]$Changelog = "Исправлен Wi-Fi и Bluetooth на всех ревизиях OpenStation Max (0008/00052 Intel и 00053 Realtek/Unisoc): явный выбор ревизии в OpenStationFlasher (USB 1.3.9) без слепой перезаписи misc, корректная диагностика BT для Realtek/Unisoc, мультичиповый runtime-ремонт и авто-восстановление misc в демоне, кнопка диагностики в мастере и настройках ТВ.",
+    [string]$Version = "1.6.37",
+    [string]$Changelog = "Добавлен маркетплейс плагинов OpenStation: каталог сообщества (GitHub + установка по URL/JSON), конструктор публикации, мгновенное включение и выключение плагинов, голосовые инструменты и сценарии.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

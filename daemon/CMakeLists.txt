@@ -52,6 +52,7 @@ add_executable(openstationd
     src/net/spotify_music.cpp
     src/net/web_tools.cpp
     src/ota/ota_manager.cpp
+    src/plugins/plugin_manager.cpp
     src/web/http_ws_server.cpp
     "${WEB_ASSETS_HDR}"
 )

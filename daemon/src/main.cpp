@@ -21,6 +21,7 @@
 #include "net/timezone_db.hpp"
 #include "net/web_tools.hpp"
 #include "ota/ota_manager.hpp"
+#include "plugins/plugin_manager.hpp"
 #include "utils/json_min.hpp"
 #include "utils/logger.hpp"
 #include "web/http_ws_server.hpp"
@@ -58,7 +59,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.36";
+constexpr const char* kFirmwareVersion = "1.6.37";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1614,6 +1615,7 @@ int main(int argc, char** argv) {
     AdbManager adb_mgr;
     MqttClient mqtt;
     OtaManager ota;
+    PluginManager plugins;
     HttpWsServer http;
 
     std::atomic<bool> bluetooth_enabled{false};
@@ -4484,10 +4486,45 @@ int main(int argc, char** argv) {
             return res;
         }
 
+        if (plugins.has_tool(name)) {
+            leds.trigger_task_icon("settings", 0, 212, 255, 3200);
+            return plugins.execute_tool(name, args, &g_stop);
+        }
+
         res["ok"] = Value::make_bool(false);
         res["error"] = Value::make_str("unknown tool");
         return res;
     };
+    acb.get_plugin_tools = [&]() -> json::Value {
+        return plugins.get_assistant_tool_decls();
+    };
+    acb.get_plugin_instructions = [&]() -> std::string {
+        return plugins.get_assistant_prompt_suffix();
+    };
+
+    PluginCallbacks pcb;
+    pcb.execute_builtin_tool = [&](const std::string& tname, const json::Value& targs) -> json::Value {
+        if (plugins.has_tool(tname)) {
+            json::Value er = json::Value::make_obj();
+            er["ok"] = json::Value::make_bool(false);
+            er["error"] = json::Value::make_str("recursive plugin tool call blocked");
+            return er;
+        }
+        return acb.execute_tool(tname, targs);
+    };
+    pcb.mqtt_publish = [&](const std::string& topic, const std::string& payload, bool retain) -> bool {
+        return mqtt.is_connected() && mqtt.publish(topic, payload, retain);
+    };
+    pcb.on_plugins_changed = [&]() {
+        DaemonConfig c;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            c = cfg;
+        }
+        assistant.update_config(c.assistant);
+    };
+    plugins.init("/data/local/openstation/plugins", std::move(pcb));
+
     DaemonConfig start_cfg;
     {
         std::lock_guard<std::mutex> lk(cfg_mu);
@@ -4679,6 +4716,7 @@ int main(int argc, char** argv) {
         root["wyoming"] = wyoming.get_status_json();
         root["mqtt"] = mqtt.get_status_json();
         root["ota"] = ota.get_status_json();
+        root["plugins"] = plugins.get_summary_json();
         root["bootanim"] = ota.get_bootanim_status_json();
         root["wifiAdb"] = adb_mgr.get_status_json(local_ip, c.device_hostname);
 
@@ -5164,6 +5202,107 @@ int main(int argc, char** argv) {
                 okr["targetDtId"] = json::Value::make_str(rep.target_dt_id);
                 okr["detail"] = json::Value::make_str(rep.detail);
                 return HttpResponse::json(okr.dump(-1));
+            }
+            if (req.path == "/api/plugins" && req.method == "GET") {
+                std::string repo, branch;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    repo = cfg.ota.repo;
+                    branch = cfg.ota.branch;
+                }
+                const bool force = (get_query_param(req.query, "refresh") == "1");
+                std::string err;
+                plugins.fetch_catalog(repo, branch, force, err, &g_stop);
+                return HttpResponse::json(plugins.get_marketplace_json(repo, branch).dump(-1));
+            }
+            if (req.path.rfind("/api/plugins/", 0) == 0 && req.method == "POST") {
+                const bool json_request = req.content_type == "application/json" ||
+                                          req.content_type.rfind("application/json;", 0) == 0;
+                const bool same_origin = req.origin.empty() || req.origin == "http://" + req.host ||
+                                         req.origin == "https://" + req.host;
+                if (!json_request || !same_origin) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"Откройте веб-пульт станции напрямую\"}", 403);
+                }
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"invalid json\"}", 400);
+                }
+                std::string repo, branch;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    repo = cfg.ota.repo;
+                    branch = cfg.ota.branch;
+                }
+                auto json_err = [](const std::string& msg, int code = 400) {
+                    json::Value e = json::Value::make_obj();
+                    e["ok"] = json::Value::make_bool(false);
+                    e["error"] = json::Value::make_str(msg);
+                    return HttpResponse::json(e.dump(-1), code);
+                };
+
+                if (req.path == "/api/plugins/install") {
+                    std::string err;
+                    bool ok = false;
+                    std::string pid;
+                    if (const auto* idv = v.get("id"); idv && idv->is_str() && !idv->as_str().empty()) {
+                        pid = idv->as_str();
+                        ok = plugins.install_from_catalog(pid, repo, branch, err, &g_stop);
+                    } else if (const auto* uv = v.get("url"); uv && uv->is_str() && !uv->as_str().empty()) {
+                        ok = plugins.install_from_url(uv->as_str(), err, &g_stop);
+                        pid = "url";
+                    } else if (const auto* mv = v.get("manifest"); mv && mv->is_obj()) {
+                        if (mv->get("id")) pid = mv->get("id")->as_str();
+                        ok = plugins.install_from_manifest(*mv, "local://custom", {}, false, true, err);
+                    } else {
+                        return json_err("Specify id, url, or manifest");
+                    }
+                    if (!ok) return json_err(err.empty() ? "Install failed" : err, 400);
+                    json::Value out = json::Value::make_obj();
+                    out["ok"] = json::Value::make_bool(true);
+                    out["id"] = json::Value::make_str(pid);
+                    return HttpResponse::json(out.dump(-1));
+                }
+                if (req.path == "/api/plugins/toggle") {
+                    const std::string pid = v.get("id") ? v.get("id")->as_str() : "";
+                    const bool enabled = v.get("enabled") ? v.get("enabled")->as_bool(false) : false;
+                    std::string err;
+                    if (!plugins.set_enabled(pid, enabled, err)) return json_err(err, 404);
+                    json::Value out = json::Value::make_obj();
+                    out["ok"] = json::Value::make_bool(true);
+                    out["id"] = json::Value::make_str(pid);
+                    out["enabled"] = json::Value::make_bool(enabled);
+                    return HttpResponse::json(out.dump(-1));
+                }
+                if (req.path == "/api/plugins/uninstall") {
+                    const std::string pid = v.get("id") ? v.get("id")->as_str() : "";
+                    std::string err;
+                    if (!plugins.uninstall(pid, err)) return json_err(err, 404);
+                    json::Value out = json::Value::make_obj();
+                    out["ok"] = json::Value::make_bool(true);
+                    out["id"] = json::Value::make_str(pid);
+                    return HttpResponse::json(out.dump(-1));
+                }
+                if (req.path == "/api/plugins/settings") {
+                    const std::string pid = v.get("id") ? v.get("id")->as_str() : "";
+                    const auto* sv = v.get("settings");
+                    if (!sv || !sv->is_obj()) return json_err("settings object is required");
+                    std::string err;
+                    if (!plugins.update_settings(pid, *sv, err)) return json_err(err, 404);
+                    json::Value out = json::Value::make_obj();
+                    out["ok"] = json::Value::make_bool(true);
+                    out["id"] = json::Value::make_str(pid);
+                    return HttpResponse::json(out.dump(-1));
+                }
+                if (req.path == "/api/plugins/run") {
+                    const std::string pid = v.get("id") ? v.get("id")->as_str() : "";
+                    const std::string aid = v.get("actionId") ? v.get("actionId")->as_str() : "";
+                    const json::Value args_obj = (v.get("args") && v.get("args")->is_obj())
+                                                     ? *v.get("args") : json::Value::make_obj();
+                    json::Value res = plugins.run_action(pid, aid, args_obj, &g_stop);
+                    const bool ok = res.get("ok") ? res.get("ok")->as_bool(true) : true;
+                    return HttpResponse::json(res.dump(-1), ok ? 200 : 400);
+                }
+                return json_err("Unknown plugin endpoint", 404);
             }
             if (req.method == "GET" && req.path == "/api/weather") {
                 std::string city = url_decode_str(get_query_param(req.query, "city"));
@@ -6849,6 +6988,13 @@ int main(int argc, char** argv) {
         }
 
         alarm_tick();
+        static std::atomic<bool> plugin_sched_busy{false};
+        if (!plugin_sched_busy.exchange(true)) {
+            std::thread([&]() {
+                plugins.tick_schedules(&g_stop);
+                plugin_sched_busy.store(false);
+            }).detach();
+        }
 
         int sleep_ms = v_act ? 50 : (ws_cnt > 0 ? 100 : 250);
         if (spec_udp_fd >= 0) {

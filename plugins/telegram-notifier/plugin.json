@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "id": "telegram-notifier",
+  "name": "Telegram-уведомления и заметки",
+  "version": "1.0.0",
+  "author": "Olegu621",
+  "category": "Алиса",
+  "icon": "✈️",
+  "description": "Отправка сообщений, заметок и списков покупок голосом с колонки прямо в ваш чат Telegram через Bot API.",
+  "homepage": "https://github.com/Olegu621/OPENSTATION/tree/main/plugins/telegram-notifier",
+  "assistantHint": "Когда просят отправить сообщение/заметку/напоминание в Телеграм, вызывай plugin_telegram_send.",
+  "settingsSchema": [
+    {
+      "key": "bot_token",
+      "label": "Bot Token (@BotFather)",
+      "type": "secret",
+      "default": "",
+      "placeholder": "123456:ABC-DEF...",
+      "help": "Токен вашего Telegram-бота"
+    },
+    {
+      "key": "chat_id",
+      "label": "Chat ID получателя",
+      "type": "string",
+      "default": "",
+      "placeholder": "123456789",
+      "help": "Ваш числовой Telegram ID (можно узнать у @userinfobot)"
+    }
+  ],
+  "tools": [
+    {
+      "name": "plugin_telegram_send",
+      "description": "Отправить текстовое сообщение или заметку владельцу станции в Telegram.",
+      "parameters": {
+        "text": {
+          "type": "STRING",
+          "description": "Текст сообщения или заметки"
+        }
+      },
+      "required": ["text"],
+      "runner": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{settings.bot_token}}/sendMessage",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "chat_id": "{{settings.chat_id}}",
+          "text": "{{args.text}}"
+        },
+        "timeoutMs": 7000
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "send_test",
+      "label": "Отправить тестовое сообщение",
+      "inputs": [
+        {
+          "key": "text",
+          "label": "Текст",
+          "default": "Привет с OpenStation Max!"
+        }
+      ],
+      "runner": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{settings.bot_token}}/sendMessage",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "chat_id": "{{settings.chat_id}}",
+          "text": "{{args.text|Привет с OpenStation Max!}}"
+        },
+        "timeoutMs": 7000
+      }
+    }
+  ]
+}
