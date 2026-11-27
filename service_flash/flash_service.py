@@ -942,11 +942,11 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
     return False
 
 
-PINNED_ROM_VERSION = "1.6.3"
-PINNED_ROM_TAG = "v1.6.3"
-PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.3.zip"
-PINNED_ROM_SIZE = 724888285
-PINNED_ROM_SHA256 = "d1eac06a052d7aeed9a5a174ad29a8e951217c02816a55afd1a52888d390e9d5"
+PINNED_ROM_VERSION = "1.6.43"
+PINNED_ROM_TAG = "v1.6.43"
+PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.43.zip"
+PINNED_ROM_SIZE = 750787996
+PINNED_ROM_SHA256 = "35dc0e8a160e2256c6aa0e12335f1dcd99985d4138a4e69d0a1e80b8d902c441"
 
 
 def _parse_rom_manifest_files(manifest: dict) -> dict:
@@ -1249,8 +1249,8 @@ def wait_for_usb_or_adb_reboot() -> None:
 
 ROM_FILES = {
     "vbmeta.img": (2097152, "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"),
-    "vendor.img": (536870912, "8a7d8f46446d90b7060afc1d634308541e84332e233d09df49517d2d57b2c406"),
-    "system.img": (1551892480, "f0806e1396b24993b9436509a6643b8b292f225e3685f4a784d32c40d1183519"),
+    "vendor.img": (536870912, "21a1876c62c3d83a504d6cc38c0417d0a2662be8d1c3d9812646cbe5bc825834"),
+    "system.img": (1551892480, "a37ca411fc36de039ac1ae42cae918149e0f1b588380880b2f4a2fa94116acef"),
 }
 
 BASE_PARTITION_FILES = {
@@ -1326,7 +1326,7 @@ def verify_rom(rom_dir):
 def verify_base_compatibility(rom_dir):
     manifest_path = os.path.join(rom_dir, "rom_manifest.json")
     if not os.path.isfile(manifest_path):
-        # verify_rom has already required exact hashes of the pinned 1.6.3 ROM.
+        # verify_rom has already required exact hashes of the pinned 1.6.43 ROM.
         return
     with open(manifest_path, "r", encoding="utf-8-sig") as mf:
         manifest = json.load(mf)

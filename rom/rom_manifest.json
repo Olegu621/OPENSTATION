@@ -1,41 +1,41 @@
 {
-    "name":  "OpenStation Max Service ROM",
-    "device":  "yandexstation_2",
-    "version":  "1.6.3",
-    "buildTimeUtc":  "2026-11-15T00:14:14Z",
-    "baseSource":  "YAOSX 1.99",
-    "partitions":  [
-                       "vbmeta",
-                       "vendor",
-                       "system",
-                       "logo"
-                   ],
-    "files":  {
-                  "vbmeta":  {
-                                 "fileName":  "vbmeta.img",
-                                 "size":  2097152,
-                                 "sha256":  "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"
-                             },
-                  "vendor":  {
-                                 "fileName":  "vendor.img",
-                                 "size":  536870912,
-                                 "sha256":  "8a7d8f46446d90b7060afc1d634308541e84332e233d09df49517d2d57b2c406"
-                             },
-                  "system":  {
-                                 "fileName":  "system.img",
-                                 "size":  1551892480,
-                                 "sha256":  "f0806e1396b24993b9436509a6643b8b292f225e3685f4a784d32c40d1183519"
-                             },
-                  "logo":  {
-                               "fileName":  "logo.img",
-                               "size":  2252608,
-                               "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
-                           }
-              },
-    "archive":  {
-                    "fileName":  "OpenStationMax-ROM-v1.6.3.zip",
-                    "size":  724888285,
-                    "sha256":  "d1eac06a052d7aeed9a5a174ad29a8e951217c02816a55afd1a52888d390e9d5",
-                    "tag":  "v1.6.3-rom"
-                }
+    "name": "OpenStation Max Service ROM",
+    "device": "yandexstation_2",
+    "version": "1.6.43",
+    "buildTimeUtc": "2026-11-27T20:00:03Z",
+    "baseSource": "YAOSX 1.99",
+    "partitions": [
+        "vbmeta",
+        "vendor",
+        "system",
+        "logo"
+    ],
+    "files": {
+        "vbmeta": {
+            "fileName": "vbmeta.img",
+            "size": 2097152,
+            "sha256": "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"
+        },
+        "vendor": {
+            "fileName": "vendor.img",
+            "size": 536870912,
+            "sha256": "21a1876c62c3d83a504d6cc38c0417d0a2662be8d1c3d9812646cbe5bc825834"
+        },
+        "system": {
+            "fileName": "system.img",
+            "size": 1551892480,
+            "sha256": "a37ca411fc36de039ac1ae42cae918149e0f1b588380880b2f4a2fa94116acef"
+        },
+        "logo": {
+            "fileName": "logo.img",
+            "size": 2252608,
+            "sha256": "349bfd8074c83e7ddc8ef51bc88b9d3d93a3118871e1442866f1e82f17ffc444"
+        }
+    },
+    "archive": {
+        "fileName": "OpenStationMax-ROM-v1.6.43.zip",
+        "size": 750787996,
+        "sha256": "35dc0e8a160e2256c6aa0e12335f1dcd99985d4138a4e69d0a1e80b8d902c441",
+        "tag": "v1.6.43-rom"
+    }
 }

@@ -779,8 +779,12 @@ try {
     ) + @($RequiredAssets | ForEach-Object {
         @{ src = $_.Path; arc = ("openstation/" + $_.Name); mode = $_.Mode }
     })
+    $StockBootAnimBackup = Join-Path $RootDir "backup\bootanimation.zip.stock"
     if ($BootAnimZip -and (Test-Path $BootAnimZip)) {
         $tarFilesList += @{ src = $BootAnimZip; arc = "meta/bootanimation.zip"; mode = 420 }
+    }
+    if (Test-Path $StockBootAnimBackup) {
+        $tarFilesList += @{ src = $StockBootAnimBackup; arc = "meta/bootanimation.zip.stock"; mode = 420 }
     }
     if ($BootLogodBin -and (Test-Path $BootLogodBin)) {
         $tarFilesList += @{ src = $BootLogodBin; arc = "meta/bootlogod"; mode = 493 }
@@ -1182,13 +1186,18 @@ chmod 755 "$MNT/system/openstation/openstationd" "$MNT/system/openstation/lib/li
 chcon -R u:object_r:system_file:s0 "$MNT/system/openstation" 2>/dev/null || true
 
 # Фирменная анимация загрузки OpenStation Max + резервная копия стоковой внутри /system/openstation/
+if [ -f "$BUILD/payload/meta/bootanimation.zip.stock" ]; then
+    cp -f "$BUILD/payload/meta/bootanimation.zip.stock" "$MNT/system/openstation/bootanimation.zip.stock"
+    chown 0:0 "$MNT/system/openstation/bootanimation.zip.stock"
+    chmod 644 "$MNT/system/openstation/bootanimation.zip.stock"
+    chcon u:object_r:system_file:s0 "$MNT/system/openstation/bootanimation.zip.stock" 2>/dev/null || true
+elif [ -f "$BUILD/payload/meta/bootanimation.zip" ] && [ -f "$MNT/system/media/bootanimation.zip" ]; then
+    cp -f "$MNT/system/media/bootanimation.zip" "$MNT/system/openstation/bootanimation.zip.stock"
+    chown 0:0 "$MNT/system/openstation/bootanimation.zip.stock"
+    chmod 644 "$MNT/system/openstation/bootanimation.zip.stock"
+    chcon u:object_r:system_file:s0 "$MNT/system/openstation/bootanimation.zip.stock" 2>/dev/null || true
+fi
 if [ -f "$BUILD/payload/meta/bootanimation.zip" ]; then
-    if [ -f "$MNT/system/media/bootanimation.zip" ]; then
-        cp -f "$MNT/system/media/bootanimation.zip" "$MNT/system/openstation/bootanimation.zip.stock"
-        chown 0:0 "$MNT/system/openstation/bootanimation.zip.stock"
-        chmod 644 "$MNT/system/openstation/bootanimation.zip.stock"
-        chcon u:object_r:system_file:s0 "$MNT/system/openstation/bootanimation.zip.stock" 2>/dev/null || true
-    fi
     mkdir -p "$MNT/system/media"
     cp -f "$BUILD/payload/meta/bootanimation.zip" "$MNT/system/media/bootanimation.zip"
     chown 0:0 "$MNT/system/media/bootanimation.zip"
