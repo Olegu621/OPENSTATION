@@ -210,14 +210,6 @@ void DaemonConfig::sanitize_and_validate() {
     }
     audio.primary_mic_channel = std::clamp(audio.primary_mic_channel, -1, 15);
     audio.loopback_channel = std::clamp(audio.loopback_channel, 0, 15);
-    if (!is_one_of(audio.hardware_eq_profile, {"original", "hifi", "night", "bass", "club", "custom"})) {
-        audio.hardware_eq_profile = "original";
-    }
-    if (!std::isfinite(audio.hardware_eq_bass_gain)) audio.hardware_eq_bass_gain = 0.0;
-    audio.hardware_eq_bass_gain = std::clamp(audio.hardware_eq_bass_gain, -6.0, 8.0);
-    if (!std::isfinite(audio.hardware_eq_treble_gain)) audio.hardware_eq_treble_gain = 3.0;
-    audio.hardware_eq_treble_gain = std::clamp(audio.hardware_eq_treble_gain, -6.0, 6.0);
-    audio.hardware_eq_subsonic = std::clamp(audio.hardware_eq_subsonic, 35, 80);
 
     input.rotary_step = std::clamp(input.rotary_step, 1, 5);
     if (!is_one_of(input.action_short, {"assistant", "wyoming", "play_pause", "next", "led_cycle", "launcher", "none"})) {
@@ -356,27 +348,6 @@ void DaemonConfig::sanitize_and_validate() {
     }
 }
 
-json::Value AudioConfig::hardware_eq_request() const {
-    using json::Value;
-    Value req = Value::make_obj();
-    req["profile"] = Value::make_str(hardware_eq_profile);
-    if (hardware_eq_profile == "custom") {
-        Value params = Value::make_obj();
-        params["bass_gain"] = Value::make_num(hardware_eq_bass_gain);
-        params["treble_gain"] = Value::make_num(hardware_eq_treble_gain);
-        params["subsonic_freq"] = Value::make_int(hardware_eq_subsonic);
-        req["params"] = std::move(params);
-
-        Value filters = Value::make_obj();
-        filters["subsonic"] = Value::make_bool(hardware_eq_subsonic_on);
-        filters["notch120"] = Value::make_bool(hardware_eq_notch120);
-        filters["phase"] = Value::make_bool(hardware_eq_phase);
-        filters["treble"] = Value::make_bool(hardware_eq_treble_air);
-        req["filters"] = std::move(filters);
-    }
-    return req;
-}
-
 json::Value DaemonConfig::to_json() const {
     using json::Value;
     Value root = Value::make_obj();
@@ -439,14 +410,6 @@ json::Value DaemonConfig::to_json() const {
     au["captureMode"] = Value::make_str(audio.capture_mode);
     au["primaryMicChannel"] = Value::make_int(audio.primary_mic_channel);
     au["loopbackChannel"] = Value::make_int(audio.loopback_channel);
-    au["hardwareEqProfile"] = Value::make_str(audio.hardware_eq_profile);
-    au["hardwareEqBassGain"] = Value::make_num(audio.hardware_eq_bass_gain);
-    au["hardwareEqTrebleGain"] = Value::make_num(audio.hardware_eq_treble_gain);
-    au["hardwareEqSubsonic"] = Value::make_int(audio.hardware_eq_subsonic);
-    au["hardwareEqSubsonicOn"] = Value::make_bool(audio.hardware_eq_subsonic_on);
-    au["hardwareEqNotch120"] = Value::make_bool(audio.hardware_eq_notch120);
-    au["hardwareEqPhase"] = Value::make_bool(audio.hardware_eq_phase);
-    au["hardwareEqTrebleAir"] = Value::make_bool(audio.hardware_eq_treble_air);
     root["audio"] = std::move(au);
 
     Value loc = Value::make_obj();
@@ -643,14 +606,6 @@ void DaemonConfig::from_json(const json::Value& v) {
             }
         }
         if (auto* x = au->get("loopbackChannel"); x && x->is_num()) audio.loopback_channel = x->as_int();
-        if (auto* x = au->get("hardwareEqProfile"); x && x->is_str()) audio.hardware_eq_profile = x->as_str();
-        if (auto* x = au->get("hardwareEqBassGain"); x && x->is_num()) audio.hardware_eq_bass_gain = x->as_double();
-        if (auto* x = au->get("hardwareEqTrebleGain"); x && x->is_num()) audio.hardware_eq_treble_gain = x->as_double();
-        if (auto* x = au->get("hardwareEqSubsonic"); x && x->is_num()) audio.hardware_eq_subsonic = x->as_int();
-        if (auto* x = au->get("hardwareEqSubsonicOn"); x && x->is_bool()) audio.hardware_eq_subsonic_on = x->as_bool();
-        if (auto* x = au->get("hardwareEqNotch120"); x && x->is_bool()) audio.hardware_eq_notch120 = x->as_bool();
-        if (auto* x = au->get("hardwareEqPhase"); x && x->is_bool()) audio.hardware_eq_phase = x->as_bool();
-        if (auto* x = au->get("hardwareEqTrebleAir"); x && x->is_bool()) audio.hardware_eq_treble_air = x->as_bool();
     }
 
     if (auto* loc = v.get("location"); loc && loc->is_obj()) {

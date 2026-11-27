@@ -341,7 +341,8 @@
 
             <h3>Штатный BLE-пульт (YNDX) и Bluetooth</h3>
             <div class="btn-row">
-              <button class="btn btn-sm" id="btnPairBleRemote" type="button">🔗 Автопоиск пульта</button>
+              <button class="btn btn-sm" id="btnPairBleRemote" type="button">🔗 Поиск / переподключение</button>
+              <button class="btn btn-sm" id="btnForgetBleRemote" type="button">🧹 Сбросить память</button>
               <button class="btn btn-sm btn-accent" id="btnFindBleRemote" type="button">🔊 Найти пульт (Зуммер)</button>
               <button class="btn btn-sm" id="btnRemoteBtToggle" type="button">ᛒ BT-колонка</button>
             </div>
@@ -663,49 +664,6 @@
                 <div class="btn-row" style="margin-top:8px;">
                   <button class="btn btn-sm" id="btnResetEq" type="button">Сбросить эквалайзер в 0 дБ</button>
                 </div>
-              </div>
-            </details>
-
-            <details class="adv-details" id="maxDsp" hidden>
-              <summary>Аппаратный DSP (SY6045S Hi-Fi)</summary>
-              <div class="adv-details-body">
-                <div class="btn-row">
-                  <button class="btn btn-sm" type="button" data-dsp="hifi">Hi-Fi Studio</button>
-                  <button class="btn btn-sm" type="button" data-dsp="original">Вернуть исходный</button>
-                  <button class="btn btn-sm" type="button" data-dsp="night">Ночной</button>
-                  <button class="btn btn-sm" type="button" data-dsp="bass">Deep Punch</button>
-                  <button class="btn btn-sm" type="button" data-dsp="club">Club Bass</button>
-                </div>
-                <div class="eq-curve-wrap" style="margin-top:10px;">
-                  <svg id="maxDspCurve" viewBox="0 0 360 110" class="eq-svg" role="img" aria-label="Расчётная АЧХ"></svg>
-                </div>
-                <p class="hint" id="maxDspLegend">Расчётная АЧХ · НЧ / СЧ и ВЧ / Система</p>
-                <div class="form-row">
-                  <label for="maxDspBass">Мощность баса <output id="maxDspBassValue"></output></label>
-                  <input type="range" id="maxDspBass" min="-6" max="8" step="0.5" value="0" />
-                </div>
-                <div class="form-row">
-                  <label for="maxDspSub">Срез инфранизких <output id="maxDspSubValue"></output></label>
-                  <input type="range" id="maxDspSub" min="35" max="80" step="1" value="48" />
-                </div>
-                <div class="form-row">
-                  <label for="maxDspTreble">Высокие частоты <output id="maxDspTrebleValue"></output></label>
-                  <input type="range" id="maxDspTreble" min="-6" max="6" step="0.5" value="3" />
-                </div>
-                <div class="form-row toggle-row"><label for="maxDsp-subsonic">Антивибрация (Subsonic)</label><input type="checkbox" id="maxDsp-subsonic" checked /></div>
-                <div class="form-row toggle-row"><label for="maxDsp-notch120">Режекторный фильтр 120 Гц</label><input type="checkbox" id="maxDsp-notch120" checked /></div>
-                <div class="form-row toggle-row"><label for="maxDsp-phase">Фазовая компенсация APF-2 (260 Гц)</label><input type="checkbox" id="maxDsp-phase" checked /></div>
-                <div class="form-row toggle-row"><label for="maxDsp-treble">Воздух ВЧ (13,5 кГц)</label><input type="checkbox" id="maxDsp-treble" checked /></div>
-                <div class="btn-row">
-                  <button class="btn btn-sm btn-accent" type="button" data-dsp="custom">Применить свои настройки</button>
-                </div>
-                <p class="hint" id="maxDspStatus" role="status"></p>
-                <hr class="adv-divider" />
-                <div class="form-row toggle-row">
-                  <label for="maxDspDrc">Обход лимитера (DRC Bypass — осторожно)</label>
-                  <input type="checkbox" id="maxDspDrc" aria-describedby="maxDspDrcStatus" disabled />
-                </div>
-                <p class="hint" id="maxDspDrcStatus" role="status"></p>
               </div>
             </details>
 
@@ -1302,6 +1260,7 @@
             <div class="btn-row" style="margin:12px 0;">
               <button class="btn btn-accent" id="btnWizFindBle" type="button">🔔 Позвонить на пульт (Зуммер)</button>
               <button class="btn" id="btnWizPairBle" type="button">🔄 Повторить BLE-поиск</button>
+              <button class="btn" id="btnWizForgetBle" type="button">🧹 Забыть и искать заново</button>
             </div>
             <p class="hint">Пока пульт не привязан, вы всегда можете управлять ТВ прямо с вкладки «Пульт» на телефоне.</p>
           </div>
@@ -1460,7 +1419,7 @@
               </div>
               <div class="wiz-sprite-copy">
                 <div class="wiz-sprite-title">Яндекс Музыка и аудио-тракт Hi-Fi</div>
-                <div class="wiz-sprite-sub">Моя волна без потерь, 10-полосный EQ и аппаратный усилитель SY6045S.</div>
+                <div class="wiz-sprite-sub">Моя волна без потерь и 10-полосный EQ.</div>
               </div>
             </div>
             <div class="status-banner" id="wizMusicBanner">Яндекс Музыка: проверка статуса...</div>
@@ -1494,16 +1453,6 @@
                   <option value="electronic">Электроника / Клуб</option>
                   <option value="custom">Пользовательский (10 полос)</option>
                 </select>
-              </div>
-            </div>
-            <div class="form-row" id="wizHwEqRow" style="display:none; margin-top:10px;">
-              <label>Аппаратный DSP усилителя (SY6045S)</label>
-              <div class="seg-group" id="wizHwEqPresets">
-                <button class="seg" type="button" data-hweq="original">Оригинал</button>
-                <button class="seg" type="button" data-hweq="hifi">Hi-Fi</button>
-                <button class="seg" type="button" data-hweq="night">Ночь</button>
-                <button class="seg" type="button" data-hweq="bass">Бас</button>
-                <button class="seg" type="button" data-hweq="club">Клуб</button>
               </div>
             </div>
           </div>

@@ -116,8 +116,6 @@ class SetupWizardActivity : Activity() {
     private lateinit var tvMusicStatus: TextView
     private val routePills = LinkedHashMap<String, TextView>()
     private val eqPills = LinkedHashMap<String, TextView>()
-    private val hwEqPills = LinkedHashMap<String, TextView>()
-    private lateinit var llHwEqSection: LinearLayout
 
     // Screen 6: 24-LED Halo & TV
     private lateinit var ledRingPreview: WizardLedRingPreviewView
@@ -168,8 +166,6 @@ class SetupWizardActivity : Activity() {
     private var curMusicPlus = false
     private var curRoute = "auto"
     private var curEq = "balanced"
-    private var curHwEqSupported = false
-    private var curHwEqProfile = "original"
     private var curRingMode = "music"
     private var curRingColorHex = "#00d4ff"
     private var curAutoBri = true
@@ -609,7 +605,12 @@ class SetupWizardActivity : Activity() {
             }
         }
         btnRow.addView(tvRemoteAutoPill)
-        btnRow.addView(makeActionPill("🔔 Зуммер (позвонить)") {
+        btnRow.addView(makeActionPill("🔄 Искать пульт") {
+            startRemoteAutoPair(forceScan = true)
+        }.apply {
+            (layoutParams as? LinearLayout.LayoutParams)?.marginEnd = dp(8)
+        })
+        btnRow.addView(makeActionPill("🔔 Зуммер") {
             triggerRemoteBuzz()
         })
         rightCol.addView(btnRow)
@@ -1000,30 +1001,6 @@ class SetupWizardActivity : Activity() {
         }
         rightCard.addView(eqRow)
 
-        llHwEqSection = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(4)
-            }
-        }
-        llHwEqSection.addView(makeSubLabel("Усилитель SY6045S (Аппаратный DSP)"))
-        val hwRow = makeChoiceRow()
-        listOf("original" to "Оригинал", "hifi" to "Hi-Fi", "night" to "Ночь", "bass" to "Бас", "club" to "Клуб").forEach { (id, lbl) ->
-            val p = makeChoicePill(lbl) {
-                curHwEqProfile = id
-                LiveOrbState.updateHardwareEq(id, curHwEqSupported)
-                postAsync("http://127.0.0.1:8080/api/audio/hardware_eq", JSONObject().put("profile", id).toString())
-                Toast.makeText(this, "DSP: $lbl", Toast.LENGTH_SHORT).show()
-                syncChoicesHighlight()
-            }
-            hwEqPills[id] = p
-            hwRow.addView(p)
-        }
-        llHwEqSection.addView(hwRow)
-        rightCard.addView(llHwEqSection)
-
         root.addView(leftCard)
         root.addView(rightCard)
         return root
@@ -1393,8 +1370,6 @@ class SetupWizardActivity : Activity() {
         styleMap(promptPills, activePromptPreset)
         styleMap(routePills, curRoute)
         styleMap(eqPills, curEq)
-        llHwEqSection.visibility = if (curHwEqSupported) View.VISIBLE else View.GONE
-        styleMap(hwEqPills, curHwEqProfile)
         styleMap(ringPills, curRingMode)
         styleMap(actionPills, curActShort)
         btnAutoBri.text = if (curAutoBri) "☀ Автояркость: ВКЛ" else "☀ Автояркость: ВЫКЛ"
@@ -1626,7 +1601,6 @@ class SetupWizardActivity : Activity() {
                     val ww = ast?.optJSONObject("wakeWord")
                     val music = root.optJSONObject("music")
                     val audio = root.optJSONObject("audio")
-                    val hwEq = root.optJSONObject("hardwareEq")
                     val engine = audio?.optJSONObject("engine")
 
                     val sysMusicSnap = StationAudioService.instance?.musicPlayer?.getSnapshot()
@@ -1687,8 +1661,6 @@ class SetupWizardActivity : Activity() {
 
                         curRoute = auCfg?.optString("outputRoute", "auto") ?: "auto"
                         curEq = auCfg?.optString("eqPreset", "balanced") ?: "balanced"
-                        curHwEqSupported = hwEq?.optBoolean("supported", false) ?: false
-                        curHwEqProfile = hwEq?.optString("profile", "original") ?: "original"
                         curRingMode = ringCfg?.optString("mode", "music") ?: "music"
                         curRingColorHex = ringCfg?.optString("color", "#00d4ff") ?: "#00d4ff"
                         curAutoBri = ringCfg?.optBoolean("autoBrightness", true) ?: true
@@ -1698,7 +1670,6 @@ class SetupWizardActivity : Activity() {
                         curMusicPlus = mPlus
 
                         LiveOrbState.updateAssistantPersona(curAssistantName, curVoice)
-                        LiveOrbState.updateHardwareEq(curHwEqProfile, curHwEqSupported)
                         activePromptPreset = AssistantPersonalities.keyForPrompt(astCfg?.optString("systemPrompt", "") ?: "")
 
                         renderPolledStatus(postOtaPending)
@@ -2045,7 +2016,7 @@ class SetupWizardActivity : Activity() {
         return iv
     }
 
-    private fun startRemoteAutoPair() {
+    private fun startRemoteAutoPair(forceScan: Boolean = false) {
         val mgr = StationAudioService.instance?.bleRemoteManager
         if (mgr == null) {
             handler.removeCallbacks(remoteRetryRunnable)
@@ -2053,7 +2024,7 @@ class SetupWizardActivity : Activity() {
             return
         }
         val cur = mgr.getRemoteStatus()
-        if (cur.connected) {
+        if (!forceScan && cur.connected) {
             remoteAutoSearching = false
             handler.removeCallbacks(remoteRetryRunnable)
             refreshBleRemoteStatusText()
@@ -2066,7 +2037,7 @@ class SetupWizardActivity : Activity() {
         tvRemoteAutoPill.text = "📡 Автопоиск BLE-пульта активен..."
         tvRemoteAutoPill.setTextColor(Color.parseColor("#7DD3FC"))
 
-        mgr.startAutoScanAndPair(30000L) { st, detail ->
+        mgr.startAutoScanAndPair(30000L, forceScan = forceScan) { st, detail ->
             handler.post {
                 val col = when (st) {
                     "connected" -> "#6EE7B7"

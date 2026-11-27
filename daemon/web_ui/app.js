@@ -2073,11 +2073,17 @@
   }
 
   // BLE Remote Pair / Find, Matrix Recovery, Startup Show
-  async function triggerPairRemote() {
+  async function triggerPairRemote(force = true) {
     try {
-      const r = await api("/api/remote/pair", "POST", {});
+      const r = await api("/api/remote/pair", "POST", { force });
       showToast(r.ok !== false ? "Запущен автопоиск штатного BLE-пульта YNDX..." : (r.error || "Не удалось запустить поиск"), r.ok === false);
     } catch (e) { showToast("Ошибка BLE-поиска: " + e.message, true); }
+  }
+  async function triggerForgetRemote() {
+    try {
+      const r = await api("/api/remote/forget", "POST", {});
+      showToast(r.ok !== false ? "Память пультов очищена — удерживайте «Домой» и «−» на пульте" : (r.error || "Не удалось очистить сопряжение"), r.ok === false);
+    } catch (e) { showToast("Ошибка сброса пульта: " + e.message, true); }
   }
   async function triggerFindRemote() {
     try {
@@ -2085,8 +2091,10 @@
       showToast(r.ok !== false ? "Отправлен звуковой сигнал поиска на BLE-пульт" : (r.error || "Пульт не подключён"), r.ok === false);
     } catch (e) { showToast("Ошибка поиска пульта: " + e.message, true); }
   }
-  if ($("btnPairBleRemote")) $("btnPairBleRemote").addEventListener("click", triggerPairRemote);
-  if ($("btnWizPairBle")) $("btnWizPairBle").addEventListener("click", triggerPairRemote);
+  if ($("btnPairBleRemote")) $("btnPairBleRemote").addEventListener("click", () => triggerPairRemote(true));
+  if ($("btnWizPairBle")) $("btnWizPairBle").addEventListener("click", () => triggerPairRemote(true));
+  if ($("btnForgetBleRemote")) $("btnForgetBleRemote").addEventListener("click", triggerForgetRemote);
+  if ($("btnWizForgetBle")) $("btnWizForgetBle").addEventListener("click", triggerForgetRemote);
   if ($("btnFindBleRemote")) $("btnFindBleRemote").addEventListener("click", triggerFindRemote);
   if ($("btnWizFindBle")) $("btnWizFindBle").addEventListener("click", triggerFindRemote);
   if ($("btnRemoteBtToggle")) $("btnRemoteBtToggle").addEventListener("click", () => $("btnQuickBt")?.click());
@@ -2522,7 +2530,7 @@
     wizStep = target;
     if (wizStep === 1 && Date.now() - lastAutoBleScanMs > 20000) {
       lastAutoBleScanMs = Date.now();
-      api("/api/remote/pair", "POST", {}).catch(() => {});
+      api("/api/remote/pair", "POST", { force: false }).catch(() => {});
     }
     document.querySelectorAll(".wiz-step-pill").forEach((b) => {
       const s = parseInt(b.dataset.step, 10);
@@ -2703,17 +2711,6 @@
       } else {
         $("wizMusicBanner").textContent = "Аккаунт Яндекс Музыки не подключён — выполните вход по QR-коду на экране станции (ТВ).";
         $("wizMusicBanner").className = "status-banner warn";
-      }
-    }
-
-    const hwEq = d.hardwareEq || {};
-    if ($("wizHwEqRow")) {
-      $("wizHwEqRow").style.display = hwEq.supported ? "" : "none";
-      if (hwEq.supported) {
-        const curHw = hwEq.profile || "original";
-        document.querySelectorAll("#wizHwEqPresets .seg").forEach((b) => {
-          b.classList.toggle("active", b.dataset.hweq === curHw);
-        });
       }
     }
 
@@ -2954,20 +2951,6 @@
   if ($("wizEqPreset")) {
     $("wizEqPreset").addEventListener("change", () => pushPartialConfig({ audio: { eqPreset: $("wizEqPreset").value } }, "Эквалайзер применён"));
   }
-  document.querySelectorAll("#wizHwEqPresets .seg").forEach((b) => {
-    b.addEventListener("click", async () => {
-      const profile = b.dataset.hweq;
-      if (!profile) return;
-      try {
-        const res = await api("/api/audio/hardware_eq", "POST", { profile });
-        document.querySelectorAll("#wizHwEqPresets .seg").forEach((x) => x.classList.toggle("active", x.dataset.hweq === (res.profile || profile)));
-        if (state && state.hardwareEq) state.hardwareEq.profile = res.profile || profile;
-        showToast(`Аппаратный DSP: ${b.textContent}`);
-      } catch (e) {
-        showToast("Ошибка DSP: " + (e?.message || e), true);
-      }
-    });
-  });
   document.querySelectorAll("#wizColorSwatches .wiz-swatch").forEach((b) => {
     b.addEventListener("click", () => {
       const col = b.dataset.color || "#00d4ff";
@@ -3845,169 +3828,6 @@
   }
 
   init();
-})();
-
-/* ===================== SY6045S HARDWARE DSP CONTROLLER ===================== */
-(() => {
-  const $ = (id) => document.getElementById(id);
-  const box = $("maxDsp");
-  if (!box) return;
-  const status = $("maxDspStatus");
-  const buttons = [...box.querySelectorAll("button[data-dsp]")];
-  const sliders = { bass_gain: $("maxDspBass"), subsonic_freq: $("maxDspSub"), treble_gain: $("maxDspTreble") };
-  const filters = ["subsonic", "notch120", "phase", "treble"];
-  const endpoint = "/api/audio/hardware_eq";
-  const drc = $("maxDspDrc");
-  const drcStatus = $("maxDspDrcStatus");
-  let busy = false;
-  let canRestore = false;
-  let drcBusy = false;
-
-  function showDrc(data) {
-    const { wooferDrc, tweetersDrc } = data;
-    drc.checked = !wooferDrc && !tweetersDrc;
-    drc.indeterminate = wooferDrc !== tweetersDrc;
-    drcStatus.textContent = drc.indeterminate
-      ? (wooferDrc ? "Лимитер включён только на НЧ" : "Лимитер включён только на СЧ/ВЧ")
-      : (drc.checked ? "Лимитеры обоих усилителей отключены" : "Лимитеры обоих усилителей включены");
-  }
-
-  async function syncDrc(bypass) {
-    if (drcBusy) return;
-    if (bypass === true && !confirm("Внимание: отключение аппаратного лимитера (DRC Bypass) снимает защиту динамиков на высокой громкости. Продолжить?")) {
-      drc.checked = false;
-      return;
-    }
-    drcBusy = true;
-    drc.disabled = true;
-    const path = "/api/audio/drc_bypass";
-    let available = false;
-    try {
-      const options = bypass === undefined ? {} : {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bypass })
-      };
-      const response = await fetch(path, options);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Ошибка DRC");
-      showDrc(data);
-      available = true;
-    } catch (error) {
-      if (bypass !== undefined) {
-        try {
-          const response = await fetch(path);
-          if (response.ok) {
-            showDrc(await response.json());
-            available = true;
-          }
-        } catch {}
-      }
-      drcStatus.textContent = [error.message, available && drcStatus.textContent].filter(Boolean).join(" · ");
-    } finally {
-      drc.disabled = !available;
-      drcBusy = false;
-    }
-  }
-
-  function labels() {
-    for (const [name, field] of Object.entries(sliders)) {
-      if (field && $(field.id + "Value")) {
-        $(field.id + "Value").textContent = field.value + (name === "subsonic_freq" ? " Гц" : " дБ");
-      }
-    }
-  }
-
-  function plot(curve) {
-    const svg = $("maxDspCurve");
-    if (!svg) return;
-    svg.replaceChildren();
-    svg.hidden = !curve;
-    if ($("maxDspLegend")) $("maxDspLegend").hidden = !curve;
-    if (!curve) return;
-    const ns = "http://www.w3.org/2000/svg";
-    for (const [key, color] of [["woofer_db", "#00d4ff"], ["tweeter_db", "#a855f7"], ["system_db", "#e8c686"]]) {
-      if (!Array.isArray(curve[key]) || curve[key].length < 2) continue;
-      const line = document.createElementNS(ns, "polyline");
-      line.setAttribute("points", curve[key].map((gain, index) =>
-        [12 + 336 * index / (curve[key].length - 1), 10 + (12 - gain) * 88 / 52].join(",")
-      ).join(" "));
-      line.setAttribute("stroke", color);
-      line.setAttribute("fill", "none");
-      line.setAttribute("stroke-width", key === "system_db" ? 3 : 1.5);
-      svg.append(line);
-    }
-  }
-
-  async function sync(profile) {
-    if (busy) return;
-    busy = true;
-    buttons.forEach((button) => { button.disabled = true; });
-    status.textContent = profile ? "Проверяю запись в DSP…" : "Читаю состояние DSP…";
-    try {
-      const options = {};
-      if (profile) {
-        const body = { profile };
-        if (profile === "custom") {
-          body.params = Object.fromEntries(Object.entries(sliders).map(([key, field]) => [key, Number(field.value)]));
-          body.filters = Object.fromEntries(filters.map((key) => [key, Boolean($("maxDsp-" + key)?.checked)]));
-        }
-        Object.assign(options, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-      }
-      const response = await fetch(endpoint, options);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Ошибка DSP");
-      if (!data.supported) return;
-      box.hidden = false;
-      canRestore = Boolean(data.canRestore);
-      if (profile || !box.dataset.loaded) {
-        const params = (data.params && typeof data.params === "object") ? data.params : null;
-        if (params) {
-          for (const [key, field] of Object.entries(sliders)) {
-            if (key in params) field.value = params[key];
-          }
-        }
-        const flt = (data.filters && typeof data.filters === "object") ? data.filters : null;
-        if (flt) {
-          for (const key of filters) {
-            if (key in flt && $("maxDsp-" + key)) $("maxDsp-" + key).checked = Boolean(flt[key]);
-          }
-        }
-        labels();
-        box.dataset.loaded = "true";
-      }
-      plot(data.curve);
-      buttons.forEach((button) => button.classList.toggle("btn-accent", button.dataset.dsp === data.profile));
-      const active = buttons.find((button) => button.dataset.dsp === data.profile);
-      status.textContent = data.profile === "original"
-        ? (data.verified ? "Исходные регистры восстановлены" : "Исходный режим")
-        : (active?.textContent || data.profile) + (data.verified ? " · запись подтверждена" : " · регистры изменились");
-    } catch (error) {
-      status.textContent = error.message;
-    } finally {
-      busy = false;
-      buttons.forEach((button) => { button.disabled = button.dataset.dsp === "original" && !canRestore; });
-    }
-  }
-
-  Object.values(sliders).forEach((field) => { if (field) field.addEventListener("input", labels); });
-  labels();
-  buttons.forEach((button) => button.addEventListener("click", () => sync(button.dataset.dsp)));
-  document.querySelectorAll('[data-tab="sound"]').forEach((tab) => {
-    tab.addEventListener("click", () => { if (box.hidden) sync(); });
-  });
-  if (drc) drc.addEventListener("change", () => syncDrc(drc.checked));
-  box.addEventListener("toggle", () => {
-    if (box.open) {
-      sync();
-      syncDrc();
-    }
-  });
-  sync();
 })();
 
 /* ===================== PLUGIN MARKETPLACE CONTROLLER ===================== */

@@ -719,7 +719,11 @@ try {
         apply_setting_if_needed global wifi_sleep_policy 2
         disable_wifi_power_save
         pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true
+        pm grant com.openstation.launcher android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
+        pm grant com.openstation.launcher android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true
         appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true
+        appops set com.openstation.launcher FINE_LOCATION allow 2>/dev/null || true
+        appops set com.openstation.launcher COARSE_LOCATION allow 2>/dev/null || true
         appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
         ime enable com.openstation.ime/.OpenStationImeService 2>/dev/null || true
         cur_ime=$(settings get secure default_input_method 2>/dev/null | tr -d '\r\n')

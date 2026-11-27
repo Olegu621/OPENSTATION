@@ -1877,7 +1877,11 @@ install_apk_safe /data/local/tmp/OpenStationIME.apk com.openstation.ime
 install_apk_safe /data/local/tmp/OpenStationLauncher.apk com.openstation.launcher
 rm -f /data/local/tmp/OpenStationIME.apk /data/local/tmp/OpenStationLauncher.apk
 pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true
+pm grant com.openstation.launcher android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
+pm grant com.openstation.launcher android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true
 appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true
+appops set com.openstation.launcher FINE_LOCATION allow 2>/dev/null || true
+appops set com.openstation.launcher COARSE_LOCATION allow 2>/dev/null || true
 appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 ime enable com.openstation.ime/.OpenStationImeService
 ime set com.openstation.ime/.OpenStationImeService

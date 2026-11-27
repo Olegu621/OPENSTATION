@@ -300,7 +300,6 @@ bool is_safe_station_tool(const std::string& tool_name) {
            tool_name == "show_screen_banner" ||
            tool_name == "set_volume" ||
            tool_name == "set_eq_preset" ||
-           tool_name == "set_hardware_eq" ||
            tool_name == "set_audio_route" ||
            tool_name == "set_mic_mute" ||
            tool_name == "play_sound" ||

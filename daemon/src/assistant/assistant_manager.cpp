@@ -1016,7 +1016,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
                   : "ТЫ — ДЕВУШКА. Всегда говори исключительно в женском роде («я готова», «я нашла», «я услышала»).\n") +
               "- У тебя ЕСТЬ полный живой доступ к интернету через инструменты web_search, get_weather, fetch_url, http_request "
               "(для актуальной погоды, новостей, курсов валют, любых фактов, веб-страниц, RSS и LAN API).\n"
-              "- У тебя ЕСТЬ полный root-доступ ко всей колонке и Android TV: аппаратный звук/эквалайзер (set_volume, set_eq_preset, set_hardware_eq, "
+              "- У тебя ЕСТЬ полный root-доступ ко всей колонке и Android TV: аппаратный звук/эквалайзер (set_volume, set_eq_preset, "
               "set_audio_route, play_sound, set_mic_mute), LED-кольцо и экран-матрица (set_led_ring, set_led_screen, show_screen_banner), "
               "таймеры/будильники (manage_timer), HDMI-CEC и пульт ТВ (tv_hdmi_cec, remote_control, type_text), встроенный нативный плеер "
               "Яндекс Музыка (music_control), приложения и ссылки (manage_apps), умный дом MQTT/HTTP (mqtt_publish, http_request), "
@@ -1038,8 +1038,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
               "- Ты — полноценный ИИ-агент колонки: можешь менять свой голос (set_assistant_voice — при запросе поменять голос сразу вызывай инструмент, сессия мгновенно переключится на новый голос), "
               "менять своё имя и слово активации (set_assistant_name — при просьбах вроде «тебя теперь зовут Джарвис», «поменяй имя на Пятница»), "
-              "менять стили часов и визуализатора (set_styles), настраивать программный 10-полосный эквалайзер (set_eq_preset) и аппаратный DSP усилителя SY6045S на Станции Макс "
-              "(set_hardware_eq — профили: original, hifi, night, bass, club, например «включи Hi-Fi / ночной режим звука»), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
+              "менять стили часов и визуализатора (set_styles), настраивать 10-полосный эквалайзер (set_eq_preset), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
               "- Адаптивный режим диалога: если пользователь дал конкретную команду (громкость, блютуз, таймер, будильник, выключение ТВ, запуск приложения): "
               "сначала обязательно вызови инструмент, затем кратко и естественно подтверди голосом (например: «Сделано», «Таймер на 5 минут запущен») и НЕ задавай лишних вопросов — сессия микрофона автоматически завершится сама. "
               "Исключение: при переключении трека (music_control next/prev) НЕ произноси вообще ничего и завершай ход молча. "
@@ -1231,20 +1230,6 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
             "Rename the assistant and optionally update the wake-word activation phrase immediately.",
             std::move(p),
             {"name"},
-            nb));
-    }
-
-    {
-        Value p = Value::make_obj();
-        p["profile"] = make_enum_prop(
-            "Hardware SY6045S DSP amplifier profile: 'original' (stock factory curve), 'hifi' (clean balanced), "
-            "'night' (gentle bass, clear voice), 'bass' (deep bass boost), 'club' (loud dynamic boost)",
-            {"original", "hifi", "night", "bass", "club"});
-        decls.push(make_func_decl(
-            "set_hardware_eq",
-            "Apply hardware amplifier SY6045S DSP profile on OpenStation Max and persist it.",
-            std::move(p),
-            {"profile"},
             nb));
     }
 

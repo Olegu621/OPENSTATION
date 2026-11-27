@@ -127,11 +127,6 @@ int main() {
     config.assistant.system_prompt = selected;
     config.assistant.name = "Джарвис";
     config.assistant.gemini_api_key = "secret-gemini-key";
-    config.audio.hardware_eq_profile = "custom";
-    config.audio.hardware_eq_bass_gain = 4.5;
-    config.audio.hardware_eq_treble_gain = -1.5;
-    config.audio.hardware_eq_subsonic = 55;
-    config.audio.hardware_eq_notch120 = false;
     config.home_assistant.url = "http://192.168.0.5:8123/";
     config.home_assistant.token = "ha-secret-token";
     AlarmEntry al;
@@ -172,14 +167,7 @@ int main() {
         long_config.sanitize_and_validate();
         assert(long_config.assistant.system_prompt == std::string(40960, 'x'));
     }
-    assert(restored.audio.hardware_eq_profile == "custom");
-    assert(restored.audio.hardware_eq_subsonic == 55);
-    assert(restored.audio.hardware_eq_notch120 == false);
     assert(restored.alarms.size() == 1 && restored.alarms[0].time == "07:30");
-
-    auto hw_req = restored.audio.hardware_eq_request();
-    assert(hw_req.get("profile") && hw_req.get("profile")->as_str() == "custom");
-    assert(hw_req.get("params") && hw_req.get("filters"));
 
     // Simulate WebUI saving empty secrets (must preserve existing tokens)
     json::Value empty_secrets = json::Value::make_obj();

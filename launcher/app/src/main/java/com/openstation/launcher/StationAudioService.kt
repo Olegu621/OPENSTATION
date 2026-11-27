@@ -477,10 +477,7 @@ class StationAudioService : Service() {
                     val aName = obj.optString("assistantName", "")
                     val aVoice = obj.optString("voiceName", "")
                     LiveOrbState.updateAssistantPersona(aName, aVoice)
-                    val hwEq = obj.optString("hardwareEqProfile", "")
-                    val hwEqSup = if (obj.has("hardwareEqSupported")) obj.optBoolean("hardwareEqSupported") else null
-                    LiveOrbState.updateHardwareEq(hwEq, hwEqSup)
-                    Log.i(TAG, "Synced styles: clock=$clk, vis=$vis, autoVis=$autoVis, name=$aName, hwEq=$hwEq")
+                    Log.i(TAG, "Synced styles: clock=$clk, vis=$vis, autoVis=$autoVis, name=$aName")
                 }
                 "weather_event" -> {
                     val valid = obj.optBoolean("valid", false)
@@ -562,13 +559,27 @@ class StationAudioService : Service() {
                     }
                 }
                 "pair_remote" -> {
-                    bleRemoteManager?.startAutoScanAndPair(60000L) { st, detail ->
+                    val force = obj.optBoolean("force", true)
+                    bleRemoteManager?.startAutoScanAndPair(60000L, forceScan = force) { st, detail ->
                         val col = when (st) {
                             "connected" -> "#10D281"
                             "error", "not_found" -> "#F87171"
                             else -> "#00D4FF"
                         }
                         volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, col, 3200L)
+                    }
+                }
+                "forget_remote" -> {
+                    bleRemoteManager?.forgetBondedRemotes { _, msg ->
+                        volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", msg, "#38BDF8", 3000L)
+                        bleRemoteManager?.startAutoScanAndPair(60000L, forceScan = true) { st, detail ->
+                            val col = when (st) {
+                                "connected" -> "#10D281"
+                                "error", "not_found" -> "#F87171"
+                                else -> "#00D4FF"
+                            }
+                            volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, col, 3200L)
+                        }
                     }
                 }
                 "setup_remote" -> {

@@ -8,7 +8,6 @@
 #include "hw/alsa_mixer.hpp"
 #include "hw/audio_engine.hpp"
 #include "hw/hdmi_route_worker.hpp"
-#include "hw/sy6045s_eq.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
 #include "hw/misc_repair.hpp"
@@ -59,13 +58,14 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.37";
+constexpr const char* kFirmwareVersion = "1.6.38";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
 constexpr const char* kVoiceTimeoutMigratedPath = "/data/local/openstation/.voice_timeout_164";
 constexpr const char* kSmartProxyMigratedPath = "/data/local/openstation/.smart_proxy_1625";
 constexpr const char* kVqeInputMigratedPath = "/data/local/openstation/.vqe_input_1627";
+constexpr const char* kDspRestoredPath = "/data/local/openstation/.dsp_restored_1638";
 
 std::atomic<bool> g_stop{false};
 
@@ -1437,6 +1437,30 @@ int main(int argc, char** argv) {
         }
     });
 
+    std::thread ensure_launcher_ble_perms([] {
+        for (int attempt = 0; attempt < 30 && !g_stop.load(); ++attempt) {
+            char boot[PROP_VALUE_MAX] {};
+            __system_property_get("sys.boot_completed", boot);
+            if (strcmp(boot, "1") == 0) {
+                run_argv_with_timeout({"/system/bin/pm", "grant", "com.openstation.launcher", "android.permission.RECORD_AUDIO"}, 5);
+                run_argv_with_timeout({"/system/bin/pm", "grant", "com.openstation.launcher", "android.permission.ACCESS_FINE_LOCATION"}, 5);
+                run_argv_with_timeout({"/system/bin/pm", "grant", "com.openstation.launcher", "android.permission.ACCESS_COARSE_LOCATION"}, 5);
+                run_argv_with_timeout({"/system/bin/appops", "set", "com.openstation.launcher", "RECORD_AUDIO", "allow"}, 5);
+                run_argv_with_timeout({"/system/bin/appops", "set", "com.openstation.launcher", "FINE_LOCATION", "allow"}, 5);
+                run_argv_with_timeout({"/system/bin/appops", "set", "com.openstation.launcher", "COARSE_LOCATION", "allow"}, 5);
+                ShellResult loc = run_argv_with_timeout({"/system/bin/settings", "get", "secure", "location_mode"}, 4);
+                const std::string cur_loc = trim_ws_copy(loc.output);
+                if (cur_loc.empty() || cur_loc == "0" || cur_loc == "null") {
+                    run_argv_with_timeout({"/system/bin/settings", "put", "secure", "location_mode", "3"}, 4);
+                    LOGI("BLE", "Enabled secure location_mode=3 for Android BLE remote scanning");
+                }
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    });
+    ensure_launcher_ble_perms.detach();
+
     DaemonConfig cfg;
     const bool loaded_cfg = cfg.load();
     if (loaded_cfg && !file_exists_plain(kVqeInputMigratedPath)) {
@@ -2017,7 +2041,6 @@ int main(int argc, char** argv) {
         send_udp_json(8086, lcmd.dump(-1));
     };
 
-    Sy6045sEq hardware_eq;
     auto push_style_sync_to_launcher = [&](const DaemonConfig& c) {
         if (!is_udp_port_bound(8086)) return;
         json::Value scmd = json::Value::make_obj();
@@ -2036,8 +2059,6 @@ int main(int argc, char** argv) {
         scmd["locationCity"] = json::Value::make_str(loc_city);
         scmd["assistantName"] = json::Value::make_str(c.assistant.name);
         scmd["voiceName"] = json::Value::make_str(c.assistant.voice_name);
-        scmd["hardwareEqProfile"] = json::Value::make_str(c.audio.hardware_eq_profile);
-        scmd["hardwareEqSupported"] = json::Value::make_bool(hardware_eq.supported());
         send_udp_json(8086, scmd.dump(-1));
     };
 
@@ -2441,17 +2462,16 @@ int main(int argc, char** argv) {
             boot_cfg = cfg;
         }
         apply_hw_config(boot_cfg, inputs.headphone_plugged());
-        if (hardware_eq.supported() && !boot_cfg.audio.hardware_eq_profile.empty() &&
-            boot_cfg.audio.hardware_eq_profile != "original") {
+        if (!file_exists_plain(kDspRestoredPath)) {
             std::lock_guard<std::mutex> vol_lk(vol_apply_mu);
-            std::string hw_err;
-            if (!hardware_eq.apply(boot_cfg.audio.hardware_eq_request(), hw_err)) {
-                LOGW("Audio", "Boot hardware EQ restore (%s) skipped: %s",
-                     boot_cfg.audio.hardware_eq_profile.c_str(), hw_err.c_str());
-            } else {
-                LOGI("Audio", "Boot hardware EQ restored: %s",
-                     boot_cfg.audio.hardware_eq_profile.c_str());
+            if (mixer.reload_amp_defaults()) {
+                mixer.set_bool("Woofer EQ Switch", boot_cfg.audio.woofer_eq);
+                mixer.set_bool("Tweeters EQ Switch", boot_cfg.audio.tweeters_eq);
+                mixer.set_bool("Woofer DRC Switch", true);
+                mixer.set_bool("Tweeters DRC Switch", true);
+                LOGI("Audio", "Restored stock SY6045S amplifier defaults on v%s upgrade", kFirmwareVersion);
             }
+            write_text_file_atomic(kDspRestoredPath, "1\n");
         }
     }
 
@@ -3597,52 +3617,6 @@ int main(int argc, char** argv) {
             return res;
         }
 
-        if (name == "set_hardware_eq") {
-            std::string prof = args.get("profile") && args.get("profile")->is_str()
-                ? trim_ws_copy(args.get("profile")->as_str()) : "";
-            if (prof != "original" && prof != "hifi" && prof != "night" && prof != "bass" && prof != "club") {
-                res["ok"] = Value::make_bool(false);
-                res["error"] = Value::make_str("invalid profile (original/hifi/night/bass/club)");
-                return res;
-            }
-            if (!hardware_eq.supported()) {
-                res["ok"] = Value::make_bool(false);
-                res["error"] = Value::make_str("SY6045S amplifier pair unavailable on this device");
-                return res;
-            }
-            std::string hw_err;
-            {
-                std::lock_guard<std::mutex> cfg_lk(config_apply_mu);
-                std::lock_guard<std::mutex> vol_lk(vol_apply_mu);
-                auto cur_st = hardware_eq.status();
-                const bool can_restore = cur_st.get("canRestore") && cur_st.get("canRestore")->as_bool(false);
-                if (!(prof == "original" && !can_restore)) {
-                    Value hw_req = Value::make_obj();
-                    hw_req["profile"] = Value::make_str(prof);
-                    if (!hardware_eq.apply(hw_req, hw_err)) {
-                        res["ok"] = Value::make_bool(false);
-                        res["error"] = Value::make_str(hw_err);
-                        return res;
-                    }
-                }
-            }
-            DaemonConfig c;
-            {
-                std::lock_guard<std::mutex> lk(cfg_mu);
-                cfg.audio.hardware_eq_profile = prof;
-                cfg.sanitize_and_validate();
-                c = cfg;
-            }
-            push_style_sync_to_launcher(c);
-            save_cfg(c);
-            leds.trigger_task_icon("eq", 86, 220, 255, 4800);
-            res["ok"] = Value::make_bool(true);
-            res["profile"] = Value::make_str(c.audio.hardware_eq_profile);
-            res["hardwareEq"] = hardware_eq.status();
-            res["stopSession"] = Value::make_bool(true);
-            return res;
-        }
-
         if (name == "set_location") {
             bool has_city = (args.get("city") && args.get("city")->is_str());
             std::string city_val = has_city ? trim_ws_copy(args.get("city")->as_str()) : "";
@@ -4748,7 +4722,6 @@ int main(int argc, char** argv) {
         }
         root["alarms"] = public_config["alarms"];
         root["ringingAlarm"] = ringing_alarm_json();
-        root["hardwareEq"] = hardware_eq.status(false);
         root["config"] = std::move(public_config);
         return root;
     };
@@ -5460,138 +5433,6 @@ int main(int argc, char** argv) {
                 }
                 return HttpResponse::json("{\"error\":\"missing route\"}", 400);
             }
-            if ((req.path == "/api/audio/hardware_eq" || req.path == "/api/audio/drc_bypass") &&
-                req.method == "POST") {
-                const bool ct_ok = (req.content_type == "application/json" ||
-                                    req.content_type.rfind("application/json;", 0) == 0);
-                const bool origin_ok = !req.origin.empty()
-                    ? (req.origin == "http://" + req.host)
-                    : (req.host.rfind("127.0.0.1", 0) == 0 || req.host.rfind("localhost", 0) == 0);
-                if (req.host.empty() || !ct_ok || !origin_ok) {
-                    return HttpResponse::json(R"({"error":"Same-origin JSON required"})", 403);
-                }
-            }
-            if (req.path == "/api/audio/hardware_eq" &&
-                (req.method == "GET" || req.method == "POST")) {
-                const bool write = (req.method == "POST");
-                json::Value body;
-                if (write) {
-                    if (req.body.size() > 512 || !json::Parser::parse(req.body, body) || !body.is_obj()) {
-                        return HttpResponse::json(R"({"error":"Invalid DSP request"})", 400);
-                    }
-                }
-                DaemonConfig c;
-                bool persist_now = false;
-                json::Value cur_status;
-                {
-                    std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
-                    std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
-                    if (write) {
-                        const auto* prof_v = body.get("profile");
-                        const std::string want_prof = (prof_v && prof_v->is_str()) ? prof_v->as_str() : "";
-                        auto pre_st = hardware_eq.status();
-                        const bool can_restore = pre_st.get("canRestore") && pre_st.get("canRestore")->as_bool(false);
-                        if (!(want_prof == "original" && !can_restore && body.obj_val.size() == 1)) {
-                            std::string error;
-                            if (!hardware_eq.apply(body, error)) {
-                                json::Value out = json::Value::make_obj();
-                                out["error"] = json::Value::make_str(error);
-                                return HttpResponse::json(out.dump(-1), 409);
-                            }
-                        }
-                        persist_now = true;
-                    }
-                    cur_status = hardware_eq.status();
-                }
-                if (persist_now) {
-                    {
-                        std::lock_guard<std::mutex> lk(cfg_mu);
-                        if (const auto* pr = cur_status.get("profile"); pr && pr->is_str()) {
-                            cfg.audio.hardware_eq_profile = pr->as_str();
-                        }
-                        if (const auto* pm = cur_status.get("params"); pm && pm->is_obj()) {
-                            if (const auto* bg = pm->get("bass_gain"); bg && bg->is_num()) cfg.audio.hardware_eq_bass_gain = bg->as_double(0.0);
-                            if (const auto* tg = pm->get("treble_gain"); tg && tg->is_num()) cfg.audio.hardware_eq_treble_gain = tg->as_double(3.0);
-                            if (const auto* sf = pm->get("subsonic_freq"); sf && sf->is_num()) cfg.audio.hardware_eq_subsonic = sf->as_int(48);
-                        }
-                        if (const auto* fl = cur_status.get("filters"); fl && fl->is_obj()) {
-                            if (const auto* ss = fl->get("subsonic"); ss && ss->is_bool()) cfg.audio.hardware_eq_subsonic_on = ss->as_bool(true);
-                            if (const auto* nc = fl->get("notch120"); nc && nc->is_bool()) cfg.audio.hardware_eq_notch120 = nc->as_bool(true);
-                            if (const auto* ph = fl->get("phase"); ph && ph->is_bool()) cfg.audio.hardware_eq_phase = ph->as_bool(true);
-                            if (const auto* tr = fl->get("treble"); tr && tr->is_bool()) cfg.audio.hardware_eq_treble_air = tr->as_bool(true);
-                        }
-                        cfg.sanitize_and_validate();
-                        c = cfg;
-                    }
-                    push_style_sync_to_launcher(c);
-                    save_cfg(c);
-                }
-                return HttpResponse::json(cur_status.dump(-1));
-            }
-            if (req.path == "/api/audio/drc_bypass" &&
-                (req.method == "GET" || req.method == "POST")) {
-                if (!hardware_eq.supported()) {
-                    return HttpResponse::json(R"({"error":"SY6045S amplifier pair unavailable"})", 404);
-                }
-                const bool write = (req.method == "POST");
-                bool enabled = true;
-                if (write) {
-                    json::Value body;
-                    if (req.body.size() > 128 || !json::Parser::parse(req.body, body) ||
-                        !body.is_obj() || body.obj_val.size() != 1 ||
-                        !body.get("bypass") || !body.get("bypass")->is_bool()) {
-                        return HttpResponse::json(R"({"error":"Expected a boolean bypass value"})", 400);
-                    }
-                    enabled = !body.get("bypass")->as_bool();
-                }
-                std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
-                std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
-                const char* woofer = "Woofer DRC Switch";
-                const char* tweeters = "Tweeters DRC Switch";
-                bool w = true, t = true;
-                if (!mixer.get_bool(woofer, w) || !mixer.get_bool(tweeters, t)) {
-                    return HttpResponse::json(R"({"error":"Не удалось прочитать состояние лимитеров"})", 409);
-                }
-                if (write) {
-                    auto set_and_verify = [&](bool want_w, bool want_t) {
-                        const bool wrote_w = mixer.set_bool(woofer, want_w);
-                        const bool wrote_t = mixer.set_bool(tweeters, want_t);
-                        bool actual_w = false, actual_t = false;
-                        return wrote_w && wrote_t && mixer.get_bool(woofer, actual_w) &&
-                               mixer.get_bool(tweeters, actual_t) && actual_w == want_w && actual_t == want_t;
-                    };
-                    if (!set_and_verify(enabled, enabled)) {
-                        return HttpResponse::json(set_and_verify(w, t)
-                            ? R"({"error":"Изменение DRC не подтверждено. Прежнее состояние восстановлено"})"
-                            : R"({"error":"Изменение DRC не подтверждено. Проверьте состояние лимитеров"})", 409);
-                    }
-                    DaemonConfig next;
-                    {
-                        std::lock_guard<std::mutex> lock(cfg_mu);
-                        next = cfg;
-                        next.audio.woofer_drc = next.audio.tweeters_drc = enabled;
-                    }
-                    bool saved = false;
-                    {
-                        std::lock_guard<std::mutex> save_lock(save_mu);
-                        saved = next.save();
-                    }
-                    if (!saved) {
-                        return HttpResponse::json(set_and_verify(w, t)
-                            ? R"({"error":"Сохранение DRC не удалось. Прежнее состояние восстановлено"})"
-                            : R"({"error":"Сохранение DRC не удалось. Проверьте состояние лимитеров"})", 409);
-                    }
-                    {
-                        std::lock_guard<std::mutex> lock(cfg_mu);
-                        cfg.audio.woofer_drc = cfg.audio.tweeters_drc = enabled;
-                    }
-                    w = t = enabled;
-                }
-                json::Value out = json::Value::make_obj();
-                out["wooferDrc"] = json::Value::make_bool(w);
-                out["tweetersDrc"] = json::Value::make_bool(t);
-                return HttpResponse::json(out.dump(-1));
-            }
             if (req.method == "POST" && req.path == "/api/audio/reload_eq") {
                 std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
                 std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
@@ -6300,11 +6141,23 @@ int main(int argc, char** argv) {
                 return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
             }
             if (req.method == "POST" && req.path == "/api/remote/pair") {
+                json::Value v;
+                const bool force = (json::Parser::parse(req.body, v) && v.get("force"))
+                    ? v.get("force")->as_bool(true) : true;
                 json::Value payload = json::Value::make_obj();
                 payload["cmd"] = json::Value::make_str("pair_remote");
+                payload["force"] = json::Value::make_bool(force);
                 bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
                 leds.trigger_flash(0, 212, 255, 1800);
                 leds.trigger_screen_text("BLE ПУЛЬТ", 0, 212, 255, 4000);
+                return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+            }
+            if (req.method == "POST" && req.path == "/api/remote/forget") {
+                json::Value payload = json::Value::make_obj();
+                payload["cmd"] = json::Value::make_str("forget_remote");
+                bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
+                leds.trigger_flash(0, 212, 255, 1800);
+                leds.trigger_screen_text("BLE СБРОС", 0, 212, 255, 4000);
                 return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
             }
             if (req.method == "POST" && req.path == "/api/remote/text") {

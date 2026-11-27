@@ -73,18 +73,6 @@ struct AudioConfig {
     std::string capture_mode = "aaudio"; // aaudio (stock 1ch 16k libyandexvqe hardware DSP) or alsa_16ch
     int primary_mic_channel = -1;      // 0..15 or -1 = 7-mic array beamform average
     int loopback_channel = 8;          // reference channel in 16ch frame (calibrated empirically)
-
-    // SY6045S persistent hardware DSP equalizer settings (Station Max amp pair 2-002a / 2-002b)
-    std::string hardware_eq_profile = "original"; // original, hifi, night, bass, club, custom
-    double hardware_eq_bass_gain = 0.0;
-    double hardware_eq_treble_gain = 3.0;
-    int hardware_eq_subsonic = 48;
-    bool hardware_eq_subsonic_on = true;
-    bool hardware_eq_notch120 = true;
-    bool hardware_eq_phase = true;
-    bool hardware_eq_treble_air = true;
-
-    json::Value hardware_eq_request() const;
 };
 
 struct LocationConfig {

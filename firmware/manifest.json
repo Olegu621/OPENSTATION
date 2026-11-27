@@ -1,46 +1,46 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.37",
+  "version": "1.6.38",
   "autonomous": true,
-  "changelog": "Добавлен маркетплейс плагинов OpenStation: каталог сообщества (GitHub + установка по URL/JSON), конструктор публикации, мгновенное включение и выключение плагинов, голосовые инструменты и сценарии.",
-  "buildTimeUtc": "2026-11-27T14:52:59Z",
+  "changelog": "Убран аппаратный DSP усилителя SY6045S с возвратом заводских настроек звука и исправлено подключение Bluetooth LE пульта (сканирование, перепривязка после сброса «Домой + −», HID-подключение без цикла reason=256).",
+  "buildTimeUtc": "2026-11-27T15:51:33Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3685304,
-      "sha256": "3dbb1b345e9b527a17348247e28bd53a725a7d2ee75e892c37f0380f2d78e005",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.37/openstationd"
+      "size": 3617984,
+      "sha256": "690e74887803f920955f679c0b1bc4b656d445c37b6106b69f51f2ef7e8f381a",
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.38/openstationd"
     },
     "bootlogod": {
       "fileName": "bootlogod",
       "size": 657728,
       "sha256": "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.37/bootlogod"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.38/bootlogod"
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
-      "size": 28432471,
-      "sha256": "7e86dfa44c7a9a9e30922dde40b1c2ec830953eae560a56bdafc6b6f63da4c71",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.37/OpenStationLauncher.apk"
+      "size": 28438255,
+      "sha256": "69e85318da091afa27c9c187f2a74025efbbdec610442de2bc8a653c2225de27",
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.38/OpenStationLauncher.apk"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",
       "size": 808866,
       "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.37/OpenStationIME.apk"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.38/OpenStationIME.apk"
     },
     "bootanimation": {
       "fileName": "bootanimation.zip",
       "size": 6725707,
       "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.37/bootanimation.zip"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.38/bootanimation.zip"
     },
     "bootlogo": {
       "fileName": "logo.img",
       "size": 2252608,
       "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.37/logo.img"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.38/logo.img"
     }
   }
 }

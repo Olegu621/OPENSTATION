@@ -75,8 +75,6 @@ object LiveOrbState {
     @Volatile private var styleSyncedOnce: Boolean = false
     @Volatile var assistantName: String = "Алиса"
     @Volatile var assistantVoice: String = "Aoede"
-    @Volatile var hardwareEqProfile: String = "original"
-    @Volatile var hardwareEqSupported: Boolean = false
 
     fun effectiveName(): String =
         assistantName.trim().ifEmpty { "Алиса" }
@@ -104,16 +102,6 @@ object LiveOrbState {
         val cleanVoice = voice?.trim().orEmpty()
         if (cleanVoice.isNotEmpty()) {
             assistantVoice = cleanVoice
-        }
-    }
-
-    fun updateHardwareEq(profile: String?, supported: Boolean? = null) {
-        val cleanProfile = profile?.trim()?.lowercase().orEmpty()
-        if (cleanProfile.isNotEmpty()) {
-            hardwareEqProfile = cleanProfile
-        }
-        if (supported != null) {
-            hardwareEqSupported = supported
         }
     }
 

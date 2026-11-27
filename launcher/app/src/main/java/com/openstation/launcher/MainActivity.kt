@@ -268,8 +268,6 @@ class MainActivity : Activity() {
     // Quick service strip & modal state (Screen 2)
     private lateinit var btnServicePersona: LinearLayout
     private lateinit var tvServicePersona: TextView
-    private lateinit var btnServiceHwEq: LinearLayout
-    private lateinit var tvServiceHwEq: TextView
     private lateinit var btnServiceTimers: LinearLayout
     private lateinit var tvServiceTimers: TextView
     private var assistantNameState = "Алиса"
@@ -277,9 +275,6 @@ class MainActivity : Activity() {
     private var assistantWakeAvailablePhrases: Set<String> = emptySet()
     private var assistantVoiceState = "Aoede"
     private var assistantPromptState = ""
-    private var hwEqSupportedState = false
-    private var hwEqProfileState = "original"
-    private var hwEqDrcBypassedState = false
     private var lastTimersJson: JSONArray? = null
     private var lastAlarmsJson: JSONArray? = null
     private var lastRingingAlarmJson: JSONObject? = null
@@ -1965,7 +1960,7 @@ class MainActivity : Activity() {
         topSplit.addView(hwPanel)
         col.addView(topSplit)
 
-        // Quick Services Strip (Persona, SY6045S DSP, Timers & Alarms, BLE Remote)
+        // Quick Services Strip (Persona, Timers & Alarms, BLE Remote)
         val serviceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -2014,17 +2009,6 @@ class MainActivity : Activity() {
             marginEnd = dp(6)
         }
         serviceRow.addView(pBox)
-
-        val (hwBox, hwTv) = makeServiceChip("🎚 DSP SY6045S", "#FFE8C686") {
-            showHardwareEqModal()
-        }
-        btnServiceHwEq = hwBox
-        tvServiceHwEq = hwTv
-        hwBox.visibility = if (hwEqSupportedState) View.VISIBLE else View.GONE
-        hwBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-            marginEnd = dp(6)
-        }
-        serviceRow.addView(hwBox)
 
         val (tmBox, tmTv) = makeServiceChip("⏱ Таймеры и будильники", "#E2E8F0") {
             showTimersModal()
@@ -3184,11 +3168,6 @@ class MainActivity : Activity() {
                     assistantVoiceState = pVoice
                     assistantPromptState = pPrompt
                     LiveOrbState.updateAssistantPersona(pName, pVoice)
-
-                    val hwEqObj = root.optJSONObject("hardwareEq")
-                    hwEqSupportedState = hwEqObj?.optBoolean("supported", false) ?: false
-                    hwEqProfileState = hwEqObj?.optString("profile", "original") ?: "original"
-                    LiveOrbState.updateHardwareEq(hwEqProfileState, hwEqSupportedState)
 
                     val timersArr = root.optJSONArray("timers")
                     val alarmsArr = root.optJSONArray("alarms")
@@ -4837,17 +4816,6 @@ class MainActivity : Activity() {
             val eff = LiveOrbState.effectiveName()
             tvServicePersona.text = "🎙 Имя: $eff"
         }
-        if (::btnServiceHwEq.isInitialized && ::tvServiceHwEq.isInitialized) {
-            btnServiceHwEq.visibility = if (hwEqSupportedState) View.VISIBLE else View.GONE
-            val profLbl = when (hwEqProfileState) {
-                "hifi" -> "Hi-Fi"
-                "night" -> "Ночь"
-                "bass" -> "Бас"
-                "club" -> "Клуб"
-                else -> "Оригинал"
-            }
-            tvServiceHwEq.text = "🎚 DSP · $profLbl"
-        }
         if (::tvServiceTimers.isInitialized) {
             val ringing = lastRingingAlarmJson
             val tCount = lastTimersJson?.length() ?: 0
@@ -5141,142 +5109,6 @@ class MainActivity : Activity() {
         footer.addView(btnDone)
         panel.addView(footer)
         presentOverlayModal(panel, firstFocusView ?: btnDone)
-    }
-
-    private fun showHardwareEqModal() {
-        if (!hwEqSupportedState) {
-            Toast.makeText(this, "Аппаратный DSP SY6045S не обнаружен", Toast.LENGTH_SHORT).show()
-            return
-        }
-        timersScreenRef = null
-        val panel = makeModalGlassPanel(650)
-        panel.addView(TextView(this).apply {
-            text = "АППАРАТНЫЙ DSP УСИЛИТЕЛЯ (SY6045S)"
-            setTextColor(Color.WHITE)
-            textSize = 17.5f
-            letterSpacing = 0.05f
-            typeface = Typeface.DEFAULT_BOLD
-        })
-        panel.addView(TextView(this).apply {
-            text = "24-битные I2C-фильтры усилителя Яндекс Станции Макс"
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 11.5f
-            setPadding(0, dp(2), 0, dp(8))
-        })
-
-        panel.addView(makeModalSubHeading("Профиль звучания"))
-        val profMap = LinkedHashMap<String, TextView>()
-        val profRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        var firstFocus: View? = null
-        listOf(
-            "original" to "Оригинал (Яндекс)",
-            "hifi" to "Hi-Fi",
-            "night" to "Ночь",
-            "bass" to "Бас",
-            "club" to "Клуб"
-        ).forEachIndexed { idx, (id, lbl) ->
-            val p = makeModalChoicePill(lbl, id == hwEqProfileState) {
-                hwEqProfileState = id
-                LiveOrbState.updateHardwareEq(id, hwEqSupportedState)
-                syncServiceChips()
-                profMap.forEach { (k, tv) ->
-                    val sel = (k == hwEqProfileState)
-                    tv.isSelected = sel
-                    tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
-                }
-                postAsync("http://127.0.0.1:8080/api/audio/hardware_eq", JSONObject().put("profile", id).toString())
-                Toast.makeText(this, "DSP профиль: $lbl", Toast.LENGTH_SHORT).show()
-            }
-            if (idx == 0) firstFocus = p
-            profMap[id] = p
-            profRow.addView(p)
-        }
-        panel.addView(profRow)
-
-        panel.addView(makeModalSubHeading("Аппаратная защита динамиков (DRC)"))
-        val tvDrcInfo = TextView(this).apply {
-            text = "Проверка состояния DRC..."
-            setTextColor(Color.parseColor("#CBD5E1"))
-            textSize = 12f
-            setPadding(0, 0, 0, dp(8))
-        }
-        panel.addView(tvDrcInfo)
-
-        lateinit var btnDrc: TextView
-        fun renderDrcBtn() {
-            if (hwEqDrcBypassedState) {
-                tvDrcInfo.text = "⚠ Защита динамиков (DRC): ОТКЛЮЧЕНА (Bypass) — берегите громкость!"
-                tvDrcInfo.setTextColor(Color.parseColor("#FCA5A5"))
-                btnDrc.text = "Включить защиту DRC"
-            } else {
-                tvDrcInfo.text = "✓ Защита динамиков (DRC): АКТИВНА (рекомендуется)"
-                tvDrcInfo.setTextColor(Color.parseColor("#6EE7B7"))
-                btnDrc.text = "Отключить защиту DRC (опасно)"
-            }
-        }
-        btnDrc = makeModalChoicePill("Проверка...", false) {
-            if (hwEqDrcBypassedState) {
-                hwEqDrcBypassedState = false
-                renderDrcBtn()
-                postAsync("http://127.0.0.1:8080/api/audio/drc_bypass", JSONObject().put("bypass", false).toString())
-                Toast.makeText(this, "Защита DRC включена", Toast.LENGTH_SHORT).show()
-            } else {
-                AlertDialog.Builder(this)
-                    .setTitle("Опасное отключение DRC (SY6045S)")
-                    .setMessage(
-                        "Внимание! Аппаратный лимитер DRC защищает вуфер и твитеры от перегрузки и физического повреждения на высокой громкости.\n\nПродолжить отключение DRC на свой страх и риск?"
-                    )
-                    .setPositiveButton("Отключить защиту") { _, _ ->
-                        hwEqDrcBypassedState = true
-                        renderDrcBtn()
-                        postAsync("http://127.0.0.1:8080/api/audio/drc_bypass", JSONObject().put("bypass", true).toString())
-                        Toast.makeText(this, "DRC Bypass активен", Toast.LENGTH_SHORT).show()
-                    }
-                    .setNegativeButton("Отмена", null)
-                    .show()
-            }
-        }
-        panel.addView(btnDrc)
-        renderDrcBtn()
-
-        thread(isDaemon = true) {
-            try {
-                val conn = (URL("http://127.0.0.1:8080/api/audio/drc_bypass").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 900
-                    readTimeout = 900
-                }
-                if (conn.responseCode == 200) {
-                    val txt = conn.inputStream.bufferedReader().use { it.readText() }
-                    val j = JSONObject(txt)
-                    val woofer = j.optBoolean("wooferDrc", true)
-                    val tweeters = j.optBoolean("tweetersDrc", true)
-                    handler.post {
-                        if (homeCustomOpen) {
-                            hwEqDrcBypassedState = !(woofer && tweeters)
-                            renderDrcBtn()
-                        }
-                    }
-                }
-                conn.disconnect()
-            } catch (_: Throwable) {}
-        }
-
-        val footer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(16) }
-        }
-        val btnDone = makeTextIconPill(R.drawable.ic_play, "Закрыть", gold = true) {
-            closeHomeCustomizationMenu()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
-        }
-        footer.addView(btnDone)
-        panel.addView(footer)
-        presentOverlayModal(panel, firstFocus ?: btnDone)
     }
 
     private fun showTimersModal() {

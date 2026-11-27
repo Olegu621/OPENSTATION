@@ -541,7 +541,11 @@ void apply_post_install_pkg_setup(const std::string& pkg_name) {
     } else if (pkg_name == "com.openstation.launcher") {
         run_shell_capture(
             "pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true; "
+            "pm grant com.openstation.launcher android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true; "
+            "pm grant com.openstation.launcher android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true; "
             "appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true; "
+            "appops set com.openstation.launcher FINE_LOCATION allow 2>/dev/null || true; "
+            "appops set com.openstation.launcher COARSE_LOCATION allow 2>/dev/null || true; "
             "appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true; "
             "cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || "
             "pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true; "
@@ -1770,7 +1774,11 @@ void OtaManager::run_install_sync(bool force) {
         script += "esac\n";
         script += "case \"$PM_OUT\" in *Success*) ;; *) LAUNCH_OK=0; echo 'Launcher installation did not report success' ;; esac\n";
         script += "pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true\n";
+        script += "pm grant com.openstation.launcher android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true\n";
+        script += "pm grant com.openstation.launcher android.permission.ACCESS_COARSE_LOCATION 2>/dev/null || true\n";
         script += "appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true\n";
+        script += "appops set com.openstation.launcher FINE_LOCATION allow 2>/dev/null || true\n";
+        script += "appops set com.openstation.launcher COARSE_LOCATION allow 2>/dev/null || true\n";
         script += "appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true\n";
         script += "cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true\n";
     }

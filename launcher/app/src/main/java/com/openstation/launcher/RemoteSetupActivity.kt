@@ -149,7 +149,26 @@ class RemoteSetupActivity : Activity() {
         btnRetry = makeGlassPill("↻ Повторить поиск", primary = true) {
             StationAudioService.instance?.bleRemoteManager?.stopScan()
             setScanVisual("scanning", "Повторное сканирование BLE-эфира…")
-            startSearch(0)
+            startSearch(0, forceScan = true)
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = dp(12)
+            }
+        }
+
+        val btnForget = makeGlassPill("🧹 Забыть и заново", primary = false) {
+            val mgr = StationAudioService.instance?.bleRemoteManager
+            if (mgr == null) {
+                setScanVisual("error", "Служба пульта ещё запускается.")
+                return@makeGlassPill
+            }
+            setScanVisual("scanning", "Очищаю старое сопряжение и запускаю поиск…")
+            mgr.forgetBondedRemotes { _, _ ->
+                if (active) startSearch(0, forceScan = true)
+            }
         }.apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -164,17 +183,18 @@ class RemoteSetupActivity : Activity() {
         }
 
         btnRow.addView(btnRetry)
+        btnRow.addView(btnForget)
         btnRow.addView(btnClose)
         card.addView(btnRow)
 
         root.addView(
             card,
-            FrameLayout.LayoutParams(dp(590), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
+            FrameLayout.LayoutParams(dp(640), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
         )
         setContentView(root)
 
         startDotPulse()
-        startSearch(0)
+        startSearch(0, forceScan = false)
         btnClose.requestFocus()
     }
 
@@ -251,18 +271,18 @@ class RemoteSetupActivity : Activity() {
         }
     }
 
-    private fun startSearch(attempt: Int) {
+    private fun startSearch(attempt: Int, forceScan: Boolean = false) {
         if (!active) return
         val manager = StationAudioService.instance?.bleRemoteManager
         if (manager == null) {
             if (attempt >= 10) {
                 setScanVisual("error", "Служба пульта не запустилась. Нажмите «Повторить поиск».")
             } else {
-                handler.postDelayed({ startSearch(attempt + 1) }, 500)
+                handler.postDelayed({ startSearch(attempt + 1, forceScan) }, 500)
             }
             return
         }
-        manager.startAutoScanAndPair(60000L) { state, detail ->
+        manager.startAutoScanAndPair(60000L, forceScan = forceScan) { state, detail ->
             handler.post {
                 if (active) setScanVisual(state, detail)
             }
