@@ -1272,6 +1272,11 @@ int main(int argc, char** argv) {
     // reuses heap pages instead of churning madvise/minor page faults on every audio chunk.
     mallopt(M_DECAY_TIME, 1);
 
+    // A launcher may leave SIGCHLD ignored (dispositions are inherited across fork/exec);
+    // under SIG_IGN waitpid() fails with ECHILD and every child status check below would
+    // report a successful command as failed. The daemon reaps all of its children itself.
+    signal(SIGCHLD, SIG_DFL);
+
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
             printf("openstationd %s\n", kFirmwareVersion);
