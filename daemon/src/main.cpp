@@ -1214,12 +1214,15 @@ void probe_android_stream_music(const std::string& route, bool hp_plugged, int& 
     out_pct = 10;
 
     std::vector<const char*> keys;
+    // `volume_music` is where Android actually persists STREAM_MUSIC on this
+    // device (its output is not indexed as "speaker"), while per-device keys
+    // like volume_music_speaker can hold a stale value and must not win.
     if (route == "hdmi") {
-        keys = {"volume_music_hdmi", "volume_music_speaker", "volume_music"};
+        keys = {"volume_music_hdmi", "volume_music", "volume_music_speaker"};
     } else if (route == "headphones" || (route == "auto" && hp_plugged)) {
-        keys = {"volume_music_headset", "volume_music_headphone", "volume_music_speaker", "volume_music"};
+        keys = {"volume_music_headset", "volume_music_headphone", "volume_music", "volume_music_speaker"};
     } else {
-        keys = {"volume_music_speaker", "volume_music", "volume_music_headset"};
+        keys = {"volume_music", "volume_music_speaker", "volume_music_headset"};
     }
 
     char boot_prop[PROP_VALUE_MAX] = {};
@@ -1736,6 +1739,7 @@ int main(int argc, char** argv) {
     std::atomic<int> hdmi_policy_state{-1};
     std::atomic<int> hdmi_requested_state{-1};
     std::atomic<bool> hdmi_policy_failed{false};
+    std::atomic<bool> first_route_push_seen{false};
     std::string cached_audioserver_pid;
 
     auto push_hdmi_route_to_launcher = [&](const std::string& route, int pct, bool sync_vol = true) {
@@ -1818,7 +1822,12 @@ int main(int argc, char** argv) {
                 if ((cfg.audio.output_route == "hdmi") != enabled) return;
                 route_now = cfg.audio.output_route;
             }
-            push_hdmi_route_to_launcher(route_now, volume_osd_pct.load(), true);
+            // On the first pass only announce the route: pushing the just-probed
+            // volume back to the launcher overwrites the value Android may still
+            // be restoring (or a stale settings key), which reset it to 2% on
+            // every daemon start.
+            const bool first_push = !first_route_push_seen.exchange(true);
+            push_hdmi_route_to_launcher(route_now, volume_osd_pct.load(), !first_push);
         });
 
     auto request_hdmi_route = [&](bool enabled) {
