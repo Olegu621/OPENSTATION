@@ -241,6 +241,7 @@
       if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 4;
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
+      if ($("astVoiceBargeIn")) ast.voiceBargeIn = $("astVoiceBargeIn").checked;
       if ($("astQuietWhisper")) ast.quietWhisperReply = $("astQuietWhisper").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
       if ($("astAgentMode")) ast.agentMode = $("astAgentMode").checked;
@@ -1055,6 +1056,7 @@
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
+        if ($("astVoiceBargeIn")) $("astVoiceBargeIn").checked = cfg.assistant.voiceBargeIn !== false;
         if ($("astQuietWhisper")) $("astQuietWhisper").checked = cfg.assistant.quietWhisperReply === true;
         if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode !== false;
         if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 4;

@@ -125,6 +125,7 @@ struct AssistantConfig {
     bool google_search = false;
     bool agent_mode = true;
     bool echo_guard = true;
+    bool voice_barge_in = true;   // local VQE barge-in: off for rooms with constant background speech
     bool quiet_whisper_reply = false;
     int pre_roll_ms = 450;
     int follow_up_sec = 4;

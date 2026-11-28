@@ -81,6 +81,8 @@ struct StockSpotterHealth {
 // Hardware-AEC barge-in gate:
 // - If echo_guard is disabled: always passes mic audio.
 // - During playback without hardware VQE AEC: blocks mic to prevent feedback.
+// - During playback with VQE AEC and voice_barge_in off: blocks mic, never triggers
+//   (for rooms where TV or voice chat would otherwise cut every reply).
 // - During playback with VQE AEC: holds low residual echo back, then triggers an immediate
 //   barge-in edge + unlocks streaming once sustained user speech exceeds the AEC floor.
 struct BargeInGate {
@@ -99,7 +101,8 @@ struct BargeInGate {
                 float noise_rms,
                 bool playback_active,
                 bool vqe_input,
-                bool echo_guard) {
+                bool echo_guard,
+                bool voice_barge_in) {
         if (!echo_guard) {
             reset();
             return Result::Pass;
@@ -108,7 +111,7 @@ struct BargeInGate {
             reset();
             return Result::Pass;
         }
-        if (!vqe_input) {
+        if (!vqe_input || !voice_barge_in) {
             speech_frames = 0;
             return Result::Drop;
         }

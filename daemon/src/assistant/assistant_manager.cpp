@@ -605,7 +605,8 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     bool trigger_barge_now = false;
     {
         std::lock_guard<std::mutex> blk(barge_mu_);
-        const auto res = barge_in_.feed(rms, noise_rms, playback_active, vqe_input, c.echo_guard);
+        const auto res = barge_in_.feed(rms, noise_rms, playback_active, vqe_input, c.echo_guard,
+                                        c.voice_barge_in);
         if (res == BargeInGate::Result::Drop) {
             return;
         }
