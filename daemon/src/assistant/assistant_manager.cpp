@@ -1685,6 +1685,7 @@ void AssistantManager::session_worker(uint64_t sid,
     bool go_away_received = false;
     QuietSpeech quiet_speech;
     bool reply_started = false;
+    int64_t model_audio_ms = 0; // last audio chunk from the model in this session
 
     auto session_start_tp = std::chrono::steady_clock::now();
     auto setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
@@ -2084,6 +2085,7 @@ void AssistantManager::session_worker(uint64_t sid,
                                             quiet_reply_active_.store(cfg_snap.quiet_whisper_reply && quiet_speech.detected());
                                             reply_started = true;
                                         }
+                                        model_audio_ms = steady_now_ms();
                                         set_state(AssistantState::Speaking);
                                         if (quiet_reply_active_) {
                                             // Change only this response, before it reaches the speaker and echo reference.
@@ -2312,6 +2314,7 @@ void AssistantManager::session_worker(uint64_t sid,
                                                      speaking_now,
                                                      activity_ms,
                                                      last_audio_end_ms,
+                                                     model_audio_ms,
                                                      now_ms,
                                                      cfg_snap.vad_silence_ms)) {
                         if (send_audio_stream_end()) {

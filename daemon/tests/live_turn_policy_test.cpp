@@ -18,17 +18,25 @@ int main() {
     assert(should_update_live_voice_ms(5000.0f, 45.0f, true) == false);
 
     // audioStreamEnd gates: require active listening, unsent audio, no playback,
-    // fresh speech activity after last audioStreamEnd, and clamped silence timeout [600, 2000] ms.
-    assert(should_send_audio_stream_end(false, true, false, 2000, 1000, 3000, 900) == false);
-    assert(should_send_audio_stream_end(true, false, false, 2000, 1000, 3000, 900) == false);
-    assert(should_send_audio_stream_end(true, true, true, 2000, 1000, 3000, 900) == false);
-    assert(should_send_audio_stream_end(true, true, false, 1000, 1000, 3000, 900) == false);
-    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 2899, 900) == false);
-    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 2900, 900) == true);
-    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 2599, 200) == false);
-    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 2600, 200) == true);
-    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 3999, 5000) == false);
-    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 4000, 5000) == true);
+    // fresh speech activity after the last audioStreamEnd and after the model's
+    // last audio, and a silence timeout that leads the server VAD by 500 ms
+    // (floor 600 ms, silence clamped to [600, 2000] ms).
+    assert(should_send_audio_stream_end(false, true, false, 2000, 1000, 0, 3000, 900) == false);
+    assert(should_send_audio_stream_end(true, false, false, 2000, 1000, 0, 3000, 900) == false);
+    assert(should_send_audio_stream_end(true, true, true, 2000, 1000, 0, 3000, 900) == false);
+    assert(should_send_audio_stream_end(true, true, false, 1000, 1000, 0, 3000, 900) == false);
+    // User spoke after the model's last audio: end leads the 900 ms server VAD at 600 ms.
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 1500, 2599, 900) == false);
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 1500, 2600, 900) == true);
+    // Only noise after the reply (activity not newer than the model audio): never send.
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 2000, 9000, 900) == false);
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 2500, 9000, 900) == false);
+    assert(should_send_audio_stream_end(true, true, false, 3000, 1000, 2500, 9000, 900) == true);
+    // Silence clamping: 200 -> 600 ms floor, 5000 -> 2000 ms (end at 1500 ms).
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 0, 2599, 200) == false);
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 0, 2600, 200) == true);
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 0, 3499, 5000) == false);
+    assert(should_send_audio_stream_end(true, true, false, 2000, 1000, 0, 3500, 5000) == true);
 
     // Stock spotter health: 5s failover to Sherpa KWS + automatic recovery when FIFO writes resume.
     StockSpotterHealth health;
