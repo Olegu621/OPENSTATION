@@ -4021,10 +4021,10 @@ int main(int argc, char** argv) {
             int dur = args.get("duration_ms") ? std::clamp(args.get("duration_ms")->as_int(4500), 500, 20000) : 4500;
             uint8_t r = 0, g = 220, b = 255;
             parse_hex_rgb(col, r, g, b);
-            leds.trigger_screen_text(txt, r, g, b, dur);
+            const int shown_ms = leds.trigger_screen_text(txt, r, g, b, dur);
             res["ok"] = Value::make_bool(true);
             res["screenConnected"] = Value::make_bool(leds.screen_present());
-            res["durationMs"] = Value::make_int(dur);
+            res["durationMs"] = Value::make_int(shown_ms);
             return res;
         }
 

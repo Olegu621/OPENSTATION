@@ -46,7 +46,8 @@ public:
     void trigger_volume_osd(int percent);
     void update_volume_osd_if_active(int percent);
     void trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_ms = 600);
-    void trigger_screen_text(const std::string& text, uint8_t r = 0, uint8_t g = 212, uint8_t b = 255, int duration_ms = 3500);
+    // Returns the effective duration: a scrolling text is never shown shorter than one full pass.
+    int trigger_screen_text(const std::string& text, uint8_t r = 0, uint8_t g = 212, uint8_t b = 255, int duration_ms = 3500);
     void trigger_music_track_banner(const std::string& title, uint8_t r = 110, uint8_t g = 231, uint8_t b = 255);
     static int measure_text_pixel_width(const std::string& text);
     static int compute_full_scroll_duration_ms(const std::string& text, double px_per_sec = 18.0, int screen_w = 25);
