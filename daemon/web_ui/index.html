@@ -472,6 +472,12 @@
             </div>
 
             <div class="form-row">
+              <label>Стартовая громкость (%)</label>
+              <input type="number" id="startupVolume" min="0" max="100" step="1" value="2" />
+              <div class="hint">Громкость после включения станции или перезапуска демона; при первом звуке плавно нарастает до последней установленной. Применяется при следующем запуске демона.</div>
+            </div>
+
+            <div class="form-row">
               <label>Местоположение (для прогноза погоды)</label>
               <div class="input-send-row">
                 <input type="text" id="locCity" placeholder="Автоопределение по IP..." />

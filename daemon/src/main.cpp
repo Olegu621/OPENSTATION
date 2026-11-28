@@ -61,6 +61,7 @@ namespace {
 constexpr const char* kFirmwareVersion = "1.6.45";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
+constexpr const char* kVolumeTargetPath = "/data/local/openstation/volume_target";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
 constexpr const char* kVoiceTimeoutMigratedPath = "/data/local/openstation/.voice_timeout_164";
 constexpr const char* kSmartProxyMigratedPath = "/data/local/openstation/.smart_proxy_1625";
@@ -1591,6 +1592,14 @@ int main(int argc, char** argv) {
     std::atomic<int> volume_osd_pct{10};
     std::atomic<int> android_vol_max{100};
     std::atomic<int64_t> last_daemon_vol_cmd_ms{0};
+    // Startup volume: the daemon starts at audio.startup_volume and ramps to the
+    // last user volume (target) on the first sound. The target is persisted by the
+    // daemon because Android's own volume is overwritten by the startup value.
+    std::atomic<int> startup_volume_target{-1};
+    std::atomic<bool> startup_ramp_pending{false};
+    std::atomic<bool> startup_ramp_cancel{false};
+    std::atomic<bool> startup_ramp_active{false};
+    std::function<void()> startup_ramp_trigger;
     auto steady_ms_now = []() -> int64_t {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now().time_since_epoch())
@@ -1719,8 +1728,20 @@ int main(int argc, char** argv) {
         probe_android_stream_music(cfg.audio.output_route, hp_init, init_pct, init_max);
         volume_osd_pct.store(init_pct);
         android_vol_max.store(init_max);
-        LOGI("Audio", "Initial Android volume probe: %d%% (maxSteps=%d, hp=%d)",
-             init_pct, init_max, hp_init ? 1 : 0);
+        // The target is the last user volume: what the daemon persisted, or what
+        // Android still holds when there is no record yet.
+        int target_pct = init_pct;
+        if (int saved_pct = std::atoi(read_first_line(kVolumeTargetPath).c_str());
+            saved_pct >= 1 && saved_pct <= 100) {
+            target_pct = saved_pct;
+        } else if (init_pct >= 1) {
+            // First run: remember what Android holds so a restart before the first
+            // sound does not lose it to the startup value.
+            write_text_file_atomic(kVolumeTargetPath, std::to_string(init_pct) + "\n");
+        }
+        startup_volume_target.store(target_pct);
+        LOGI("Audio", "Initial Android volume probe: %d%% (maxSteps=%d, hp=%d), target %d%%",
+             init_pct, init_max, hp_init ? 1 : 0, target_pct);
     }
 
     uinput.init();
@@ -2025,6 +2046,8 @@ int main(int argc, char** argv) {
             ym_playing = music_state.playing && !music_state.paused;
         }
         leds.set_music_playing(ym_playing || ext_music_playing.load());
+        // Playback started by the launcher is a "first sound" too.
+        if ((ym_playing || ext_music_playing.load()) && startup_ramp_trigger) startup_ramp_trigger();
     };
 
     auto push_eq_to_launcher = [&](const DaemonConfig& c) {
@@ -2148,14 +2171,25 @@ int main(int argc, char** argv) {
         inputs.set_remote_assistant_double_enabled(c.input.remote_long != "push_to_talk");
     };
 
+    // A real user change (ring, UI, API) is the new startup target; ramp steps are not.
+    auto note_user_volume = [&](int pct, bool from_ramp) {
+        if (from_ramp) return;
+        startup_ramp_cancel.store(true);
+        startup_ramp_pending.store(false);
+        write_text_file_atomic(kVolumeTargetPath, std::to_string(std::clamp(pct, 0, 100)) + "\n");
+        startup_volume_target.store(std::clamp(pct, 0, 100));
+    };
+
     auto set_android_volume_pct = [&](int pct,
                                       bool show_osd,
                                       int* out_woo = nullptr,
                                       int* out_twe = nullptr,
-                                      int* out_hp = nullptr) {
+                                      int* out_hp = nullptr,
+                                      bool from_ramp = false) {
         int clamped = std::clamp(pct, 0, 100);
         int prev = clamped;
         bool sent_udp = false;
+        note_user_volume(clamped, from_ramp);
         {
             std::lock_guard<std::mutex> lk(vol_apply_mu);
             last_daemon_vol_cmd_ms.store(steady_ms_now());
@@ -2193,8 +2227,11 @@ int main(int argc, char** argv) {
                                        int* out_twe = nullptr,
                                        int* out_hp = nullptr) {
         int clamped = 0;
-        int prev = 0;
+        int prev = volume_osd_pct.load();
+        startup_ramp_cancel.store(true);
+        startup_ramp_pending.store(false);
         bool sent_udp = false;
+        note_user_volume(std::clamp(prev + delta_pct, 0, 100), false);
         {
             std::lock_guard<std::mutex> lk(vol_apply_mu);
             last_daemon_vol_cmd_ms.store(steady_ms_now());
@@ -2227,6 +2264,44 @@ int main(int argc, char** argv) {
         }
         return clamped;
     };
+
+    // Smooth start: the daemon comes up at audio.startup_volume and ramps to the
+    // remembered target on the first sound (TTS, chime or launcher playback).
+    auto maybe_start_startup_ramp = [&]() {
+        if (!startup_ramp_pending.exchange(false)) return;
+        const int target = startup_volume_target.load();
+        const int from = volume_osd_pct.load();
+        if (target <= from) return;
+        startup_ramp_cancel.store(false);
+        startup_ramp_active.store(true);
+        LOGI("Audio", "Startup ramp %d%% -> %d%%", from, target);
+        std::thread([&, target, from]() {
+            const int span = target - from;
+            const int step = std::max(1, (span + 24) / 25); // ~25 steps, ~1.5 s
+            for (int v = from + step; v < target && !g_stop.load(); v += step) {
+                if (startup_ramp_cancel.load()) break;
+                set_android_volume_pct(v, false, nullptr, nullptr, nullptr, /*from_ramp=*/true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            }
+            if (!startup_ramp_cancel.load() && !g_stop.load()) {
+                set_android_volume_pct(target, false, nullptr, nullptr, nullptr, /*from_ramp=*/true);
+            }
+            startup_ramp_active.store(false);
+            LOGI("Audio", "Startup ramp %s at %d%%", startup_ramp_cancel.load() ? "cancelled" : "done",
+                 volume_osd_pct.load());
+        }).detach();
+    };
+    startup_ramp_trigger = maybe_start_startup_ramp;
+    audio.set_first_sound_cb(maybe_start_startup_ramp);
+    {
+        const int target = startup_volume_target.load();
+        const int start = std::clamp(cfg.audio.startup_volume, 0, 100);
+        if (start < target) {
+            startup_ramp_pending.store(true);
+            set_android_volume_pct(start, false, nullptr, nullptr, nullptr, /*from_ramp=*/true);
+            LOGI("Audio", "Startup volume %d%%, will ramp to %d%% on first sound", start, target);
+        }
+    }
 
     std::atomic<bool> remote_voice_available{false};
     std::atomic<int64_t> remote_voice_stop_deadline{0};
@@ -2932,7 +3007,9 @@ int main(int argc, char** argv) {
             int probe_pct = volume_osd_pct.load();
             int probe_max = android_vol_max.load();
             probe_android_stream_music(route_snap, inputs.headphone_plugged(), probe_pct, probe_max);
-            volume_osd_pct.store(probe_pct);
+            // While a startup ramp is pending the daemon must stay at the startup
+            // volume; the probed value is the ramp target, already remembered.
+            if (!startup_ramp_pending.load()) volume_osd_pct.store(probe_pct);
             android_vol_max.store(probe_max);
         }
         reapply_current_volume_and_route(true, true);

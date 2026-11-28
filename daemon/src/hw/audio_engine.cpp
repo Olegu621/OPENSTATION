@@ -1060,8 +1060,20 @@ void AudioEngine::capture_loop() {
     }
 }
 
+void AudioEngine::set_first_sound_cb(FirstSoundCallback cb) {
+    std::lock_guard<std::mutex> lk(ws_cb_mu_);
+    first_sound_cb_ = std::move(cb);
+}
+
 void AudioEngine::play_pcm(const int16_t* samples, size_t frame_count, int sample_rate, int channels) {
     if (!samples || frame_count == 0 || sample_rate <= 0 || channels <= 0) return;
+
+    FirstSoundCallback first_sound;
+    {
+        std::lock_guard<std::mutex> lk(ws_cb_mu_);
+        first_sound = first_sound_cb_;
+    }
+    if (first_sound) first_sound();
 
     // Linear resample to 48000 Hz stereo for stable AAudio output
     const double ratio = static_cast<double>(sample_rate) / 48000.0;
