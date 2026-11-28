@@ -69,6 +69,7 @@ struct AudioConfig {
     bool aec_enable = true;
     bool ns_enable = true;
     int mic_sensitivity = 85;          // 10..100% far-field mic & wake-word sensitivity
+    int startup_volume = 2;            // 0..100% volume at daemon start, ramps to the target on first sound
     bool mic_muted = false;
     std::string capture_mode = "aaudio"; // aaudio (stock 1ch 16k libyandexvqe hardware DSP) or alsa_16ch
     int primary_mic_channel = -1;      // 0..15 or -1 = 7-mic array beamform average
@@ -125,6 +126,7 @@ struct AssistantConfig {
     bool google_search = false;
     bool agent_mode = true;
     bool echo_guard = true;
+    bool voice_barge_in = true;   // local VQE barge-in: off for rooms with constant background speech
     bool quiet_whisper_reply = false;
     int pre_roll_ms = 450;
     int follow_up_sec = 4;

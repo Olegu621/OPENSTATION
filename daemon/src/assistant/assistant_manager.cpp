@@ -605,7 +605,8 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     bool trigger_barge_now = false;
     {
         std::lock_guard<std::mutex> blk(barge_mu_);
-        const auto res = barge_in_.feed(rms, noise_rms, playback_active, vqe_input, c.echo_guard);
+        const auto res = barge_in_.feed(rms, noise_rms, playback_active, vqe_input, c.echo_guard,
+                                        c.voice_barge_in);
         if (res == BargeInGate::Result::Drop) {
             return;
         }
@@ -1685,6 +1686,8 @@ void AssistantManager::session_worker(uint64_t sid,
     bool go_away_received = false;
     QuietSpeech quiet_speech;
     bool reply_started = false;
+    int64_t model_audio_ms = 0; // last audio chunk from the model in this session
+    int64_t turn_closed_ms = 0; // when the client closed the user's turn; 0 while open
 
     auto session_start_tp = std::chrono::steady_clock::now();
     auto setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
@@ -2084,6 +2087,8 @@ void AssistantManager::session_worker(uint64_t sid,
                                             quiet_reply_active_.store(cfg_snap.quiet_whisper_reply && quiet_speech.detected());
                                             reply_started = true;
                                         }
+                                        model_audio_ms = steady_now_ms();
+                                        turn_closed_ms = 0;
                                         set_state(AssistantState::Speaking);
                                         if (quiet_reply_active_) {
                                             // Change only this response, before it reaches the speaker and echo reference.
@@ -2273,7 +2278,17 @@ void AssistantManager::session_worker(uint64_t sid,
 
             // 3. Send buffered 16 kHz PCM audio (chunked in ~100 ms frames)
             bool speaking_now = (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active());
-            if (!announcement && !(src == TriggerSource::Text && !had_interaction)) {
+            // After the client closed the turn, hold the mic back until the model starts
+            // answering: the server takes any further audioStreamEnd as a new (empty)
+            // turn and silently stops the generation it just began. Real speech from
+            // the user (activity newer than the close) still goes through.
+            const bool waiting_reply = turn_closed_ms > 0 && !reply_started &&
+                                      last_voice_ms_.load() <= turn_closed_ms;
+            if (waiting_reply) {
+                std::lock_guard<std::mutex> lk(tx_mu_);
+                tx_pcm_.clear();
+            }
+            if (!announcement && !(src == TriggerSource::Text && !had_interaction) && !waiting_reply) {
                 std::vector<int16_t> pcm_batch;
                 {
                     std::lock_guard<std::mutex> lk(tx_mu_);
@@ -2312,10 +2327,12 @@ void AssistantManager::session_worker(uint64_t sid,
                                                      speaking_now,
                                                      activity_ms,
                                                      last_audio_end_ms,
+                                                     model_audio_ms,
                                                      now_ms,
                                                      cfg_snap.vad_silence_ms)) {
                         if (send_audio_stream_end()) {
                             last_audio_end_ms = now_ms;
+                            turn_closed_ms = now_ms;
                             audio_sent_since_end = false;
                         } else {
                             set_error("Ошибка закрытия аудиопотока Gemini Live", src != TriggerSource::Text);

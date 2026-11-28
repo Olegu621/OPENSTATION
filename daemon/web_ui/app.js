@@ -197,7 +197,8 @@
         eqPreset: $("eqPreset").value,
         bassBoost: parseInt($("bassBoost")?.value || "20", 10),
         eqBands: currentEqBands,
-        micSensitivity: parseInt($("micSensitivity")?.value || "85", 10)
+        micSensitivity: parseInt($("micSensitivity")?.value || "85", 10),
+        startupVolume: Math.max(0, Math.min(100, parseInt($("startupVolume")?.value || "2", 10) || 0))
       };
     }
 
@@ -241,6 +242,7 @@
       if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 4;
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
+      if ($("astVoiceBargeIn")) ast.voiceBargeIn = $("astVoiceBargeIn").checked;
       if ($("astQuietWhisper")) ast.quietWhisperReply = $("astQuietWhisper").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
       if ($("astAgentMode")) ast.agentMode = $("astAgentMode").checked;
@@ -1006,6 +1008,7 @@
         $("micSensitivity").value = cfg.audio?.micSensitivity ?? 85;
         if ($("lblMicMicSens") || $("lblMicSens")) ($("lblMicSens") || $("lblMicMicSens")).textContent = $("micSensitivity").value + "%";
       }
+      if ($("startupVolume")) $("startupVolume").value = cfg.audio?.startupVolume ?? 2;
       if (Array.isArray(cfg.audio?.eqBands) && cfg.audio.eqBands.length >= 10) {
         currentEqBands = cfg.audio.eqBands.slice(0, 10);
         updateEqSliders();
@@ -1055,6 +1058,7 @@
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
+        if ($("astVoiceBargeIn")) $("astVoiceBargeIn").checked = cfg.assistant.voiceBargeIn !== false;
         if ($("astQuietWhisper")) $("astQuietWhisper").checked = cfg.assistant.quietWhisperReply === true;
         if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode !== false;
         if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 4;
@@ -1457,6 +1461,9 @@
         if ($("lblMicSens")) $("lblMicSens").textContent = `${val}%`;
         scheduleConfigPush();
       });
+    }
+    if ($("startupVolume")) {
+      $("startupVolume").addEventListener("change", () => scheduleConfigPush());
     }
   }
 

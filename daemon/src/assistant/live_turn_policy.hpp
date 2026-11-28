@@ -17,17 +17,25 @@ inline bool should_update_live_voice_ms(float rms, float noise_rms, bool playbac
     return rms >= dialogue_activity_threshold(noise_rms);
 }
 
+// Client-side end of speech. The server runs its own VAD with
+// silenceDurationMs == vad_silence_ms, so this end must lead it by a margin:
+// an audioStreamEnd arriving after the server already started the reply is
+// taken as a new (empty) user turn and cuts the generation short.
+// model_audio_ms: when the model last produced audio; no end is sent unless the
+// user spoke after that, so room noise after a reply never opens a turn.
 inline bool should_send_audio_stream_end(bool audio_sent_since_end,
                                          bool listening_state,
                                          bool playback_active,
                                          int64_t activity_ms,
                                          int64_t last_audio_end_ms,
+                                         int64_t model_audio_ms,
                                          int64_t now_ms,
                                          int vad_silence_ms) {
     if (!audio_sent_since_end || !listening_state || playback_active) return false;
     if (activity_ms <= last_audio_end_ms) return false;
+    if (activity_ms <= model_audio_ms) return false;
     const int silence_ms = std::clamp(vad_silence_ms, 600, 2000);
-    return (now_ms - activity_ms) >= silence_ms;
+    return (now_ms - activity_ms) >= std::max(600, silence_ms - 500);
 }
 
 // Health & automatic Sherpa KWS fallback tracker for the chroot stock spotter.
@@ -73,6 +81,8 @@ struct StockSpotterHealth {
 // Hardware-AEC barge-in gate:
 // - If echo_guard is disabled: always passes mic audio.
 // - During playback without hardware VQE AEC: blocks mic to prevent feedback.
+// - During playback with VQE AEC and voice_barge_in off: blocks mic, never triggers
+//   (for rooms where TV or voice chat would otherwise cut every reply).
 // - During playback with VQE AEC: holds low residual echo back, then triggers an immediate
 //   barge-in edge + unlocks streaming once sustained user speech exceeds the AEC floor.
 struct BargeInGate {
@@ -91,7 +101,8 @@ struct BargeInGate {
                 float noise_rms,
                 bool playback_active,
                 bool vqe_input,
-                bool echo_guard) {
+                bool echo_guard,
+                bool voice_barge_in) {
         if (!echo_guard) {
             reset();
             return Result::Pass;
@@ -100,7 +111,7 @@ struct BargeInGate {
             reset();
             return Result::Pass;
         }
-        if (!vqe_input) {
+        if (!vqe_input || !voice_barge_in) {
             speech_frames = 0;
             return Result::Drop;
         }

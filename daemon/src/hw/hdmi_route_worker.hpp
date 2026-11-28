@@ -56,13 +56,18 @@ private:
         int last_applied = -1;
         std::string last_server;
         bool last_attempt_failed = false;
+        int consecutive_failures = 0;
 
         for (;;) {
             bool hdmi = false;
             unsigned long revision = 0;
             {
                 std::unique_lock<std::mutex> lock(mu_);
-                const auto wait_for = last_attempt_failed ? retry_interval_ : interval_;
+                // Fast retries only for a transient hiccup: a build whose AudioPolicy
+                // rejects the call (e.g. vendor HDMI disconnect) must not be poked
+                // every 1.5 s forever, that re-routes audio while TTS is playing.
+                const auto wait_for = (last_attempt_failed && consecutive_failures < 3)
+                                          ? retry_interval_ : interval_;
                 cv_.wait_for(lock, wait_for, [&] { return stopping_ || dirty_; });
                 if (stopping_) return;
                 if (!requested_) continue;
@@ -89,12 +94,14 @@ private:
 
             if (!apply_(hdmi)) {
                 last_attempt_failed = true;
+                ++consecutive_failures;
                 continue;
             }
 
             last_applied = static_cast<int>(hdmi);
             last_server = server;
             last_attempt_failed = false;
+            consecutive_failures = 0;
 
             bool still_current = false;
             {

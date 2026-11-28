@@ -205,6 +205,7 @@ void DaemonConfig::sanitize_and_validate() {
     audio.pdm_gain = std::clamp(audio.pdm_gain, 0, 8);
     audio.pdm_filter = std::clamp(audio.pdm_filter, 0, 4);
     audio.mic_sensitivity = std::clamp(audio.mic_sensitivity, 10, 100);
+    audio.startup_volume = std::clamp(audio.startup_volume, 0, 100);
     if (!is_one_of(audio.capture_mode, {"aaudio", "alsa_16ch"})) {
         audio.capture_mode = "aaudio";
     }
@@ -414,6 +415,7 @@ json::Value DaemonConfig::to_json() const {
     au["aecEnable"] = Value::make_bool(audio.aec_enable);
     au["nsEnable"] = Value::make_bool(audio.ns_enable);
     au["micSensitivity"] = Value::make_int(audio.mic_sensitivity);
+    au["startupVolume"] = Value::make_int(audio.startup_volume);
     au["micMuted"] = Value::make_bool(audio.mic_muted);
     au["captureMode"] = Value::make_str(audio.capture_mode);
     au["primaryMicChannel"] = Value::make_int(audio.primary_mic_channel);
@@ -464,6 +466,7 @@ json::Value DaemonConfig::to_json() const {
     ast["googleSearch"] = Value::make_bool(assistant.google_search);
     ast["agentMode"] = Value::make_bool(assistant.agent_mode);
     ast["echoGuard"] = Value::make_bool(assistant.echo_guard);
+    ast["voiceBargeIn"] = Value::make_bool(assistant.voice_barge_in);
     ast["quietWhisperReply"] = Value::make_bool(assistant.quiet_whisper_reply);
     ast["preRollMs"] = Value::make_int(assistant.pre_roll_ms);
     ast["followUpSec"] = Value::make_int(assistant.follow_up_sec);
@@ -604,6 +607,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = au->get("loopbackEnable"); x && x->is_bool()) audio.loopback_enable = x->as_bool();
         if (auto* x = au->get("aecEnable"); x && x->is_bool()) audio.aec_enable = x->as_bool();
         if (auto* x = au->get("nsEnable"); x && x->is_bool()) audio.ns_enable = x->as_bool();
+        if (auto* x = au->get("startupVolume"); x && x->is_num()) audio.startup_volume = x->as_int();
         bool has_mic_sens = false;
         if (auto* x = au->get("micSensitivity"); x && x->is_num()) {
             audio.mic_sensitivity = x->as_int();
@@ -667,6 +671,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ast->get("googleSearch"); x && x->is_bool()) assistant.google_search = x->as_bool();
         if (auto* x = ast->get("agentMode"); x && x->is_bool()) assistant.agent_mode = x->as_bool();
         if (auto* x = ast->get("echoGuard"); x && x->is_bool()) assistant.echo_guard = x->as_bool();
+        if (auto* x = ast->get("voiceBargeIn"); x && x->is_bool()) assistant.voice_barge_in = x->as_bool();
         if (auto* x = ast->get("quietWhisperReply"); x && x->is_bool()) assistant.quiet_whisper_reply = x->as_bool();
         if (auto* x = ast->get("preRollMs"); x && x->is_num()) assistant.pre_roll_ms = x->as_int();
         if (auto* x = ast->get("followUpSec"); x && x->is_num()) assistant.follow_up_sec = x->as_int();

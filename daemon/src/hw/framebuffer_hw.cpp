@@ -23,6 +23,7 @@ namespace openstation {
 namespace {
 
 [[maybe_unused]] constexpr double kPi = 3.14159265358979323846;
+constexpr int kScreenW = 25; // front LED matrix width, pixels
 
 Rgb parse_hex_color(const std::string& hex, Rgb fallback) {
     if (hex.size() == 7 && hex[0] == '#') {
@@ -505,18 +506,25 @@ void FramebufferHw::trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_
     cv_.notify_all();
 }
 
-void FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint8_t g, uint8_t b, int duration_ms) {
+int FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint8_t g, uint8_t b, int duration_ms) {
     {
         std::lock_guard<std::mutex> lk(mu_);
         scr_override_text_ = text;
         scr_override_color_ = Rgb{r, g, b};
         scr_override_one_shot_ = false;
         scr_override_speed_ = 22.0;
+        // A scrolling banner must outlive one full pass (text width + screen width),
+        // otherwise its tail is cut off: 4.5 s at 22 px/s only fits ~16 characters.
+        if (measure_text_pixel_width(text) > kScreenW) {
+            duration_ms = std::max(duration_ms, compute_full_scroll_duration_ms(text, scr_override_speed_, kScreenW));
+        }
+        duration_ms = std::clamp(duration_ms, 300, 180000);
         scr_override_start_ = std::chrono::steady_clock::now();
-        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 300, 180000));
+        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(duration_ms);
         ++wake_seq_;
     }
     cv_.notify_all();
+    return duration_ms;
 }
 
 void FramebufferHw::trigger_bluetooth_visual(const std::string& bt_state, int duration_ms) {
